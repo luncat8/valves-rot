@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Вращающиеся вентили 10×10</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0a0a0a;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #ddd;
+  }
+  .controls {
+    margin-bottom: 14px;
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    font-size: 14px;
+  }
+  .controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .controls input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #4a90d9;
+  }
+  canvas {
+    background: #0a0a0a;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    display: block;
+    image-rendering: auto;
+    max-width: 100%;
+    height: auto;
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label><input type="checkbox" id="airToggle"> Воздух — белый (иначе чёрный)</label>
+</div>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+const ROWS = 10;
+const COLS = 10;
+const CELL = 85;
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+canvas.width = COLS * CELL;
+canvas.height = ROWS * CELL;
+
+// --- Цвет «воздуха» (полость в полых вентилях + просвет трубок + каналы оправки) ---
+// По умолчанию чёрный; чекбокс включает белый.
+const airToggle = document.getElementById("airToggle");
+function airColor() {
+  return airToggle.checked ? "#f5f5f0" : "#0a0a0a";
+}
+// Цвет фона «материала» вокруг воздуха зависит от того, что выбрано воздухом:
+// если воздух чёрный — фон полости/просвета остаётся чёрным, а материал виден;
+// если воздух белый — полости и просветы белые.
+// Удобно: при белом воздухе вся «вода/газ» визуально белая, при чёрном — тёмная.
+airToggle.checked = false;
+
+// --- Размеры каналов ---
+const CHANNEL_HALF = 9;       // половина ширины просвета (совпадает с оправкой)
+const TUBE_WALL = 3;          // толщина стенки трубки
+const TUBE_HALF = CHANNEL_HALF + TUBE_WALL; // половина наружной ширины трубки
+
+// --- Типы вентилей ---
+const SOLID_TYPES = ["straight", "L", "T", "cross"];
+const HOLLOW_TYPES = ["empty0", "empty1", "empty2op", "empty2adj", "empty3"];
+const ALL_TYPES = SOLID_TYPES.concat(HOLLOW_TYPES);
+
+function getExits(type) {
+  switch (type) {
+    case "straight":  return [0, 2];
+    case "L":         return [0, 1];
+    case "T":         return [0, 1, 2];
+    case "cross":     return [0, 1, 2, 3];
+    case "empty0":    return [];
+    case "empty1":    return [0];
+    case "empty2op":  return [0, 2];
+    case "empty2adj": return [0, 1];
+    case "empty3":    return [0, 1, 2];
+  }
+  return [];
+}
+
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+function randFrameColor() {
+  const v = 100 + Math.random() * 50;
+  const r = clamp(v + (Math.random() - 0.5) * 30, 0, 255);
+  const g = clamp(v + (Math.random() - 0.5) * 30, 0, 255);
+  const b = clamp(v + (Math.random() - 0.5) * 30, 0, 255);
+  return "rgb(" + (r | 0) + "," + (g | 0) + "," + (b | 0) + ")";
+}
+
+// --- Класс вентиля ---
+class Valve {
+  constructor() {
+    this.type = ALL_TYPES[(Math.random() * ALL_TYPES.length) | 0];
+    this.angle = ((Math.random() * 4) | 0) * Math.PI / 2;
+    this.startAngle = this.angle;
+    this.targetAngle = this.angle;
+    this.rotationProgress = 1;
+    this.rotationDuration = 900;
+    this.pauseDuration = 800 + Math.random() * 4500;
+    this.stateTimer = Math.random() * this.pauseDuration;
+    this.frameColor = randFrameColor();
+  }
+
+  update(dt) {
+    this.stateTimer += dt;
+
+    if (this.rotationProgress < 1) {
+      this.rotationProgress += dt / this.rotationDuration;
+      if (this.rotationProgress >= 1) {
+        this.rotationProgress = 1;
+        this.angle = this.targetAngle;
+        this.stateTimer = 0;
+        this.pauseDuration = 800 + Math.random() * 4500;
+      } else {
+        const t = this.rotationProgress;
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        this.angle = this.startAngle + (this.targetAngle - this.startAngle) * eased;
+      }
+    } else {
+      if (this.stateTimer >= this.pauseDuration) {
+        this.startAngle = this.angle;
+        const quarterTurns = 1 + ((Math.random() * 3) | 0);
+        const direction = Math.random() < 0.5 ? 1 : -1;
+        this.targetAngle = this.angle + direction * quarterTurns * Math.PI / 2;
+        this.rotationDuration = 600 + Math.random() * 1400;
+        this.rotationProgress = 0;
+        this.stateTimer = 0;
+      }
+    }
+  }
+}
+
+const valves = [];
+for (let i = 0; i < ROWS * COLS; i++) valves.push(new Valve());
+
+// --- Отрисовка оправки ---
+function drawFrame(x, y, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+
+  // 4 канала в оправке (цвет = воздух)
+  ctx.fillStyle = airColor();
+  const cx = x + CELL / 2;
+  const cy = y + CELL / 2;
+  const half = CELL / 2;
+
+  ctx.fillRect(cx - CHANNEL_HALF, y, CHANNEL_HALF * 2, half);
+  ctx.fillRect(cx - CHANNEL_HALF, cy, CHANNEL_HALF * 2, half);
+  ctx.fillRect(x, cy - CHANNEL_HALF, half, CHANNEL_HALF * 2);
+  ctx.fillRect(cx, cy - CHANNEL_HALF, half, CHANNEL_HALF * 2);
+}
+
+// --- Дуга с пропусками ---
+// gaps: массив [startAngle, endAngle] в радианах (могут быть любыми)
+// Рисует только видимые сегменты (дополнение к объединению gaps)
+function drawArcSegments(cx, cy, r, gaps, lineWidth, strokeStyle) {
+  const TWO_PI = Math.PI * 2;
+
+  // Нормализуем gaps в [0, 2π), разбивая переходящие через 2π
+  const normalized = [];
+  for (const g of gaps) {
+    let a = g[0];
+    let b = g[1];
+    // длина интервала
+    const len = b - a;
+    // приводим a в [0, 2π)
+    a = ((a % TWO_PI) + TWO_PI) % TWO_PI;
+    b = a + len;
+    if (b <= TWO_PI) {
+      normalized.push([a, b]);
+    } else {
+      normalized.push([a, TWO_PI]);
+      normalized.push([0, b - TWO_PI]);
+    }
+  }
+
+  normalized.sort((x, y) => x[0] - y[0]);
+
+  // Объединяем
+  const merged = [];
+  for (const g of normalized) {
+    if (merged.length && g[0] <= merged[merged.length - 1][1] + 0.001) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], g[1]);
+    } else {
+      merged.push([g[0], g[1]]);
+    }
+  }
+
+  // Строим видимые интервалы (дополнение)
+  const visible = [];
+  let cursor = 0;
+  for (const g of merged) {
+    if (cursor < g[0]) visible.push([cursor, g[0]]);
+    cursor = Math.max(cursor, g[1]);
+  }
+  if (cursor < TWO_PI) visible.push([cursor, TWO_PI]);
+
+  if (visible.length === 0) return;
+
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  for (const v of visible) {
+    ctx.moveTo(cx + r * Math.cos(v[0]), cy + r * Math.sin(v[0]));
+    ctx.arc(cx, cy, r, v[0], v[1]);
+  }
+  ctx.stroke();
+}
+
+// --- Отрисовка вентиля (вид в разрезе) ---
+function drawValve(cx, cy, valve) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(valve.angle);
+
+  const R = CELL * 0.42;
+  const wallThick = 5;
+  const innerR = R - wallThick;
+
+  const exits = getExits(valve.type);
+  const hollow = valve.type.indexOf("empty") === 0;
+
+  // Г-образный случай: ровно 2 смежных выхода (L или empty2adj)
+  const isLShape = exits.length === 2 &&
+    ((exits[0] + 1) % 4 === exits[1] % 4 || (exits[1] + 1) % 4 === exits[0] % 4);
+
+  // Клипим по наружному кругу, чтобы трубки не выходили за вентиль
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.clip();
+
+  // Корпус вентиля (толща материала)
+  ctx.fillStyle = "#4a4a4a";
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Внутренняя область
+  // Полые: внутренняя полость = воздух. Сплошные: материал (без полости).
+  ctx.fillStyle = hollow ? airColor() : "#545454";
+  ctx.beginPath();
+  ctx.arc(0, 0, innerR, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (isLShape) {
+    // Г-образный канал с закруглением.
+    // Каноническая ориентация (после valve.angle): выходы сверху (0) и справа (1).
+    // Центральная линия: прямая сверху → четверть-окружность → прямая справа.
+    const filletR = TUBE_HALF * 1.8;
+
+    function strokeL(halfWidth, strokeStyle) {
+      ctx.beginPath();
+      ctx.moveTo(0, -R);
+      ctx.lineTo(0, -filletR);
+      // Дуга: от (0, -filletR) до (filletR, 0) вокруг центра (filletR, -filletR)
+      // anticlockwise=true → короткий путь (угол π → π/2)
+      ctx.arc(filletR, -filletR, filletR, Math.PI, Math.PI / 2, true);
+      ctx.lineTo(R, 0);
+
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = halfWidth * 2;
+      ctx.lineCap = "butt";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    }
+
+    // Стенки трубки (тёмная полоса по наружному контуру трубки)
+    strokeL(TUBE_HALF, "#262626");
+    // Внутренний просвет трубки (воздух)
+    strokeL(CHANNEL_HALF, airColor());
+
+  } else {
+    // Прямоугольные каналы для остальных форм (прямая, Т, крест, и т.д.)
+    ctx.fillStyle = "#262626";
+    for (const e of exits) {
+      const ang = e * Math.PI / 2 - Math.PI / 2;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.fillRect(0, -TUBE_HALF, R, TUBE_HALF * 2);
+      ctx.restore();
+    }
+
+    ctx.fillStyle = airColor();
+    for (const e of exits) {
+      const ang = e * Math.PI / 2 - Math.PI / 2;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.fillRect(0, -CHANNEL_HALF, R, CHANNEL_HALF * 2);
+      ctx.restore();
+    }
+  }
+
+  ctx.restore(); // снять клип
+
+  // Угловая полуширина трубки на радиусе (с запасом, чтобы дуга точно не пересекала трубку)
+  const spanOuter = Math.atan(TUBE_HALF / R) + 0.07;
+  const spanInner = Math.atan(TUBE_HALF / innerR) + 0.07;
+
+  // Строим gap-интервалы для каждого выхода
+  const gapsOuter = exits.map(e => {
+    const a = e * Math.PI / 2 - Math.PI / 2;
+    return [a - spanOuter, a + spanOuter];
+  });
+  const gapsInner = exits.map(e => {
+    const a = e * Math.PI / 2 - Math.PI / 2;
+    return [a - spanInner, a + spanInner];
+  });
+
+  // Наружный контур — только видимые сегменты (между трубками)
+  drawArcSegments(0, 0, R, gapsOuter, 1.4, "#0a0a0a");
+
+  // Внутренний контур полости — только у полых вентилей, тоже с пропусками
+  if (hollow) {
+    drawArcSegments(0, 0, innerR, gapsInner, 1.2, "#0a0a0a");
+  }
+
+  ctx.restore();
+}
+
+// --- Главный цикл ---
+let lastTime = performance.now();
+function frame(now) {
+  const dt = Math.min(50, now - lastTime);
+  lastTime = now;
+
+  ctx.fillStyle = "#0a0a0a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = c * CELL;
+      const y = r * CELL;
+      const valve = valves[r * COLS + c];
+      drawFrame(x, y, valve.frameColor);
+      drawValve(x + CELL / 2, y + CELL / 2, valve);
+      valve.update(dt);
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
