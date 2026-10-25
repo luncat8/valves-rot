@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Shared geometry — Rotary Valve Field</title>
+	<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+	<a href="../../index.html">All prototypes</a>
+	<h1>Shared geometry / Rotary Valve Field</h1>
+	<p>One geometry layer drives drawing and collision. Housings, rotor passages, seam apertures and clearance are derived from the same primitives. Grains arrive with the contact solver in the next step.</p>
+	<div class="controls">
+		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
+		<button id="shuffle" type="button">Shuffle seed</button>
+		<button id="reset" type="button">Rebuild</button>
+		<button id="pause" type="button">Pause</button>
+		<button id="step" type="button">Step</button>
+		<label>Turn speed <input id="speed" type="range" min="0" max="3" step="0.1" value="1"><output id="speed-value">1</output></label>
+		<label><input id="air" type="checkbox"> Black air</label>
+		<label><input id="model" type="checkbox"> Air model</label>
+	</div>
+	<canvas id="c" aria-label="Rotating valve field, shared geometry layer"></canvas>
+	<p id="stats" aria-live="off"></p>
+	<script src="geometry.js"></script>
+	<script src="render.js"></script>
+	<script src="app.js"></script>
+</body>
+</html>

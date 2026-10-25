@@ -1,0 +1,8 @@
+geometry layer baseline 0.1.1
+node v22.22.3 Intel(R) Xeon(R) Processor @ 2.60GHz (2 cpus)
+clearance 0.13 us/op
+sweep 12px r2.6 0.93 us/op
+nearestAir r2.6 0.42 us/op
+setAngle 0.20 us/op
+createLayout 0.26 ms/layout
+syntax: 100 valves, 4 corridors each, content sparse
