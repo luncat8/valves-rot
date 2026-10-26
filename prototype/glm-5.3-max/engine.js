@@ -160,7 +160,9 @@ const ValveEngine = (() => {
 			prims,
 			path,
 			chamberR,
-			solidCenter: !primCovers(prims, 0, 0, CW / 2),
+			// A hub bolt reads as machining where channels leave the centre
+			// solid; a blank plug has no channel, so its face stays clean.
+			solidCenter: prims.length > 0 && !primCovers(prims, 0, 0, CW / 2),
 			angle: 0,
 			from: 0,
 			delta: 0,

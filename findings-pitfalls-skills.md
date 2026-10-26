@@ -27,3 +27,10 @@
 - Rotary drain reachability is graph connectivity over `ports.length > 0` (every ported rotor visits all four sides as it turns), not static `angle = 0` port alignment which starves whole seeds.
 - Mapping world `[-POUR, SIZE + POUR]` onto canvas `[0, SIZE + 2 * POUR]` requires `ctx.translate(0, +POUR)`, with background and overlay blitted at `(0, -POUR)` every frame even when `putImageData` updates are throttled.
 
+# Liveliness pitfalls
+- A pile contact blocks only its normal. Bisecting the whole displacement vector when the straight step dips into the contact circle scales the tangential component to nothing: stacks become stable equilibria, columns never spread, grains "fall and sit". Project the velocity onto the contact tangent (normal of the deepest overlapping pair) and re-sweep the step along it.
+- Pair friction coefficients above ~0.05 cancel the small lateral impulses a tilted contact produces, so a two-grain vertical stack stays balanced forever. Round grains need near-zero pair friction; pyramids then push themselves apart and piles spread like the prototypes.
+- Wall friction is a Coulomb cap on the gravity impulse each substep: mu * g is the deceleration of a rolling grain. Keep it small (<= 0.05) or inertia dies within a cell.
+# Skin fidelity pitfalls
+- A skin named after a prototype page must copy its exact colour lists and band structure, including the bands the page does NOT draw (the gpt page has no light material band and no screws); an "inspired by" palette reads as a different product. Rasterise both headlessly and compare crops before calling a skin done.
+- A hub bolt at a rotor centre only reads as machining where channels leave the centre solid; on a blank plug it looks like a foreign axis object. Gate decorative centre details on the passage actually existing.

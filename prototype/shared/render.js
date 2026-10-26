@@ -12,6 +12,12 @@ const ValveRender = (() => {
 	const TAU = G.TAU;
 
 	const GROUT = "#1a1e24";
+	const GPT_GROUT = "#263030";
+	const GPT_EDGE = "#45504f";
+	const GPT_EDGE_STRIP = "#46504f";
+	const GPT_RIM = "#354241";
+	const GPT_HOUSING = ["#777d7b", "#7c7e79", "#747d80", "#81817c", "#787a80", "#7b827c", "#80807e", "#747b77"];
+	const GPT_METAL = ["#a5aaa6", "#a9aaa3", "#9da8aa", "#aaa6a5", "#a3a9a2"];
 	const EDGE_C = "#15191f";
 	const WALL_V = "#c6cfd9";
 	const WALL_H = "#98a3af";
@@ -26,9 +32,12 @@ const ValveRender = (() => {
 	// Muted grey housings with a small hue and lightness variation per cell, kept
 	// out of the geometry layer so layout stays pure data.
 	function paintFor(rnd, skin) {
+		// The gpt skin mirrors the prototype page: flat tinted tiles and flat
+		// metal rotors picked from its exact colour lists.
 		if (skin === "gpt") {
-			const light = 48 + rnd() * 12;
-			return { tileHi: hsl(165, 5, light + 5), tileLo: hsl(165, 5, light - 3), bodyHi: "#a6afab", bodyLo: "#7d8986" };
+			const tile = GPT_HOUSING[(rnd() * GPT_HOUSING.length) | 0];
+			const metal = GPT_METAL[(rnd() * GPT_METAL.length) | 0];
+			return { tileHi: tile, tileLo: tile, bodyHi: metal, bodyLo: metal };
 		}
 		const hueTile = 210 + (rnd() * 24 - 12);
 		const hueBody = 214 + (rnd() * 20 - 10);
@@ -70,11 +79,12 @@ const ValveRender = (() => {
 	// Bands are painted in passes across the whole field so a strip's dark edge
 	// never lands on top of a neighbour's air at shared cell crossings.
 	const HALF_EDGE = HALF + WALL + EDGE;
-	const STRIP_PASSES = [
-		[HALF_EDGE, EDGE_C],
-		[HALF + WALL, WALL_H],
-		[HALF, ""],
-	];
+	// The prototype gpt page paints its corridors in two bands (dark edge, air)
+	// with no light material band, so the skin keeps its own pass table.
+	function stripPasses(skin, air) {
+		if (skin === "gpt") return [[HALF + 2.15, GPT_EDGE_STRIP], [HALF, air]];
+		return [[HALF_EDGE, EDGE_C], [HALF + WALL, WALL_H], [HALF, air]];
+	}
 
 	function paintStripBand(ctx, st, half, color) {
 		const inner = RV - 1;
@@ -87,11 +97,11 @@ const ValveRender = (() => {
 		ctx.restore();
 	}
 
-	function paintStrips(ctx, layout, air) {
-		STRIP_PASSES[2][1] = air;
-		for (let p = 0; p < STRIP_PASSES.length; p++) {
-			const half = STRIP_PASSES[p][0];
-			const color = STRIP_PASSES[p][1];
+	function paintStrips(ctx, layout, air, skin) {
+		const passes = stripPasses(skin, air);
+		for (let p = 0; p < passes.length; p++) {
+			const half = passes[p][0];
+			const color = passes[p][1];
 			for (let k = 0; k < layout.valves.length; k++) {
 				const v = layout.valves[k];
 				ctx.save();
@@ -105,7 +115,7 @@ const ValveRender = (() => {
 	function paintBackground(layout, colors, air, dpr, skin) {
 		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2, dpr);
 		const ctx = sheet.ctx;
-		ctx.fillStyle = GROUT;
+		ctx.fillStyle = skin === "gpt" ? GPT_GROUT : GROUT;
 		ctx.fillRect(0, 0, SIZE, SIZE + G.POUR * 2);
 		// Shift down once so world coordinates [-POUR, SIZE + POUR] fill the sheet.
 		ctx.translate(0, G.POUR);
@@ -118,27 +128,33 @@ const ValveRender = (() => {
 			const g = ctx.createLinearGradient(x, y, x, y + tile);
 			g.addColorStop(0, colors[k].tileHi);
 			g.addColorStop(1, colors[k].tileLo);
-			roundRect(ctx, x, y, tile, tile, 5);
+			roundRect(ctx, x, y, tile, tile, skin === "gpt" ? 0 : 5);
 			ctx.fillStyle = g;
 			ctx.fill();
 			ctx.lineWidth = 1;
-			ctx.strokeStyle = "rgba(12,15,19,0.55)";
+			ctx.strokeStyle = skin === "gpt" ? "rgba(25,37,38,0.47)" : "rgba(12,15,19,0.55)";
 			ctx.stroke();
 			ctx.beginPath();
 			ctx.moveTo(x + 5, y + 1);
 			ctx.lineTo(x + tile - 5, y + 1);
-			ctx.strokeStyle = "rgba(255,255,255,0.16)";
+			ctx.strokeStyle = skin === "gpt" ? "rgba(255,255,255,0.115)" : "rgba(255,255,255,0.16)";
 			ctx.stroke();
+			if (skin === "gpt") {
+				ctx.fillStyle = "rgba(23,32,33,0.11)";
+				ctx.fillRect(x + tile - 1, y + 1, 1, tile - 2);
+			}
 		}
-		for (let k = 0; k < layout.valves.length; k++) {
-			const v = layout.valves[k];
-			ctx.beginPath();
-			ctx.arc(v.cx, v.cy, RV + 1.1, 0, TAU);
-			ctx.lineWidth = 2.6;
-			ctx.strokeStyle = "rgba(14,17,22,0.5)";
-			ctx.stroke();
+		if (skin !== "gpt") {
+			for (let k = 0; k < layout.valves.length; k++) {
+				const v = layout.valves[k];
+				ctx.beginPath();
+				ctx.arc(v.cx, v.cy, RV + 1.1, 0, TAU);
+				ctx.lineWidth = 2.6;
+				ctx.strokeStyle = "rgba(14,17,22,0.5)";
+				ctx.stroke();
+			}
 		}
-		paintStrips(ctx, layout, air);
+		paintStrips(ctx, layout, air, skin);
 		for (let k = 0; k < layout.valves.length; k++) {
 			const v = layout.valves[k];
 			if (skin === "gpt") continue;
@@ -185,12 +201,12 @@ const ValveRender = (() => {
 		ctx.beginPath();
 		ctx.arc(0, 0, RV - RIM_BAND, 0, TAU);
 		ctx.lineWidth = RIM_BAND * 2;
-		ctx.strokeStyle = EDGE_C;
+		ctx.strokeStyle = skin === "gpt" ? GPT_RIM : EDGE_C;
 		ctx.stroke();
 		ctx.beginPath();
 		ctx.beginPath();
 		ctx.arc(0, 0, RV - 2.9, 0, TAU);
-		ctx.lineWidth = 1;
+		ctx.lineWidth = skin === "gpt" ? 0.8 : 1;
 		ctx.strokeStyle = skin === "gpt" ? "rgba(255,255,255,0.24)" : "rgba(255,255,255,0.12)";
 		ctx.stroke();
 		ctx.beginPath();
@@ -207,27 +223,31 @@ const ValveRender = (() => {
 		ctx.beginPath();
 		ctx.arc(0, 0, RV, 0, TAU);
 		ctx.clip();
-		ctx.lineCap = "butt";
-		ctx.lineJoin = "miter";
+		// The prototype gpt page strokes passages with a thin dark edge and no
+		// light material band, and rounds its bends.
+		ctx.lineCap = skin === "gpt" ? "round" : "butt";
+		ctx.lineJoin = skin === "gpt" ? "round" : "miter";
 		const chamber = v.chamberR;
 		if (chamber > 0) {
 			ctx.beginPath();
-			ctx.arc(0, 0, chamber + WALL + EDGE, 0, TAU);
-			ctx.fillStyle = EDGE_C;
+			ctx.arc(0, 0, chamber + (skin === "gpt" ? 2.5 : WALL + EDGE), 0, TAU);
+			ctx.fillStyle = skin === "gpt" ? GPT_EDGE : EDGE_C;
 			ctx.fill();
 		}
-		ctx.strokeStyle = EDGE_C;
-		ctx.lineWidth = HALF * 2 + WALL * 2 + EDGE * 2;
+		ctx.strokeStyle = skin === "gpt" ? GPT_EDGE : EDGE_C;
+		ctx.lineWidth = HALF * 2 + (skin === "gpt" ? 4.3 : WALL * 2 + EDGE * 2);
 		ctx.stroke(v.path);
-		if (chamber > 0) {
-			ctx.beginPath();
-			ctx.arc(0, 0, chamber + WALL, 0, TAU);
-			ctx.fillStyle = skin === "gpt" ? "#c2c9c3" : WALL_V;
-			ctx.fill();
+		if (skin !== "gpt") {
+			if (chamber > 0) {
+				ctx.beginPath();
+				ctx.arc(0, 0, chamber + WALL, 0, TAU);
+				ctx.fillStyle = WALL_V;
+				ctx.fill();
+			}
+			ctx.strokeStyle = WALL_V;
+			ctx.lineWidth = HALF * 2 + WALL * 2;
+			ctx.stroke(v.path);
 		}
-		ctx.strokeStyle = skin === "gpt" ? "#c2c9c3" : WALL_V;
-		ctx.lineWidth = HALF * 2 + WALL * 2;
-		ctx.stroke(v.path);
 		if (chamber > 0) {
 			ctx.beginPath();
 			ctx.arc(0, 0, chamber, 0, TAU);
@@ -244,7 +264,16 @@ const ValveRender = (() => {
 	const PALETTES = {
 		glm: ["#ff655b", "#ffcf32", "#16cbb1", "#548dff", "#ed43dc", "#7cdd30"],
 		combined: ["#f07a5f", "#e9b64b", "#4fb8ab", "#7f93dd", "#d978b4", "#8cbf5a"],
-		gpt: ["#ed7761", "#f2c94c", "#74cbb8", "#8aa9e0", "#ca8fc5", "#a9c978"],
+		gpt: ["#ff8668", "#f6ca64", "#79d5c9", "#a9b8f4", "#e7a1cd", "#abd979"],
+	};
+
+	// Grain paint per skin: shadow tint and offset, rim stroke and highlight.
+	// Bodies are drawn a hair above the collision radius so the varied grain
+	// sizes stay readable where they touch a wall.
+	const GRAIN_STYLE = {
+		glm: { shadow: "rgba(14,24,25,0.32)", grow: 0.7, ox: 0.6, oy: 0.8, rim: EDGE_C, rimW: 0.65, hl: 0.27, hlMin: 0, hlFill: "rgba(255,255,255,0.65)" },
+		combined: { shadow: "rgba(14,24,25,0.32)", grow: 0.7, ox: 0.6, oy: 0.8, rim: EDGE_C, rimW: 0.65, hl: 0.27, hlMin: 0, hlFill: "rgba(255,255,255,0.65)" },
+		gpt: { shadow: "rgba(14,24,25,0.42)", grow: 0.65, ox: 0.8, oy: 1.1, rim: "rgba(20,32,33,0.48)", rimW: 0.75, hl: 0, hlMin: 0.7, hlFill: "rgba(255,255,255,0.85)" },
 	};
 
 	function buildScene(layout, air, dpr, skin = "glm") {
@@ -255,6 +284,7 @@ const ValveRender = (() => {
 			bg: paintBackground(layout, colors, air, dpr, skin),
 			sprites,
 			palette: PALETTES[skin],
+			grain: GRAIN_STYLE[skin],
 			sprite: SPR,
 			dpr,
 		};
@@ -309,21 +339,24 @@ const ValveRender = (() => {
 	}
 
 	// Batched by palette entry so 1,000 grains still issue a handful of draw calls
-	// and zero allocations.
-	function renderGrains(ctx, sim, palette) {
+	// and zero allocations. Bodies use the physical radius plus a hair, so the
+	// varied grain sizes read clearly and may kiss a wall edge.
+	function renderGrains(ctx, sim, scene) {
 		const n = sim.count;
 		if (!n) return;
+		const palette = scene.palette;
+		const st = scene.grain;
 		const x = sim.x;
 		const y = sim.y;
 		const r = sim.r;
 		const col = sim.color;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
-			const radius = r[k] * 1.16 + 0.5;
-			ctx.moveTo(x[k] + 0.6 + radius, y[k] + 0.8);
-			ctx.arc(x[k] + 0.6, y[k] + 0.8, radius, 0, TAU);
+			const radius = r[k] + 0.2 + st.grow;
+			ctx.moveTo(x[k] + st.ox + radius, y[k] + st.oy);
+			ctx.arc(x[k] + st.ox, y[k] + st.oy, radius, 0, TAU);
 		}
-		ctx.fillStyle = "rgba(14,24,25,0.32)";
+		ctx.fillStyle = st.shadow;
 		ctx.fill();
 		for (let c = 0; c < palette.length; c++) {
 			let any = false;
@@ -332,7 +365,7 @@ const ValveRender = (() => {
 				if (col[k] !== c) continue;
 				const xk = x[k];
 				const yk = y[k];
-				const rk = r[k] * 1.16;
+				const rk = r[k] + 0.2;
 				ctx.moveTo(xk + rk, yk);
 				ctx.arc(xk, yk, rk, 0, TAU);
 				any = true;
@@ -341,24 +374,25 @@ const ValveRender = (() => {
 			ctx.fillStyle = palette[c];
 			ctx.fill();
 		}
-		ctx.fillStyle = "rgba(255,255,255,0.65)";
+		ctx.fillStyle = st.hlFill;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
-			const rk = r[k] * 1.16;
-			const hr = rk * 0.27;
+			const rk = r[k] + 0.2;
+			let hr = rk * st.hl;
+			if (hr < st.hlMin) hr = st.hlMin;
 			const hx = x[k] - rk * 0.28;
 			const hy = y[k] - rk * 0.28;
 			ctx.moveTo(hx + hr, hy);
 			ctx.arc(hx, hy, hr, 0, TAU);
 		}
 		ctx.fill();
-		ctx.strokeStyle = EDGE_C;
-		ctx.lineWidth = 0.65;
+		ctx.strokeStyle = st.rim;
+		ctx.lineWidth = st.rimW;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
 			const xk = x[k];
 			const yk = y[k];
-			const rk = r[k] * 1.16;
+			const rk = r[k] + 0.2;
 			ctx.moveTo(xk + rk, yk);
 			ctx.arc(xk, yk, rk, 0, TAU);
 		}

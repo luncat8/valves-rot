@@ -23,15 +23,18 @@ const ValveSimulation = (() => {
 	const STEP = 1 / 120;
 	const MAX_STEPS = 10;
 	const CAPACITY = 1600;
-	const R_MIN = 2.05;
-	const R_MAX = 2.45;
-	const R_GRAIN = 2.25;
+	const R_MIN = 2.3;
+	const R_MAX = 3.1;
+	const R_GRAIN = 2.7;
 	const GRAVITY = 560;
 	const RESTITUTION = 0.1;
 	const REST_SPEED = 30;
-	const FRICTION = 0.35;
-	const DAMPING = 0.12;
-	const WALL_FRICTION = 0.08;
+	// Round grains have almost no tangential grip: pair friction near zero lets
+	// stacks and pyramids push themselves apart and piles spread like the
+	// prototypes, while a small wall friction keeps rolling visibly damped.
+	const FRICTION = 0.02;
+	const DAMPING = 0.05;
+	const WALL_FRICTION = 0.04;
 	const MAX_SPEED = 300;
 	const ITERATIONS = 3;
 	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
@@ -54,17 +57,19 @@ const ValveSimulation = (() => {
 	const GRAIN_COLORS = ["#f07a5f", "#e9b64b", "#4fb8ab", "#7f93dd", "#d978b4", "#8cbf5a"];
 
 	// Pour reservoirs: two staggered files in the band above top-row spouts.
-	const SLOT_FILES = [-2.8, 2.8];
+	const SLOT_FILES = [-3.2, 3.2];
 	const SLOT_ROWS = 4;
-	const SLOT_DY = 5.9;
-	const SLOT_STAGGER = 2.95;
-	const SLOT_TOP = -POUR + 4.2;
+	const SLOT_DY = 6.6;
+	const SLOT_STAGGER = 3.3;
+	const SLOT_TOP = -POUR + 4.6;
 
 	// Preallocated scratch shared by the solver: nothing in the hot path allocates.
 	const sweepOut = { x: 0, y: 0, hit: false };
 	const nearest = { x: 0, y: 0, dist: 0, found: false };
 	const nrm = { x: 0, y: 0 };
 	const target = { x: 0, y: 0 };
+	// Contact normal of the deepest pair overlap found by penetrationAt.
+	const penNrm = { x: 0, y: -1 };
 
 	function clamp(v, lo, hi) {
 		return v < lo ? lo : v > hi ? hi : v;
@@ -388,6 +393,8 @@ const ValveSimulation = (() => {
 		const bx = binX(x);
 		const by = binY(y);
 		let worst = 0;
+		penNrm.x = 0;
+		penNrm.y = -1;
 		for (let oy = by - 1; oy <= by + 1; oy++) {
 			if (oy < 0 || oy >= BY) continue;
 			for (let ox = bx - 1; ox <= bx + 1; ox++) {
@@ -402,13 +409,20 @@ const ValveSimulation = (() => {
 					const minD = rad + sim.r[j];
 					const d2 = dx * dx + dy * dy;
 					if (d2 >= minD * minD) continue;
-					const pen = minD - Math.sqrt(d2);
-					if (pen > worst) worst = pen;
+				const pen = minD - Math.sqrt(d2);
+				if (pen > worst) {
+					worst = pen;
+					const d = Math.sqrt(d2);
+					if (d > 1e-8) {
+						penNrm.x = (x - sim.x[j]) / d;
+						penNrm.y = (y - sim.y[j]) / d;
+					}
 				}
 			}
 		}
-		return worst;
 	}
+	return worst;
+}
 
 	function pushGrain(sim, k, dx, dy, limit) {
 		const len2 = dx * dx + dy * dy;
@@ -495,6 +509,30 @@ const ValveSimulation = (() => {
 				tx = x0 + (tx - x0) * lo;
 				ty = y0 + (ty - y0) * lo;
 				wallHit = false;
+				// A pile contact blocks only its normal: project the velocity
+				// onto the contact tangent and spend the step sliding there.
+				// Without this the dip of the straight path into the contact
+				// circle scales the whole move down and stacks freeze instead
+				// of rolling apart.
+				const nx = penNrm.x;
+				const ny = penNrm.y;
+				let vx = sim.vx[k];
+				let vy = sim.vy[k];
+				const vn = vx * nx + vy * ny;
+				if (vn < 0) {
+					vx -= vn * nx;
+					vy -= vn * ny;
+					sim.vx[k] = vx;
+					sim.vy[k] = vy;
+				}
+				G.sweep(sim.layout, x0, y0, x0 + vx * h, y0 + vy * h, sim.r[k], sweepOut);
+				if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) <= deep0 + TOUCH) {
+					tx = sweepOut.x;
+					ty = sweepOut.y;
+					wallHit = sweepOut.hit;
+					target.x = x0 + vx * h;
+					target.y = y0 + vy * h;
+				}
 			}
 		}
 		sim.x[k] = tx;

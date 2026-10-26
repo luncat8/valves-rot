@@ -185,7 +185,7 @@
 		ctx.translate(0, G.POUR);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
-		R.renderGrains(ctx, sim, scene.palette);
+		R.renderGrains(ctx, sim, scene);
 		R.renderSelection(ctx, layout, selected);
 		ctx.restore();
 	}
