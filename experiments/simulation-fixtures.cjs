@@ -294,6 +294,36 @@ function coincident() {
 	return 3;
 }
 
+// A grain resting against a diagonal passage must accelerate downhill, not
+// lose its tangential travel to the first blocked sweep each substep.
+function slopeAndEditing() {
+	const layout = field({ "4,4": ["solid", [0, 2]] });
+	const v = valve(layout, 4, 4);
+	G.setAngle(v, Math.PI / 6);
+	const sim = S.create(layout, { turning: false });
+	const offset = G.HALF - S.R_GRAIN - 0.02;
+	const x = v.cx - Math.sin(v.angle) * offset;
+	const y = v.cy + Math.cos(v.angle) * offset;
+	assert.ok(S.addGrain(sim, x, y, S.R_GRAIN, 0) >= 0);
+	runChecked(sim, 0.18, "slope");
+	assert.ok(sim.x[0] > x + 2, "grain must travel downhill on a 30 degree slope");
+	assert.ok(sim.vx[0] > 15, "grain must retain downhill inertia");
+	const other = S.addGrain(sim, 36, -20, 2.2, 1);
+	assert.ok(other >= 0);
+	const otherX = sim.x[other];
+	assert.ok(S.replaceValve(sim, 44, () => 0.99));
+	assert.equal(sim.count, 1, "replacement only purges the edited cell");
+	assert.equal(sim.x[0], otherX);
+	assert.equal(sim.purged, 1);
+	const added = S.fillValve(sim, 44, 3);
+	assert.ok(added > 0, "replacement hollow chamber accepts a fill");
+	for (let k = 1; k < sim.count; k++) assert.equal(sim.color[k], 3);
+	assert.equal(S.fillValve(sim, 44, 4), 0, "repeated fill cannot overlap grains");
+	conserved(sim, "valve editing");
+	runChecked(sim, 0.3, "edited valve");
+}
+slopeAndEditing();
+
 // A rotating blind pocket: a one-port disc carrying a grain through a quarter
 // turn. The mouth shuts behind the grain, so the only thing that keeps it out of
 // metal is the disc carrying it.
@@ -310,7 +340,7 @@ function rotatingPocket() {
 	const turned = v.angle;
 	const moved = Math.atan2(sim.y[0] - v.cy, sim.x[0] - v.cx) - before;
 	assert.ok(Math.abs(turned - G.HALF_PI) < 1e-6, `the disc must reach its target, turned ${turned.toFixed(3)}`);
-	assert.ok(moved > 1.2 && moved < 2.6, `the pocket must carry the grain round, it moved ${moved.toFixed(2)} rad`);
+	assert.ok(moved > 1.2 && moved < Math.PI, `the pocket must carry the grain round, it moved ${moved.toFixed(2)} rad`);
 	assert.ok(Math.hypot(sim.x[0] - v.cx, sim.y[0] - v.cy) < RV, "a carried grain stays inside the rim");
 	assert.equal(sim.drained, 0);
 	assert.equal(sim.recovered, 0, "a carried grain never needs recovery");
@@ -379,13 +409,13 @@ function counters() {
 	return `${seeded} seeded, ${poured} poured`;
 }
 
-// The whole machine for twenty seconds across two seeds: counters must add up,
+// The whole machine for sixty seconds across two seeds: counters must add up,
 // grains must drain through aligned ports, and overlap/penetration stay bounded.
 function machine() {
 	const sim = S.create(G.createLayout(11));
 	const seeded = S.seed(sim);
 	const t0 = process.hrtime.bigint();
-	runChecked(sim, 20, "machine-11");
+	runChecked(sim, 60, "machine-11");
 	const alt = S.create(G.createLayout(12));
 	assert.ok(S.seed(alt) >= 40, "seed 12 must populate upper reservoirs");
 	runChecked(alt, 15, "machine-12");

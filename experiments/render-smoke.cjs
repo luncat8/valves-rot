@@ -187,6 +187,14 @@ c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, shiftKey: false });
 c.onkeydown({ key: "ArrowRight", preventDefault() {} });
 c.onkeydown({ key: "Enter", shiftKey: true, preventDefault() {} });
 c.onpointerleave();
+for (const skin of ["glm", "combined", "gpt"]) {
+	element("skin").value = skin;
+	element("skin").onchange();
+	frames.shift()((now += 16.7));
+}
+c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, ctrlKey: true, detail: 1 });
+c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault() {} });
+
 
 element("pause").onclick();
 element("step").onclick();

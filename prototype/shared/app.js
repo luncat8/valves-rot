@@ -10,7 +10,7 @@
 	const canvas = $("c");
 	const ctx = canvas.getContext("2d");
 	const airMap = R.makeAirMap(4);
-	const paint = { air: "#ffffff" };
+	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
 
 	let layout = G.createLayout(readSeed());
@@ -35,7 +35,7 @@
 		canvas.width = Math.round(G.SIZE * dpr);
 		canvas.height = Math.round(HEIGHT * dpr);
 		ctx.setTransform(canvas.width / G.SIZE, 0, 0, canvas.height / HEIGHT, 0, 0);
-		scene = R.buildScene(layout, paint.air, dpr);
+		scene = R.buildScene(layout, paint.air, dpr, paint.skin);
 		overlayDirty = true;
 	}
 
@@ -104,6 +104,11 @@
 		rebuild(true);
 		if (paused) drawFrame(true);
 	};
+	$("skin").onchange = () => {
+		paint.skin = $("skin").value;
+		rebuild(true);
+		if (paused) drawFrame(true);
+	};
 	$("model").onchange = () => {
 		overlayDirty = true;
 		if (paused) drawFrame(true);
@@ -124,7 +129,17 @@
 	};
 	canvas.onclick = event => {
 		selected = cellFromPointer(event);
-		turnSelected(event.shiftKey ? -1 : 1);
+		if (selected < 0 || event.detail > 1) return;
+		if (event.ctrlKey) S.fillValve(sim, selected);
+		else turnSelected(event.shiftKey ? -1 : 1);
+		if (paused) drawFrame(true);
+	};
+	canvas.ondblclick = event => {
+		event.preventDefault();
+		selected = cellFromPointer(event);
+		if (event.ctrlKey || !S.replaceValve(sim, selected)) return;
+		rebuild(true);
+		if (paused) drawFrame(true);
 	};
 	canvas.onkeydown = event => {
 		if (event.key === "Enter" || event.key === " ") {
@@ -170,7 +185,7 @@
 		ctx.translate(0, G.POUR);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
-		R.renderGrains(ctx, sim, S.GRAIN_COLORS);
+		R.renderGrains(ctx, sim, scene.palette);
 		R.renderSelection(ctx, layout, selected);
 		ctx.restore();
 	}

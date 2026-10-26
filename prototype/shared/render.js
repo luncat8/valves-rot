@@ -25,15 +25,20 @@ const ValveRender = (() => {
 
 	// Muted grey housings with a small hue and lightness variation per cell, kept
 	// out of the geometry layer so layout stays pure data.
-	function paintFor(rnd) {
+	function paintFor(rnd, skin) {
+		if (skin === "gpt") {
+			const light = 48 + rnd() * 12;
+			return { tileHi: hsl(165, 5, light + 5), tileLo: hsl(165, 5, light - 3), bodyHi: "#a6afab", bodyLo: "#7d8986" };
+		}
 		const hueTile = 210 + (rnd() * 24 - 12);
 		const hueBody = 214 + (rnd() * 20 - 10);
 		const sat = 5 + rnd() * 6;
 		const light = 43 + rnd() * 13;
+		const bodyLight = 23 + rnd() * 8;
 		return {
 			tileHi: hsl(hueTile, sat, light + 5),
 			tileLo: hsl(hueTile, sat, light - 5),
-			bodyHi: hsl(hueBody, sat, 23 + rnd() * 8),
+			bodyHi: hsl(hueBody, sat, skin === "glm" ? bodyLight + 8 : bodyLight),
 			bodyLo: hsl(hueBody, sat, 23 + rnd() * 8),
 		};
 	}
@@ -97,7 +102,7 @@ const ValveRender = (() => {
 		}
 	}
 
-	function paintBackground(layout, colors, air, dpr) {
+	function paintBackground(layout, colors, air, dpr, skin) {
 		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2, dpr);
 		const ctx = sheet.ctx;
 		ctx.fillStyle = GROUT;
@@ -128,7 +133,7 @@ const ValveRender = (() => {
 		for (let k = 0; k < layout.valves.length; k++) {
 			const v = layout.valves[k];
 			ctx.beginPath();
-			ctx.arc(v.cx, v.cy, RV + EDGE + 0.9, 0, TAU);
+			ctx.arc(v.cx, v.cy, RV + 1.1, 0, TAU);
 			ctx.lineWidth = 2.6;
 			ctx.strokeStyle = "rgba(14,17,22,0.5)";
 			ctx.stroke();
@@ -136,6 +141,7 @@ const ValveRender = (() => {
 		paintStrips(ctx, layout, air);
 		for (let k = 0; k < layout.valves.length; k++) {
 			const v = layout.valves[k];
+			if (skin === "gpt") continue;
 			for (let sx = -1; sx <= 1; sx += 2) {
 				for (let sy = -1; sy <= 1; sy += 2) {
 					const bx = v.cx + sx * (S / 2 - 10.5);
@@ -146,7 +152,10 @@ const ValveRender = (() => {
 					ctx.fill();
 					ctx.beginPath();
 					ctx.arc(bx, by, 3.2, 0, TAU);
-					ctx.fillStyle = "#8b949c";
+					const screw = ctx.createLinearGradient(bx - 3, by - 3, bx + 3, by + 3);
+					screw.addColorStop(0, "rgba(255,255,255,0.28)");
+					screw.addColorStop(1, "rgba(0,0,0,0.28)");
+					ctx.fillStyle = skin === "combined" ? "#8b949c" : screw;
 					ctx.fill();
 					ctx.beginPath();
 					ctx.moveTo(bx - 2.1, by);
@@ -162,7 +171,7 @@ const ValveRender = (() => {
 
 	// Rotor sprite: silhouette and body, then the clipped passages stroked from
 	// the exact collision primitives.
-	function paintRotor(v, colors, air, dpr) {
+	function paintRotor(v, colors, air, dpr, skin) {
 		const sheet = makeCanvas(SPR, SPR, dpr);
 		const ctx = sheet.ctx;
 		ctx.translate(SPR / 2, SPR / 2);
@@ -179,14 +188,20 @@ const ValveRender = (() => {
 		ctx.strokeStyle = EDGE_C;
 		ctx.stroke();
 		ctx.beginPath();
-		const ticks = 24;
+		ctx.beginPath();
+		ctx.arc(0, 0, RV - 2.9, 0, TAU);
+		ctx.lineWidth = 1;
+		ctx.strokeStyle = skin === "gpt" ? "rgba(255,255,255,0.24)" : "rgba(255,255,255,0.12)";
+		ctx.stroke();
+		ctx.beginPath();
+		const ticks = skin === "gpt" ? 0 : skin === "glm" ? 26 : 24;
 		for (let k = 0; k < ticks; k++) {
 			const a = (k / ticks) * TAU;
 			ctx.moveTo(Math.cos(a) * RV * 0.86, Math.sin(a) * RV * 0.86);
 			ctx.lineTo(Math.cos(a) * RV * 0.93, Math.sin(a) * RV * 0.93);
 		}
 		ctx.lineWidth = 1.4;
-		ctx.strokeStyle = "rgba(255,255,255,0.1)";
+		ctx.strokeStyle = skin === "glm" ? "rgba(10,13,17,0.4)" : "rgba(255,255,255,0.1)";
 		ctx.stroke();
 		ctx.save();
 		ctx.beginPath();
@@ -207,10 +222,10 @@ const ValveRender = (() => {
 		if (chamber > 0) {
 			ctx.beginPath();
 			ctx.arc(0, 0, chamber + WALL, 0, TAU);
-			ctx.fillStyle = WALL_V;
+			ctx.fillStyle = skin === "gpt" ? "#c2c9c3" : WALL_V;
 			ctx.fill();
 		}
-		ctx.strokeStyle = WALL_V;
+		ctx.strokeStyle = skin === "gpt" ? "#c2c9c3" : WALL_V;
 		ctx.lineWidth = HALF * 2 + WALL * 2;
 		ctx.stroke(v.path);
 		if (chamber > 0) {
@@ -226,13 +241,20 @@ const ValveRender = (() => {
 		return sheet.c;
 	}
 
-	function buildScene(layout, air, dpr) {
+	const PALETTES = {
+		glm: ["#ff655b", "#ffcf32", "#16cbb1", "#548dff", "#ed43dc", "#7cdd30"],
+		combined: ["#f07a5f", "#e9b64b", "#4fb8ab", "#7f93dd", "#d978b4", "#8cbf5a"],
+		gpt: ["#ed7761", "#f2c94c", "#74cbb8", "#8aa9e0", "#ca8fc5", "#a9c978"],
+	};
+
+	function buildScene(layout, air, dpr, skin = "glm") {
 		const rnd = G.rng(layout.seed * 2654435761);
-		const colors = layout.valves.map(() => paintFor(rnd));
-		const sprites = layout.valves.map((v, k) => paintRotor(v, colors[k], air, dpr));
+		const colors = layout.valves.map(() => paintFor(rnd, skin));
+		const sprites = layout.valves.map((v, k) => paintRotor(v, colors[k], air, dpr, skin));
 		return {
-			bg: paintBackground(layout, colors, air, dpr),
+			bg: paintBackground(layout, colors, air, dpr, skin),
 			sprites,
+			palette: PALETTES[skin],
 			sprite: SPR,
 			dpr,
 		};
@@ -295,6 +317,14 @@ const ValveRender = (() => {
 		const y = sim.y;
 		const r = sim.r;
 		const col = sim.color;
+		ctx.beginPath();
+		for (let k = 0; k < n; k++) {
+			const radius = r[k] * 1.16 + 0.5;
+			ctx.moveTo(x[k] + 0.6 + radius, y[k] + 0.8);
+			ctx.arc(x[k] + 0.6, y[k] + 0.8, radius, 0, TAU);
+		}
+		ctx.fillStyle = "rgba(14,24,25,0.32)";
+		ctx.fill();
 		for (let c = 0; c < palette.length; c++) {
 			let any = false;
 			ctx.beginPath();
@@ -302,7 +332,7 @@ const ValveRender = (() => {
 				if (col[k] !== c) continue;
 				const xk = x[k];
 				const yk = y[k];
-				const rk = r[k];
+				const rk = r[k] * 1.16;
 				ctx.moveTo(xk + rk, yk);
 				ctx.arc(xk, yk, rk, 0, TAU);
 				any = true;
@@ -314,7 +344,7 @@ const ValveRender = (() => {
 		ctx.fillStyle = "rgba(255,255,255,0.65)";
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
-			const rk = r[k];
+			const rk = r[k] * 1.16;
 			const hr = rk * 0.27;
 			const hx = x[k] - rk * 0.28;
 			const hy = y[k] - rk * 0.28;
@@ -328,7 +358,7 @@ const ValveRender = (() => {
 		for (let k = 0; k < n; k++) {
 			const xk = x[k];
 			const yk = y[k];
-			const rk = r[k];
+			const rk = r[k] * 1.16;
 			ctx.moveTo(xk + rk, yk);
 			ctx.arc(xk, yk, rk, 0, TAU);
 		}

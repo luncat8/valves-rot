@@ -30,7 +30,8 @@ const ValveSimulation = (() => {
 	const RESTITUTION = 0.1;
 	const REST_SPEED = 30;
 	const FRICTION = 0.35;
-	const DAMPING = 0.35;
+	const DAMPING = 0.12;
+	const WALL_FRICTION = 0.08;
 	const MAX_SPEED = 300;
 	const ITERATIONS = 3;
 	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
@@ -374,11 +375,10 @@ const ValveSimulation = (() => {
 			vx += press * nx;
 			vy += press * ny;
 		}
-		if (ny < 0) press += -GRAVITY * ny * h;
 		const tx = -ny;
 		const ty = nx;
 		const ut = (vx - wvx) * tx + (vy - wvy) * ty;
-		const jt = clamp(ut, -FRICTION * press, FRICTION * press);
+		const jt = clamp(ut, -WALL_FRICTION * press, WALL_FRICTION * press);
 		sim.vx[k] = vx - jt * tx;
 		sim.vy[k] = vy - jt * ty;
 	}
@@ -524,6 +524,16 @@ const ValveSimulation = (() => {
 			}
 		}
 		wallContact(sim, k, nrm.x, nrm.y, wvx, wvy, h);
+		// Consume the remaining time tangentially instead of sticking at first impact.
+		const dx = target.x - x0;
+		const dy = target.y - y0;
+		const length2 = dx * dx + dy * dy;
+		const used = length2 > 1e-12 ? clamp(((tx - x0) * dx + (ty - y0) * dy) / length2, 0, 1) : 1;
+		const remaining = h * (1 - used);
+		G.sweep(sim.layout, tx, ty, tx + sim.vx[k] * remaining, ty + sim.vy[k] * remaining, sim.r[k], sweepOut);
+		if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) > TOUCH) return;
+		sim.x[k] = sweepOut.x;
+		sim.y[k] = sweepOut.y;
 	}
 
 	function integrate(sim, h) {
@@ -883,6 +893,60 @@ const ValveSimulation = (() => {
 		return true;
 	}
 
+	function clearValve(sim, index) {
+		let w = 0;
+		for (let k = 0; k < sim.count; k++) {
+			if (G.cellAt(sim.x[k], sim.y[k]) === index) {
+				sim.purged++;
+				continue;
+			}
+			for (const key of ["x", "y", "vx", "vy", "r", "color"]) sim[key][w] = sim[key][k];
+			w++;
+		}
+		sim.count = w;
+	}
+
+	function replaceValve(sim, index, random) {
+		const old = sim.layout.valves[index];
+		if (!old) return false;
+		const rnd = random || Math.random;
+		const choices = [];
+		for (const ports of G.SOLID_SHAPES) choices.push(["solid", ports]);
+		for (const ports of G.HOLLOW_SHAPES) choices.push(["hollow", ports]);
+		choices.push(["hollow", []]);
+		const eligible = choices.filter(c => c[0] !== old.kind || c[1].join() !== old.ports.join());
+		const choice = eligible[(rnd() * eligible.length) | 0];
+		clearValve(sim, index);
+		const v = G.makeValve(old.i, old.j, choice[0], choice[1], 0, G.RV * 0.53);
+		G.setAngle(v, Math.round(old.angle / HALF_PI) * HALF_PI);
+		sim.layout.valves[index] = v;
+		sim.prevAngle[index] = sim.target[index] = v.angle;
+		sim.cos0[index] = v.cos;
+		sim.sin0[index] = v.sin;
+		sim.omega[index] = sim.stallTime[index] = 0;
+		sim.stalledList[index] = -1;
+		sim.dwell[index] = 1;
+		sim.reach = G.drainReach(sim.layout);
+		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
+		return true;
+	}
+
+	function fillValve(sim, index, color) {
+		const v = sim.layout.valves[index];
+		if (!v) return 0;
+		const chosen = color === undefined ? (Math.random() * GRAIN_COLORS.length) | 0 : color;
+		let added = 0;
+		const spacing = 2 * R_GRAIN + 0.4;
+		for (let y = -RV + R_GRAIN; y < RV; y += spacing) {
+			for (let x = -RV + R_GRAIN; x < RV; x += spacing) {
+				if (x * x + y * y > (RV - R_GRAIN) ** 2) continue;
+				if (!slotFree(sim, v.cx + x, v.cy + y, R_GRAIN)) continue;
+				if (addGrain(sim, v.cx + x, v.cy + y, R_GRAIN, chosen) >= 0) added++;
+			}
+		}
+		return added;
+	}
+
 	function setSpeed(sim, speed) {
 		sim.speed = speed > 0 ? speed : 0;
 	}
@@ -911,6 +975,8 @@ const ValveSimulation = (() => {
 		resume,
 		turn,
 		setSpeed,
+		replaceValve,
+		fillValve,
 		seed,
 		pour,
 		drain,
