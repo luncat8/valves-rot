@@ -3,17 +3,17 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Shared geometry — Rotary Valve Field</title>
+	<title>Combined — Rotary Valve Field</title>
 	<link rel="stylesheet" href="../style.css">
 </head>
 <body>
 	<a href="../../index.html">All prototypes</a>
-	<h1>Shared geometry / Rotary Valve Field</h1>
-	<p>One geometry layer drives drawing and collision, and one fixed-step solver drives the grains. Housings, rotor passages, seam apertures and clearance come from the same primitives, so a closed port is closed to a grain as well.</p>
+	<h1>Combined / Rotary Valve Field</h1>
+	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor.</p>
 	<div class="controls">
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
 		<button id="shuffle" type="button">Shuffle seed</button>
-		<button id="reset" type="button">Rebuild</button>
+		<button id="reset" type="button">Reset</button>
 		<button id="pause" type="button">Pause</button>
 		<button id="step" type="button">Step</button>
 		<button id="pour" type="button">Pour</button>
@@ -22,7 +22,7 @@
 		<label><input id="air" type="checkbox"> Black air</label>
 		<label><input id="model" type="checkbox"> Air model</label>
 	</div>
-	<canvas id="c" aria-label="Rotating valve field, shared geometry layer"></canvas>
+	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve."></canvas>
 	<p id="stats" aria-live="off"></p>
 	<script src="geometry.js"></script>
 	<script src="render.js"></script>

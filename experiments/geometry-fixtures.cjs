@@ -50,12 +50,17 @@ function fixtureLayouts() {
 	let hollow = 0;
 	let blanks = 0;
 	let elbows = 0;
+	const reach = G.drainReach(a);
+	let topReach = 0;
+	for (let i = 0; i < N; i++) topReach += reach[i];
+	assert.ok(topReach >= 3, `rotary drain reach must include top spouts, got ${topReach}`);
 	a.valves.forEach((v, index) => {
 		assert.equal(v.i, index % N);
 		assert.equal(v.j, (index / N) | 0);
 		assert.equal(v.cx, (v.i + 0.5) * G.S);
 		assert.equal(v.cy, (v.j + 0.5) * G.S);
 		assert.ok(v.ports.length <= 4);
+		if (!v.ports.length) assert.equal(reach[index], 0, "0-port valves must not be drain-reachable");
 		if (v.kind === "hollow") hollow++;
 		if (v.prims.length === 0) blanks++;
 		if (v.prims.some((pr) => pr.t === G.T_ARC)) elbows++;
@@ -194,6 +199,18 @@ function fixtureSeams(layout) {
 				compared++;
 			}
 		}
+	}
+	// Jaw continuity: clearance across the rim and across seam shut-off has no jump.
+	const jawProbe = G.makeValve(0, 0, "solid", [3], 0, 0);
+	let prevOut = null;
+	for (let a = 0; a <= 0.3; a += 0.005) {
+		G.setAngle(jawProbe, a);
+		const inside = G.valveClearance(jawProbe, jawProbe.cx, jawProbe.cy - (RV - 1e-4));
+		const outside = G.valveClearance(jawProbe, jawProbe.cx, jawProbe.cy - (RV + 1e-4));
+		assert.ok(Math.abs(inside - outside) < 0.04, "clearance must be continuous across r = RV");
+		const mouth = G.valveClearance(jawProbe, jawProbe.cx, jawProbe.cy - (RV + 0.05));
+		if (prevOut !== null) assert.ok(Math.abs(mouth - prevOut) < 0.25, "seam shut-off must not jump");
+		prevOut = mouth;
 	}
 	stats.roundTrips += compared;
 	return compared;
@@ -400,9 +417,9 @@ function fixtureClearanceValues(layout) {
 			const cx = v.cx + st.ux * along;
 			const cy = v.cy + st.uy * along;
 			// On the channel axis the clearance is the channel half width, unless
-			// the shut rotor rim or a sealed field edge is nearer than that.
+			// the rotor rim jaws or a sealed field edge are nearer than that.
 			let expect = HALF;
-			if (v.seam[s] <= 0) expect = Math.min(expect, along - RV);
+			if (v.seam[s] < HALF) expect = Math.min(expect, Math.hypot(along - RV, v.seam[s]));
 			if (!st.openOuter) expect = Math.min(expect, st.far - along);
 			assert.ok(Math.abs(G.airClearance(layout, cx, cy) - expect) < EPS, "channel clearance at its axis");
 			refs++;
@@ -573,7 +590,6 @@ function fixtureRecovery(layout) {
 // back into the housing channel, not through the rotor.
 function fixtureSeamClosure(layout) {
 	let closures = 0;
-let edges = 0;
 	let maxPush = 0;
 	for (const v of layout.valves) {
 		for (let s = 0; s < 4; s++) {

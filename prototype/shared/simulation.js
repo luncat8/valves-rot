@@ -2,12 +2,11 @@
 // conservative: every move is swept through ValveGeometry, so a closed port
 // stays closed and a grain can never cross a wall between two steps.
 //
-// Frames. Grains inside a rotor disc live in the material frame of that disc:
-// the disc carries the passages, so the grain's frame coordinates are preserved
-// while the disc turns, and the frame's gravity, centrifugal and Coriolis terms
-// describe the slide. Grains in the housing channels live in the world frame.
-// Both halves advance in the same substep, with the wall angle and the particles
-// sharing one elapsed simulation time.
+// Grains integrate velocity in the inertial world frame (gravity and air drag
+// never spin with a rotor). Inside a turning rotor disc, the sweep starts from
+// the passage-carried point and sweeps to the world inertial target: free air
+// inside a chamber exerts zero torque, while a moving passage wall intercepts
+// the sweep and transfers the exact rotor wall velocity and friction.
 const ValveSimulation = (() => {
 	"use strict";
 
@@ -34,32 +33,33 @@ const ValveSimulation = (() => {
 	const DAMPING = 0.35;
 	const MAX_SPEED = 300;
 	const ITERATIONS = 3;
-	// Overlap the solver tolerates before it calls a contact a touch. Kept tight on
-	// purpose: a loose slack lets a pile creep into itself one substep at a time.
+	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
+	// so a pile cannot creep into itself one substep at a time.
 	const TOUCH = 1e-3;
 	const TURN_DWELL_MIN = 0.35;
 	const STALL_LIMIT = 0.4;
 	// How far a closing rim may shove a grain to clear its mouth before the valve
-	// is considered jammed and holds still instead.
-	const WALL_PUSH = 1.2;
+	// holds still and lets the grain slide clear.
+	const WALL_PUSH = 1.25;
 	const TURN_RATE = TAU * 0.5;
 
-	const BIN = 6;
+	// Bin size >= 2 * max grain radius guarantees a 3x3 scan catches every pair.
+	const BIN = 8;
+	const INV_BIN = 1 / BIN;
 	const BX = Math.ceil(SIZE / BIN);
 	const BY = Math.ceil((SIZE + 2 * POUR) / BIN);
 	const BIN_COUNT = BX * BY;
 
 	const GRAIN_COLORS = ["#f07a5f", "#e9b64b", "#4fb8ab", "#7f93dd", "#d978b4", "#8cbf5a"];
 
-	// Pour reservoirs: two files of five slots in the band above every open
-	// top-row spout. The stagger keeps the two files more than a grain apart.
+	// Pour reservoirs: two staggered files in the band above top-row spouts.
 	const SLOT_FILES = [-2.8, 2.8];
-	const SLOT_ROWS = 5;
+	const SLOT_ROWS = 4;
 	const SLOT_DY = 5.9;
 	const SLOT_STAGGER = 2.95;
 	const SLOT_TOP = -POUR + 4.2;
 
-	// Scratch shared by the solver: nothing in the hot path allocates.
+	// Preallocated scratch shared by the solver: nothing in the hot path allocates.
 	const sweepOut = { x: 0, y: 0, hit: false };
 	const nearest = { x: 0, y: 0, dist: 0, found: false };
 	const nrm = { x: 0, y: 0 };
@@ -70,12 +70,12 @@ const ValveSimulation = (() => {
 	}
 
 	function binX(x) {
-		const b = (x * (1 / BIN)) | 0;
+		const b = (x * INV_BIN) | 0;
 		return b < 0 ? 0 : b >= BX ? BX - 1 : b;
 	}
 
 	function binY(y) {
-		const b = ((y + POUR) * (1 / BIN)) | 0;
+		const b = ((y + POUR) * INV_BIN) | 0;
 		return b < 0 ? 0 : b >= BY ? BY - 1 : b;
 	}
 
@@ -91,19 +91,32 @@ const ValveSimulation = (() => {
 		return R_MIN + G.hashUnit(seed, key, 41) * (R_MAX - R_MIN);
 	}
 
-	// A top-row spout only receives grains on the columns the seed selects, which
-	// is what makes the seeded reservoirs look scattered instead of uniform. A
-	// column that cannot reach the drain through the port graph is skipped: the
-	// band above it is a pocket, and pouring into one buries grains for good.
-	function slotUsed(sim, i) {
-		if (!sim.reach[i]) return false;
-		return G.hashUnit(sim.layout.seed | 0, i, 21) <= 0.62;
+	// Deterministic subset of drain-reachable top-row spouts, with a fallback so
+	// every seed activates at least three spouts when the layout allows it.
+	function buildSpoutMask(layout, reach) {
+		const mask = new Uint8Array(N);
+		const seed = layout.seed | 0;
+		let chosen = 0;
+		for (let i = 0; i < N; i++) {
+			if (!reach[i] || G.hashUnit(seed, i, 21) > 0.55) continue;
+			mask[i] = 1;
+			chosen++;
+		}
+		const start = (seed >>> 0) % N;
+		for (let n = 0; n < N && chosen < 3; n++) {
+			const i = (start + n) % N;
+			if (!reach[i] || mask[i]) continue;
+			mask[i] = 1;
+			chosen++;
+		}
+		return mask;
 	}
 
 	function create(layout, options) {
 		const o = options || {};
 		const capacity = Math.max(64, o.capacity || CAPACITY);
 		const slots = N * N;
+		const reach = G.drainReach(layout);
 		const sim = {
 			layout,
 			turning: o.turning !== false,
@@ -112,15 +125,19 @@ const ValveSimulation = (() => {
 			count: 0,
 			x: new Float64Array(capacity),
 			y: new Float64Array(capacity),
+			origX: new Float64Array(capacity),
+			origY: new Float64Array(capacity),
 			vx: new Float64Array(capacity),
 			vy: new Float64Array(capacity),
 			r: new Float64Array(capacity),
 			color: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
-			reach: G.drainReach(layout),
+			reach,
+			spoutMask: buildSpoutMask(layout, reach),
 			binCount: new Int32Array(BIN_COUNT),
 			binStart: new Int32Array(BIN_COUNT + 1),
 			// wall schedule
+			prevAngle: new Float64Array(slots),
 			cos0: new Float64Array(slots),
 			sin0: new Float64Array(slots),
 			target: new Float64Array(slots),
@@ -148,12 +165,13 @@ const ValveSimulation = (() => {
 			maxOverlap: 0,
 			maxPen: 0,
 		};
+		sim.stalledList.fill(-1);
 		initSchedule(sim);
 		return sim;
 	}
 
-	// Per-valve quarter-turn schedule. The angles themselves stay in the layout,
-	// which is the single owner of the geometry state.
+	// Per-valve quarter-turn schedule. Angles live on the layout, which remains
+	// the single owner of geometry state.
 	function initSchedule(sim) {
 		const seed = sim.layout.seed | 0;
 		const valves = sim.layout.valves;
@@ -161,6 +179,7 @@ const ValveSimulation = (() => {
 			const v = valves[k];
 			const angle = sim.turning ? ((G.hashUnit(seed, k, 1) * 4) | 0) * HALF_PI : v.angle;
 			G.setAngle(v, angle);
+			sim.prevAngle[k] = angle;
 			sim.target[k] = angle;
 			sim.cos0[k] = v.cos;
 			sim.sin0[k] = v.sin;
@@ -171,10 +190,6 @@ const ValveSimulation = (() => {
 		}
 	}
 
-	// Wall motion for one substep, with the angular velocity taken from the angle
-	// the disc actually turned through in this substep. A disc that would close a
-	// seam on a grain stalls instead of crushing it: the valve waits, the grain
-	// gets the step to slide clear, and nothing has to be teleported.
 	function updateTurns(sim, h) {
 		const seed = sim.layout.seed | 0;
 		const valves = sim.layout.valves;
@@ -182,19 +197,19 @@ const ValveSimulation = (() => {
 		for (let k = 0; k < valves.length; k++) {
 			const v = valves[k];
 			const before = v.angle;
+			sim.prevAngle[k] = before;
 			sim.cos0[k] = v.cos;
 			sim.sin0[k] = v.sin;
-			let target = sim.target[k];
-			if (sim.turning && before === target) {
+			let goal = sim.target[k];
+			if (sim.turning && before === goal) {
 				sim.dwell[k] -= h;
 				if (sim.dwell[k] <= 0) {
-					// one way round, so the disc visits every quarter of the cell
-					target = sim.target[k] = before + sim.dir[k] * HALF_PI;
+					goal = sim.target[k] = before + sim.dir[k] * HALF_PI;
 					sim.dwell[k] = TURN_DWELL_MIN + G.hashUnit(seed, k, 11) * 1.2;
 				}
 			}
-			const remaining = target - before;
-			if (remaining === 0) {
+			const remaining = goal - before;
+			if (remaining === 0 || sim.speed <= 0) {
 				sim.omega[k] = 0;
 				continue;
 			}
@@ -207,73 +222,138 @@ const ValveSimulation = (() => {
 		if (moved > 0) settleWalls(sim, h);
 	}
 
-	// A turn can leave grains on the wrong side of a moving wall. The rim first
-	// shoves such a grain back into its corridor, which is what a closing mouth
-	// does to a pile. A grain the shove cannot reach within WALL_PUSH holds the
-	// valve back instead: the step is undone and, after STALL_LIMIT seconds of
-	// refusing, the valve gives the quarter up and tries the other way round, so
-	// a jam clears itself and nothing has to be crushed.
+	// Checks whether a rotor substep leaves every grain in valid air without
+	// scissor-pinching two grains across a closing mouth. A small mouth nudge
+	// within WALL_PUSH is allowed when the pile behind it has room; otherwise the
+	// valve stalls and, after STALL_LIMIT seconds, backs off to the previous detent.
+	function pinchAt(sim, k, tx, ty, stamp, limit) {
+		const rad = sim.r[k];
+		const x0 = sim.x[k];
+		const y0 = sim.y[k];
+		const bx = binX(tx);
+		const by = binY(ty);
+		for (let oy = by - 1; oy <= by + 1; oy++) {
+			if (oy < 0 || oy >= BY) continue;
+			for (let ox = bx - 1; ox <= bx + 1; ox++) {
+				if (ox < 0 || ox >= BX) continue;
+				const b = oy * BX + ox;
+				const end = sim.binStart[b + 1];
+				for (let p = sim.binStart[b]; p < end; p++) {
+					const j = sim.order[p];
+					if (j === k) continue;
+					const jv = G.cellAt(sim.x[j], sim.y[j]);
+					const jMoved = sim.pushFlag[j] > 0 && sim.stalledList[jv] !== stamp;
+					const jx = jMoved ? sim.pushX[j] : sim.x[j];
+					const jy = jMoved ? sim.pushY[j] : sim.y[j];
+					const minD = rad + sim.r[j];
+					const dx = jx - tx;
+					const dy = jy - ty;
+					const d2 = dx * dx + dy * dy;
+					if (d2 >= minD * minD) continue;
+					const newPen = minD - Math.sqrt(d2);
+					if (newPen <= limit) continue;
+					const dx0 = sim.x[j] - x0;
+					const dy0 = sim.y[j] - y0;
+					const oldPen = minD - Math.sqrt(dx0 * dx0 + dy0 * dy0);
+					if (newPen > oldPen + 0.02) return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	function settleWalls(sim, h) {
 		const layout = sim.layout;
 		const valves = layout.valves;
+		const stamp = sim.steps;
 		sim.stalled = 0;
 		for (let k = 0; k < sim.count; k++) {
-			sim.pushFlag[k] = 0;
 			const x = sim.x[k];
 			const y = sim.y[k];
+			sim.pushX[k] = x;
+			sim.pushY[k] = y;
+			sim.pushFlag[k] = 0;
 			const vi = G.cellAt(x, y);
 			const om = sim.omega[vi];
-			if (om === 0 || sim.stalledList[vi] === sim.steps) continue;
+			if (om === 0 || sim.stalledList[vi] === stamp) continue;
 			const v = valves[vi];
 			const dx = x - v.cx;
 			const dy = y - v.cy;
+			const d2 = dx * dx + dy * dy;
+			const freeR = v.chamberR - sim.r[k];
 			let tx = x;
 			let ty = y;
-			if (dx * dx + dy * dy < RV * RV) {
+			let kind = 0;
+			if (d2 < RV * RV && (freeR <= 0 || d2 > freeR * freeR)) {
 				const c0 = sim.cos0[vi];
 				const s0 = sim.sin0[vi];
 				const rx = dx * c0 + dy * s0;
 				const ry = dy * c0 - dx * s0;
 				tx = v.cx + rx * v.cos - ry * v.sin;
 				ty = v.cy + rx * v.sin + ry * v.cos;
+				kind = 1;
 			}
-			if (G.airClearance(layout, tx, ty) >= sim.r[k] - 1e-6) continue;
-			// The rim sweeping across a mouth shoves a grain out of the way; only a
-			// grain that would have to jump holds the valve back.
-			G.nearestAir(layout, tx, ty, sim.r[k], nearest);
-			if (nearest.found && nearest.dist <= WALL_PUSH) {
-				sim.pushX[k] = nearest.x;
-				sim.pushY[k] = nearest.y;
-				sim.pushFlag[k] = 1;
-				continue;
+			if (G.airClearance(layout, tx, ty) < sim.r[k] - 1e-6) {
+				G.nearestAir(layout, tx, ty, sim.r[k], nearest);
+				if (!nearest.found || nearest.dist > WALL_PUSH) {
+					sim.stalledList[vi] = stamp;
+					sim.stalled++;
+					continue;
+				}
+				tx = nearest.x;
+				ty = nearest.y;
+				kind = 2;
 			}
-			sim.stalledList[vi] = sim.steps;
+			sim.pushX[k] = tx;
+			sim.pushY[k] = ty;
+			sim.pushFlag[k] = kind;
+		}
+		for (let pass = 0; pass < 4; pass++) {
+			let dropped = 0;
+			for (let k = 0; k < sim.count; k++) {
+				if (sim.pushFlag[k] !== 1) continue;
+				const x = sim.x[k];
+				const y = sim.y[k];
+				const vi = G.cellAt(x, y);
+				if (sim.stalledList[vi] === stamp) continue;
+				if (!pinchAt(sim, k, sim.pushX[k], sim.pushY[k], stamp, 0.25)) continue;
+				if (G.airClearance(layout, x, y) < sim.r[k] - 1e-6) continue;
+				sim.pushX[k] = x;
+				sim.pushY[k] = y;
+				sim.pushFlag[k] = 0;
+				dropped++;
+			}
+			if (!dropped) break;
+		}
+		for (let k = 0; k < sim.count; k++) {
+			if (!sim.pushFlag[k]) continue;
+			const vi = G.cellAt(sim.x[k], sim.y[k]);
+			if (sim.stalledList[vi] === stamp) continue;
+			if (!pinchAt(sim, k, sim.pushX[k], sim.pushY[k], stamp, 0.55)) continue;
+			sim.stalledList[vi] = stamp;
 			sim.stalled++;
 		}
 		for (let k = 0; k < valves.length; k++) {
-			if (sim.stalledList[k] !== sim.steps) {
+			if (sim.stalledList[k] !== stamp) {
 				sim.stallTime[k] = 0;
 				continue;
 			}
 			const v = valves[k];
-			G.setAngle(v, v.angle - sim.omega[k] * h);
+			G.setAngle(v, sim.prevAngle[k]);
 			sim.omega[k] = 0;
 			sim.stallTime[k] += h;
 			if (sim.stallTime[k] <= STALL_LIMIT) continue;
-			// Give the turn up and spring back to the nearest detent, where every
-			// port lines up with a channel again: a valve left stuck mid-turn would
-			// hold its seams half shut and throttle the cells around it.
-			sim.target[k] = Math.round(v.angle / HALF_PI) * HALF_PI;
+			const pos = sim.target[k] >= v.angle;
+			sim.target[k] = (pos ? Math.floor((v.angle + 1e-6) / HALF_PI) : Math.ceil((v.angle - 1e-6) / HALF_PI)) * HALF_PI;
 			sim.dir[k] = -sim.dir[k];
+			sim.dwell[k] = TURN_DWELL_MIN;
 			sim.stallTime[k] = 0;
 			sim.stalls++;
 		}
 	}
 
-	// Clearance gradient points away from the nearest wall, which is exactly the
-	// contact normal of a distance field.
 	function normalAt(layout, x, y) {
-		const e = 0.55;
+		const e = 0.25;
 		const gx = G.airClearance(layout, x + e, y) - G.airClearance(layout, x - e, y);
 		const gy = G.airClearance(layout, x, y + e) - G.airClearance(layout, x, y - e);
 		const len = Math.sqrt(gx * gx + gy * gy);
@@ -283,10 +363,6 @@ const ValveSimulation = (() => {
 		return true;
 	}
 
-	// Impulse against a wall moving with (wvx, wvy). Restitution only acts on the
-	// closing part of the relative velocity, so a grain riding a wall feels no
-	// kick. Friction is limited by the normal impulse plus the weight the contact
-	// carries, which is what lets a grain rest on a slope instead of creeping.
 	function wallContact(sim, k, nx, ny, wvx, wvy, h) {
 		let vx = sim.vx[k];
 		let vy = sim.vy[k];
@@ -307,9 +383,6 @@ const ValveSimulation = (() => {
 		sim.vy[k] = vy - jt * ty;
 	}
 
-	// Deepest overlap of grain k if it sat at (x, y), read from the bins of this
-	// step. Used both to stop a fall from diving into a pile and to keep a
-	// correction from pressing a grain deeper into its neighbours.
 	function penetrationAt(sim, k, x, y) {
 		const rad = sim.r[k];
 		const bx = binX(x);
@@ -337,11 +410,6 @@ const ValveSimulation = (() => {
 		return worst;
 	}
 
-	// Pushes a grain by at most (dx, dy) and returns the fraction it managed. Walls
-	// come first, then the pile: the move may not leave the grain deeper inside a
-	// neighbour than `limit`, the overlap the correction is resolving. A stack
-	// hands its overlap upwards one contact at a time; refusing outright instead
-	// froze every correction, and a dead end then kept its load compressed.
 	function pushGrain(sim, k, dx, dy, limit) {
 		const len2 = dx * dx + dy * dy;
 		if (len2 < 1e-12) return 0;
@@ -367,54 +435,52 @@ const ValveSimulation = (() => {
 		sim.vy[k] = vy * scale;
 	}
 
-	// One substep inside a rotor disc, done in the material frame of the disc:
-	// the disc carries its passages, so gravity, centrifugal and Coriolis terms
-	// belong in that frame. The world velocity is what the sweep and the contact
-	// solver use, so it is converted back once and the target is a plain step
-	// along it from the position the disc has already carried the grain to.
-	function rotorStep(sim, k, v, vi, h, damp) {
-		const om = sim.omega[vi];
-		const dx = sim.x[k] - v.cx;
-		const dy = sim.y[k] - v.cy;
-		const rx = dx * v.cos + dy * v.sin;
-		const ry = dy * v.cos - dx * v.sin;
-		const ux = sim.vx[k] + om * dy;
-		const uy = sim.vy[k] - om * dx;
-		const c = v.cos;
-		const sn = v.sin;
-		let fx = (ux * c + uy * sn) * damp;
-		let fy = (uy * c - ux * sn) * damp;
-		fx += (GRAVITY * sn + om * om * rx + 2 * om * fy) * h;
-		fy += (GRAVITY * c + om * om * ry - 2 * om * fx) * h;
-		const speed2 = fx * fx + fy * fy;
-		if (speed2 > MAX_SPEED * MAX_SPEED) {
-			const scale = MAX_SPEED / Math.sqrt(speed2);
-			fx *= scale;
-			fy *= scale;
+	// Advances the sweep start point with any passage rotation while recording the
+	// grain's pre-step inertial world coordinates in (origX, origY).
+	function carryWalls(sim, h) {
+		const valves = sim.layout.valves;
+		const stamp = sim.steps;
+		for (let k = 0; k < sim.count; k++) {
+			let ox = sim.x[k];
+			let oy = sim.y[k];
+			const kind = sim.pushFlag[k];
+			sim.pushFlag[k] = 0;
+			if (kind > 0) {
+				const vi = G.cellAt(ox, oy);
+				if (sim.stalledList[vi] !== stamp) {
+					const px = sim.pushX[k];
+					const py = sim.pushY[k];
+					sim.x[k] = px;
+					sim.y[k] = py;
+					if (kind === 2) {
+						ox = px;
+						oy = py;
+						sim.pushed++;
+						const mx = px - sim.origX[k];
+						const my = py - sim.origY[k];
+						const v = valves[vi];
+						const om = sim.omega[vi];
+						if (normalAt(sim.layout, px, py)) {
+							wallContact(sim, k, nrm.x, nrm.y, -om * (py - v.cy), om * (px - v.cx), h);
+						} else if (mx * mx + my * my > 0) {
+							sim.vx[k] *= 0.5;
+							sim.vy[k] *= 0.5;
+						}
+					}
+				}
+			}
+			sim.origX[k] = ox;
+			sim.origY[k] = oy;
 		}
-		sim.vx[k] = fx * c - fy * sn - om * dy;
-		sim.vy[k] = fx * sn + fy * c + om * dx;
-		target.x = sim.x[k] + sim.vx[k] * h;
-		target.y = sim.y[k] + sim.vy[k] * h;
 	}
 
-	function worldStep(sim, k, h, damp) {
-		sim.vx[k] *= damp;
-		sim.vy[k] = (sim.vy[k] + GRAVITY * h) * damp;
-		clampSpeed(sim, k);
-		target.x = sim.x[k] + sim.vx[k] * h;
-		target.y = sim.y[k] + sim.vy[k] * h;
-	}
-
-	function applyMove(sim, k, v, vi, inRotor, h) {
+	function applyMove(sim, k, h) {
 		const x0 = sim.x[k];
 		const y0 = sim.y[k];
 		G.sweep(sim.layout, x0, y0, target.x, target.y, sim.r[k], sweepOut);
-		// The pile in the way limits the move as well: bisect to the first sample
-		// that is not deeper inside a neighbour than the grain already is, so a
-		// falling grain lands on the pile instead of diving into it.
 		let tx = sweepOut.x;
 		let ty = sweepOut.y;
+		let wallHit = sweepOut.hit;
 		if (penetrationAt(sim, k, tx, ty) > TOUCH) {
 			const deep0 = penetrationAt(sim, k, x0, y0);
 			if (penetrationAt(sim, k, tx, ty) > deep0 + TOUCH) {
@@ -428,84 +494,56 @@ const ValveSimulation = (() => {
 				}
 				tx = x0 + (tx - x0) * lo;
 				ty = y0 + (ty - y0) * lo;
-				sweepOut.hit = true;
+				wallHit = false;
 			}
 		}
-		sweepOut.x = tx;
-		sweepOut.y = ty;
 		sim.x[k] = tx;
 		sim.y[k] = ty;
-		if (!sweepOut.hit) return;
-		if (!normalAt(sim.layout, sweepOut.x, sweepOut.y)) {
+		if (!wallHit) return;
+		if (!normalAt(sim.layout, tx, ty)) {
 			const mx = target.x - x0;
 			const my = target.y - y0;
 			const len = Math.sqrt(mx * mx + my * my) || 1;
 			nrm.x = -mx / len;
 			nrm.y = -my / len;
 		}
+		const vi = G.cellAt(tx, ty);
+		const om = sim.omega[vi];
 		let wvx = 0;
 		let wvy = 0;
-		if (inRotor) {
-			const om = sim.omega[vi];
-			wvx = -om * (sweepOut.y - v.cy);
-			wvy = om * (sweepOut.x - v.cx);
+		if (om !== 0) {
+			const v = sim.layout.valves[vi];
+			const rx = tx - v.cx;
+			const ry = ty - v.cy;
+			const rHit = Math.sqrt(rx * rx + ry * ry);
+			// Rotor walls inside the rim, plus the outer rim face itself (radial
+			// normal), carry the rotor's tangential velocity; housing side walls stay fixed.
+			if (rHit < RV || (rHit < RV + sim.r[k] + 0.8 && nrm.x * rx + nrm.y * ry > 0.7 * rHit)) {
+				wvx = -om * ry;
+				wvy = om * rx;
+			}
 		}
 		wallContact(sim, k, nrm.x, nrm.y, wvx, wvy, h);
 	}
 
-	// The disc carries what sits in its passages. This runs before any move is
-	// swept, so the sweep never starts from a position the disc has already
-	// turned past, and it also applies the shove a closing rim gave a grain.
-	function carryWalls(sim) {
-		const valves = sim.layout.valves;
-		for (let k = 0; k < sim.count; k++) {
-			const vi = G.cellAt(sim.x[k], sim.y[k]);
-			const v = valves[vi];
-			const c0 = sim.cos0[vi];
-			const s0 = sim.sin0[vi];
-			const dx = sim.x[k] - v.cx;
-			const dy = sim.y[k] - v.cy;
-			if ((v.cos !== c0 || v.sin !== s0) && dx * dx + dy * dy < RV * RV) {
-				const rx = dx * c0 + dy * s0;
-				const ry = dy * c0 - dx * s0;
-				sim.x[k] = v.cx + rx * v.cos - ry * v.sin;
-				sim.y[k] = v.cy + rx * v.sin + ry * v.cos;
-			}
-			if (!sim.pushFlag[k]) continue;
-			sim.pushFlag[k] = 0;
-			if (sim.stalledList[vi] === sim.steps) continue;
-			sim.x[k] = sim.pushX[k];
-			sim.y[k] = sim.pushY[k];
-			sim.pushed++;
-		}
-	}
-
 	function integrate(sim, h) {
-		const layout = sim.layout;
 		const damp = 1 - DAMPING * h;
 		for (let k = 0; k < sim.count; k++) {
-			const vi = G.cellAt(sim.x[k], sim.y[k]);
-			const v = layout.valves[vi];
-			const dx = sim.x[k] - v.cx;
-			const dy = sim.y[k] - v.cy;
-			const inRotor = dx * dx + dy * dy < RV * RV;
-			if (inRotor) rotorStep(sim, k, v, vi, h, damp);
-			else worldStep(sim, k, h, damp);
-			applyMove(sim, k, v, vi, inRotor, h);
+			sim.vx[k] *= damp;
+			sim.vy[k] = (sim.vy[k] + GRAVITY * h) * damp;
+			clampSpeed(sim, k);
+			target.x = sim.origX[k] + sim.vx[k] * h;
+			target.y = sim.origY[k] + sim.vy[k] * h;
+			applyMove(sim, k, h);
 		}
 	}
 
-	// Rotating a disc can close a seam under a grain that has not moved at all, so
-	// the solver puts such a grain back into verified air and records how far it
-	// had to travel instead of deleting it or leaving it inside metal.
 	function repair(sim) {
 		const layout = sim.layout;
 		for (let k = 0; k < sim.count; k++) {
 			const rad = sim.r[k];
 			const clear = G.airClearance(layout, sim.x[k], sim.y[k]);
 			if (clear >= rad - 1e-6) continue;
-			// how far inside metal the grain got before the repair, i.e. what the
-			// wall motion did to it, not what the repair left behind
 			const wall = rad - clear;
 			if (wall > sim.maxPen) sim.maxPen = wall;
 			G.nearestAir(layout, sim.x[k], sim.y[k], rad, nearest);
@@ -529,8 +567,6 @@ const ValveSimulation = (() => {
 		}
 	}
 
-	// Counting sort into a uniform grid. Every grain is smaller than half a cell,
-	// so a 3x3 scan of bins is enough to see every touching pair exactly once.
 	function buildBins(sim) {
 		const counts = sim.binCount;
 		const starts = sim.binStart;
@@ -560,8 +596,6 @@ const ValveSimulation = (() => {
 		let ny;
 		let d;
 		if (d2 < 1e-8) {
-			// Coincident grains have no axis of their own. The direction is derived
-			// from the index pair so the split is deterministic and repeatable.
 			const a = ((i * 5 + j * 3) % 32) * (TAU / 32) + 0.37;
 			nx = Math.cos(a);
 			ny = Math.sin(a);
@@ -576,8 +610,6 @@ const ValveSimulation = (() => {
 			const half = pen * 0.5 + 1e-4;
 			const fi = pushGrain(sim, i, -nx * half, -ny * half, pen);
 			const fj = pushGrain(sim, j, nx * half, ny * half, pen);
-			// A side held by a wall or by a pile hands its share to the other one,
-			// which is what lets a stack open upwards instead of locking up.
 			if (fi < 0.99 || fj < 0.99) {
 				const rest = pen - (fi + fj) * half;
 				if (rest > 1e-3) {
@@ -607,8 +639,6 @@ const ValveSimulation = (() => {
 		sim.vy[j] -= jt * ty;
 	}
 
-	// Iterative reconciliation: the pair corrections are positional and wall
-	// limited, so a pile relaxes towards non-overlap without ever opening a wall.
 	function resolvePairs(sim) {
 		const order = sim.order;
 		const starts = sim.binStart;
@@ -660,8 +690,6 @@ const ValveSimulation = (() => {
 		}
 	}
 
-	// Only the drain lip removes a grain, and it is counted. Anything trapped in
-	// the machine stays in the machine and stays counted.
 	function compact(sim) {
 		let w = 0;
 		for (let k = 0; k < sim.count; k++) {
@@ -684,8 +712,9 @@ const ValveSimulation = (() => {
 
 	function step(sim, dt) {
 		const h = dt > 0 ? dt : STEP;
+		buildBins(sim);
 		updateTurns(sim, h);
-		carryWalls(sim);
+		carryWalls(sim, h);
 		buildBins(sim);
 		integrate(sim, h);
 		repair(sim);
@@ -697,8 +726,6 @@ const ValveSimulation = (() => {
 		sim.steps++;
 	}
 
-	// Fixed-step accumulator with bounded catch-up: a long stall advances at most
-	// MAX_STEPS substeps and drops the rest instead of spiralling.
 	function advance(sim, wallDt) {
 		if (!(wallDt > 0)) return 0;
 		const cap = STEP * MAX_STEPS;
@@ -712,8 +739,6 @@ const ValveSimulation = (() => {
 		return steps;
 	}
 
-	// Called when the page becomes visible again: drop the backlog rather than
-	// fast-forwarding a hidden tab through seconds of simulation.
 	function resume(sim) {
 		sim.accumulator = 0;
 	}
@@ -753,12 +778,42 @@ const ValveSimulation = (() => {
 		return addGrain(sim, x, y, rad) >= 0;
 	}
 
-	// Seeded upper reservoirs: a few top-row spouts, each with two files of
-	// grains in the pour band, fully determined by the layout seed.
-	function seed(sim) {
+	// Non-overlapping cluster inside an upper hollow reservoir.
+	function seedChamber(sim, v, idx) {
+		const seed = sim.layout.seed | 0;
 		let added = 0;
+		const cRad = grainRadius(seed, idx * 16);
+		if (slotFree(sim, v.cx, v.cy, cRad) && addGrain(sim, v.cx, v.cy, cRad) >= 0) added++;
+		const ring = v.chamberR - R_MAX - 0.65;
+		if (ring < 2 * R_MAX + 0.4) return added;
+		const base = G.hashUnit(seed, idx, 29) * TAU;
+		const spokes = ring >= 6.8 ? 6 : 5;
+		for (let s = 0; s < spokes; s++) {
+			const a = base + (s * TAU) / spokes;
+			const rad = grainRadius(seed, idx * 16 + s + 1);
+			const x = v.cx + Math.cos(a) * ring;
+			const y = v.cy + Math.sin(a) * ring;
+			if (slotFree(sim, x, y, rad) && addGrain(sim, x, y, rad) >= 0) added++;
+		}
+		return added;
+	}
+
+	// Seeds selected upper hollow chambers and top-row pour spouts, both strictly
+	// from the drain-reachable set and deterministic from layout.seed.
+	function seed(sim) {
+		const layout = sim.layout;
+		const s = layout.seed | 0;
+		let added = 0;
+		let chambers = 0;
+		for (let k = 0; k < N * 3 && chambers < 7; k++) {
+			const v = layout.valves[k];
+			if (v.kind !== "hollow" || !sim.reach[k]) continue;
+			if (G.hashUnit(s, k, 23) > 0.78) continue;
+			added += seedChamber(sim, v, k);
+			chambers++;
+		}
 		for (let i = 0; i < N; i++) {
-			if (!slotUsed(sim, i)) continue;
+			if (!sim.spoutMask[i]) continue;
 			for (let f = 0; f < SLOT_FILES.length; f++) {
 				for (let row = 0; row < SLOT_ROWS; row++) if (addAtSlot(sim, i, f, row)) added++;
 			}
@@ -766,15 +821,19 @@ const ValveSimulation = (() => {
 		return added;
 	}
 
-	// Fills the lowest free slot first, so a pour lands on top of the pile.
+	// Fills the lowest free pour-spout slots first across active spouts, then any
+	// remaining drain-reachable spouts if more space is needed.
 	function pour(sim, n) {
 		const want = n === undefined ? 24 : n;
 		let added = 0;
-		for (let row = SLOT_ROWS - 1; row >= 0 && added < want; row--) {
-			for (let f = 0; f < SLOT_FILES.length && added < want; f++) {
-				for (let i = 0; i < N && added < want; i++) {
-					if (!slotUsed(sim, i)) continue;
-					if (addAtSlot(sim, i, f, row)) added++;
+		for (let pass = 0; pass < 2 && added < want; pass++) {
+			for (let row = SLOT_ROWS - 1; row >= 0 && added < want; row--) {
+				for (let f = 0; f < SLOT_FILES.length && added < want; f++) {
+					for (let i = 0; i < N && added < want; i++) {
+						const primary = sim.spoutMask[i] === 1;
+						if (pass === 0 ? !primary : primary || !sim.reach[i]) continue;
+						if (addAtSlot(sim, i, f, row)) added++;
+					}
 				}
 			}
 		}
@@ -801,22 +860,26 @@ const ValveSimulation = (() => {
 		sim.drained = 0;
 		sim.purged = 0;
 		sim.recovered = 0;
+		sim.pushed = 0;
 		sim.maxPush = 0;
 		sim.maxOverlap = 0;
 		sim.maxPen = 0;
 		sim.stalled = 0;
 		sim.stalls = 0;
-		sim.stalledList.fill(0);
+		sim.stalledList.fill(-1);
 		sim.stallTime.fill(0);
 		sim.pushFlag.fill(0);
-		sim.pushed = 0;
 		initSchedule(sim);
 	}
 
-	// Quarters of a turn on one valve, used by the fixtures and by the controls.
+	// Snaps from the current target detent so repeated clicks mid-turn always
+	// land on exact quarter-turn port alignments.
 	function turn(sim, index, quarters) {
 		if (index < 0 || index >= sim.layout.valves.length) return false;
-		sim.target[index] = sim.layout.valves[index].angle + quarters * HALF_PI;
+		const base = Math.round(sim.target[index] / HALF_PI) * HALF_PI;
+		sim.target[index] = base + quarters * HALF_PI;
+		sim.dwell[index] = TURN_DWELL_MIN + 1;
+		sim.stallTime[index] = 0;
 		return true;
 	}
 

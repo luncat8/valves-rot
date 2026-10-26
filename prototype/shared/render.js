@@ -1,7 +1,7 @@
 const ValveRender = (() => {
 	"use strict";
 
-	const G = ValveGeometry;
+	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
 	const N = G.N;
 	const S = G.S;
 	const SIZE = G.SIZE;
@@ -15,6 +15,7 @@ const ValveRender = (() => {
 	const EDGE_C = "#15191f";
 	const WALL_V = "#c6cfd9";
 	const WALL_H = "#98a3af";
+	const SELECT_C = "#efc179";
 	const RIM_BAND = 1.1;
 	const SPR = Math.ceil(2 * RV + 6);
 
@@ -43,7 +44,7 @@ const ValveRender = (() => {
 		c.height = Math.max(1, Math.round(h * dpr));
 		const ctx = c.getContext("2d");
 		ctx.scale(dpr, dpr);
-		return { c: c, ctx: ctx };
+		return { c, ctx };
 	}
 
 	function roundRect(ctx, x, y, w, h, r) {
@@ -61,12 +62,15 @@ const ValveRender = (() => {
 	}
 
 	// A housing channel is three nested bands: dark edge, light material, air.
-	// Strip geometry is cell-local, so the caller translates to the cell center.
-	// The corridor is drawn from just inside the rotor rim so it visually meets
-	// the clipped passage; the length must stay exactly that span. Bands are
-	// painted in passes across the whole field: neighbouring corridors cross at
-	// every cell edge, so a strip's dark edge must never land on another's air.
+	// Bands are painted in passes across the whole field so a strip's dark edge
+	// never lands on top of a neighbour's air at shared cell crossings.
 	const HALF_EDGE = HALF + WALL + EDGE;
+	const STRIP_PASSES = [
+		[HALF_EDGE, EDGE_C],
+		[HALF + WALL, WALL_H],
+		[HALF, ""],
+	];
+
 	function paintStripBand(ctx, st, half, color) {
 		const inner = RV - 1;
 		const len = st.far - inner;
@@ -79,16 +83,15 @@ const ValveRender = (() => {
 	}
 
 	function paintStrips(ctx, layout, air) {
-		const passes = [
-			[HALF_EDGE, EDGE_C],
-			[HALF + WALL, WALL_H],
-			[HALF, air],
-		];
-		for (const pass of passes) {
-			for (const v of layout.valves) {
+		STRIP_PASSES[2][1] = air;
+		for (let p = 0; p < STRIP_PASSES.length; p++) {
+			const half = STRIP_PASSES[p][0];
+			const color = STRIP_PASSES[p][1];
+			for (let k = 0; k < layout.valves.length; k++) {
+				const v = layout.valves[k];
 				ctx.save();
 				ctx.translate(v.cx, v.cy);
-				for (const st of v.strips) paintStripBand(ctx, st, pass[0], pass[1]);
+				for (let s = 0; s < v.strips.length; s++) paintStripBand(ctx, v.strips[s], half, color);
 				ctx.restore();
 			}
 		}
@@ -99,8 +102,7 @@ const ValveRender = (() => {
 		const ctx = sheet.ctx;
 		ctx.fillStyle = GROUT;
 		ctx.fillRect(0, 0, SIZE, SIZE + G.POUR * 2);
-		// The sheet also covers the pour bands, so field coordinates are shifted
-		// down once and every painter keeps working in world units.
+		// Shift down once so world coordinates [-POUR, SIZE + POUR] fill the sheet.
 		ctx.translate(0, G.POUR);
 		const inset = 1.6;
 		const tile = S - inset * 2;
@@ -123,7 +125,8 @@ const ValveRender = (() => {
 			ctx.strokeStyle = "rgba(255,255,255,0.16)";
 			ctx.stroke();
 		}
-		for (const v of layout.valves) {
+		for (let k = 0; k < layout.valves.length; k++) {
+			const v = layout.valves[k];
 			ctx.beginPath();
 			ctx.arc(v.cx, v.cy, RV + EDGE + 0.9, 0, TAU);
 			ctx.lineWidth = 2.6;
@@ -131,9 +134,10 @@ const ValveRender = (() => {
 			ctx.stroke();
 		}
 		paintStrips(ctx, layout, air);
-		for (const v of layout.valves) {
-			for (const sx of [-1, 1]) {
-				for (const sy of [-1, 1]) {
+		for (let k = 0; k < layout.valves.length; k++) {
+			const v = layout.valves[k];
+			for (let sx = -1; sx <= 1; sx += 2) {
+				for (let sy = -1; sy <= 1; sy += 2) {
 					const bx = v.cx + sx * (S / 2 - 10.5);
 					const by = v.cy + sy * (S / 2 - 10.5);
 					ctx.beginPath();
@@ -156,9 +160,8 @@ const ValveRender = (() => {
 		return sheet.c;
 	}
 
-	// Rotor sprite: silhouette and body, then the clipped passages. The passage
-	// strokes are the drawing of the very prims used for collision, and the disk
-	// clip is the same rotor radius, so drawn air and modelled air agree.
+	// Rotor sprite: silhouette and body, then the clipped passages stroked from
+	// the exact collision primitives.
 	function paintRotor(v, colors, air, dpr) {
 		const sheet = makeCanvas(SPR, SPR, dpr);
 		const ctx = sheet.ctx;
@@ -192,21 +195,30 @@ const ValveRender = (() => {
 		ctx.lineCap = "butt";
 		ctx.lineJoin = "miter";
 		const chamber = v.chamberR;
-		const disc = (r, color) => {
+		if (chamber > 0) {
 			ctx.beginPath();
-			ctx.arc(0, 0, r, 0, TAU);
-			ctx.fillStyle = color;
+			ctx.arc(0, 0, chamber + WALL + EDGE, 0, TAU);
+			ctx.fillStyle = EDGE_C;
 			ctx.fill();
-		};
-		if (chamber > 0) disc(chamber + WALL + EDGE, EDGE_C);
+		}
 		ctx.strokeStyle = EDGE_C;
 		ctx.lineWidth = HALF * 2 + WALL * 2 + EDGE * 2;
 		ctx.stroke(v.path);
-		if (chamber > 0) disc(chamber + WALL, WALL_V);
+		if (chamber > 0) {
+			ctx.beginPath();
+			ctx.arc(0, 0, chamber + WALL, 0, TAU);
+			ctx.fillStyle = WALL_V;
+			ctx.fill();
+		}
 		ctx.strokeStyle = WALL_V;
 		ctx.lineWidth = HALF * 2 + WALL * 2;
 		ctx.stroke(v.path);
-		if (chamber > 0) disc(chamber, air);
+		if (chamber > 0) {
+			ctx.beginPath();
+			ctx.arc(0, 0, chamber, 0, TAU);
+			ctx.fillStyle = air;
+			ctx.fill();
+		}
 		ctx.strokeStyle = air;
 		ctx.lineWidth = HALF * 2;
 		ctx.stroke(v.path);
@@ -220,9 +232,9 @@ const ValveRender = (() => {
 		const sprites = layout.valves.map((v, k) => paintRotor(v, colors[k], air, dpr));
 		return {
 			bg: paintBackground(layout, colors, air, dpr),
-			sprites: sprites,
+			sprites,
 			sprite: SPR,
-			dpr: dpr,
+			dpr,
 		};
 	}
 
@@ -230,25 +242,33 @@ const ValveRender = (() => {
 		ctx.clearRect(0, -G.POUR, SIZE, SIZE + G.POUR * 2);
 		ctx.drawImage(scene.bg, 0, -G.POUR, SIZE, SIZE + G.POUR * 2);
 		const half = scene.sprite / 2;
-		for (const v of layout.valves) {
+		const valves = layout.valves;
+		for (let k = 0; k < valves.length; k++) {
+			const v = valves[k];
 			if (v.angle === 0) {
-				ctx.drawImage(scene.sprites[v.j * N + v.i], v.cx - half, v.cy - half, scene.sprite, scene.sprite);
+				ctx.drawImage(scene.sprites[k], v.cx - half, v.cy - half, scene.sprite, scene.sprite);
 				continue;
 			}
 			ctx.save();
 			ctx.translate(v.cx, v.cy);
 			ctx.rotate(v.angle);
-			ctx.drawImage(scene.sprites[v.j * N + v.i], -half, -half, scene.sprite, scene.sprite);
+			ctx.drawImage(scene.sprites[k], -half, -half, scene.sprite, scene.sprite);
 			ctx.restore();
 		}
 	}
 
-	// Coarse air map of the same clearance field the contact solver will query.
-	// Sampling well under a grain radius makes the drawn air and the model easy to
-	// compare by eye.
+	function renderSelection(ctx, layout, selected) {
+		if (selected < 0 || selected >= layout.valves.length) return;
+		const v = layout.valves[selected];
+		roundRect(ctx, v.cx - S / 2 + 2.2, v.cy - S / 2 + 2.2, S - 4.4, S - 4.4, 5);
+		ctx.strokeStyle = SELECT_C;
+		ctx.lineWidth = 1.8;
+		ctx.stroke();
+	}
+
 	function renderAirMap(map, layout) {
-		const w = Math.ceil(SIZE / map.cell);
-		const h = Math.ceil((SIZE + G.POUR * 2) / map.cell);
+		const w = map.w;
+		const h = map.h;
 		const data = map.img.data;
 		let k = 0;
 		for (let y = 0; y < h; y++) {
@@ -266,25 +286,51 @@ const ValveRender = (() => {
 		map.ctx.putImageData(map.img, 0, 0);
 	}
 
-	// Grains are drawn last, over the housings, in one pass with a single fill
-	// colour per grain. Nothing here allocates: the palette is a plain table and
-	// the path is reused.
+	// Batched by palette entry so 1,000 grains still issue a handful of draw calls
+	// and zero allocations.
 	function renderGrains(ctx, sim, palette) {
+		const n = sim.count;
+		if (!n) return;
 		const x = sim.x;
 		const y = sim.y;
 		const r = sim.r;
-		for (let k = 0; k < sim.count; k++) {
-			ctx.fillStyle = palette[sim.color[k]];
+		const col = sim.color;
+		for (let c = 0; c < palette.length; c++) {
+			let any = false;
 			ctx.beginPath();
-			ctx.arc(x[k], y[k], r[k], 0, TAU);
+			for (let k = 0; k < n; k++) {
+				if (col[k] !== c) continue;
+				const xk = x[k];
+				const yk = y[k];
+				const rk = r[k];
+				ctx.moveTo(xk + rk, yk);
+				ctx.arc(xk, yk, rk, 0, TAU);
+				any = true;
+			}
+			if (!any) continue;
+			ctx.fillStyle = palette[c];
 			ctx.fill();
 		}
-		ctx.strokeStyle = EDGE_C;
-		ctx.lineWidth = 0.6;
+		ctx.fillStyle = "rgba(255,255,255,0.65)";
 		ctx.beginPath();
-		for (let k = 0; k < sim.count; k++) {
-			ctx.moveTo(x[k] + r[k], y[k]);
-			ctx.arc(x[k], y[k], r[k], 0, TAU);
+		for (let k = 0; k < n; k++) {
+			const rk = r[k];
+			const hr = rk * 0.27;
+			const hx = x[k] - rk * 0.28;
+			const hy = y[k] - rk * 0.28;
+			ctx.moveTo(hx + hr, hy);
+			ctx.arc(hx, hy, hr, 0, TAU);
+		}
+		ctx.fill();
+		ctx.strokeStyle = EDGE_C;
+		ctx.lineWidth = 0.65;
+		ctx.beginPath();
+		for (let k = 0; k < n; k++) {
+			const xk = x[k];
+			const yk = y[k];
+			const rk = r[k];
+			ctx.moveTo(xk + rk, yk);
+			ctx.arc(xk, yk, rk, 0, TAU);
 		}
 		ctx.stroke();
 	}
@@ -296,17 +342,18 @@ const ValveRender = (() => {
 		c.width = w;
 		c.height = h;
 		const ctx = c.getContext("2d");
-		return { canvas: c, ctx: ctx, img: ctx.createImageData(w, h), cell: cell, w: w, h: h };
+		return { canvas: c, ctx, img: ctx.createImageData(w, h), cell, w, h };
 	}
 
 	return {
-		SPR: SPR,
-		buildScene: buildScene,
-		renderScene: renderScene,
-		makeAirMap: makeAirMap,
-		renderAirMap: renderAirMap,
-		renderGrains: renderGrains,
-		makeCanvas: makeCanvas,
+		SPR,
+		buildScene,
+		renderScene,
+		renderSelection,
+		makeAirMap,
+		renderAirMap,
+		renderGrains,
+		makeCanvas,
 	};
 })();
-if (typeof module !== "undefined") module.exports = ValveRender;
+if (typeof module !== "undefined" && module.exports) module.exports = ValveRender;

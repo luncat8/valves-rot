@@ -304,9 +304,9 @@ const ValveGeometry = (() => {
 		return { seed, valves };
 	}
 
-	// Cells whose ports lead, without turning anything, to the drain spout. The
-	// pour slots come from this set so a seeded grain is not dropped into a
-	// pocket that no valve can ever open.
+	// Cells that can pass grains to a drain spout under rotor turns. Only 0-port
+	// cells are permanently sealed; any cell with at least one port visits all
+	// four housing sides as it rotates.
 	function drainReach(layout) {
 		const reach = new Uint8Array(N * N);
 		const queue = new Int32Array(N * N);
@@ -314,7 +314,7 @@ const ValveGeometry = (() => {
 		let tail = 0;
 		for (let i = 0; i < N; i++) {
 			const k = (N - 1) * N + i;
-			if (layout.valves[k].ports.indexOf(1) < 0) continue;
+			if (!layout.valves[k].ports.length) continue;
 			reach[k] = 1;
 			queue[tail++] = k;
 		}
@@ -323,13 +323,11 @@ const ValveGeometry = (() => {
 			const i = k % N;
 			const j = (k / N) | 0;
 			for (let s = 0; s < 4; s++) {
-				if (layout.valves[k].ports.indexOf(s) < 0) continue;
 				const ni = i + DX[s];
 				const nj = j + DY[s];
 				if (ni < 0 || ni >= N || nj < 0 || nj >= N) continue;
 				const nk = nj * N + ni;
-				if (reach[nk]) continue;
-				if (layout.valves[nk].ports.indexOf((s + 2) & 3) < 0) continue;
+				if (reach[nk] || !layout.valves[nk].ports.length) continue;
 				reach[nk] = 1;
 				queue[tail++] = nk;
 			}
@@ -412,9 +410,10 @@ const ValveGeometry = (() => {
 		const lx = x - v.cx;
 		const ly = y - v.cy;
 		const r2 = lx * lx + ly * ly;
+		const r = Math.sqrt(r2);
 		let best = 0;
-		if (r2 < RV * RV) {
-			const room = RV - Math.sqrt(r2);
+		if (r < RV) {
+			const room = RV - r;
 			const px = lx * v.cos + ly * v.sin;
 			const py = ly * v.cos - lx * v.sin;
 			const prims = v.prims;
@@ -432,29 +431,26 @@ const ValveGeometry = (() => {
 				if (seam <= 0) continue;
 				const a = lx * DX[s] + ly * DY[s];
 				if (a <= 0) continue;
-				const lat = Math.abs(ly * DX[s] - lx * DY[s]);
-				if (seam - lat > rim) rim = seam - lat;
+				const gap = seam - Math.abs(ly * DX[s] - lx * DY[s]);
+				if (gap <= 0) continue;
+				const jaw = Math.sqrt(room * room + gap * gap);
+				if (jaw > rim) rim = jaw;
 			}
 			if (best > rim) best = rim;
+			return best;
 		}
-		// Outside the rotor only the corridor grants air; inside it the passages and
-		// the seam opening already describe the mouth, and letting the corridor
-		// reach under the rim would open the aperture wider than the seam.
-		if (r2 < RV * RV) return best;
+		// Outside the rotor only the corridor grants air; the rim jaws at ±seam
+		// bound any disc centered near a narrowing or shut aperture continuously.
+		const rimOut = r - RV;
 		for (let s = 0; s < 4; s++) {
 			const ux = DX[s];
 			const uy = DY[s];
-			const lat = ly * ux - lx * uy;
-			const seam = v.seam[s];
-			const st = v.strips[s];
-			let face = stripDepth(st, lx, ly);
+			const face = stripDepth(v.strips[s], lx, ly);
 			if (face <= 0) continue;
-			if (Math.abs(lat) >= seam) {
-				const a = lx * ux + ly * uy;
-				const rim = a - RV;
-				if (rim < face) face = rim;
-			}
-			if (face > best) best = face;
+			const gap = v.seam[s] - Math.abs(ly * ux - lx * uy);
+			const jaw = gap > 0 ? Math.sqrt(rimOut * rimOut + gap * gap) : rimOut;
+			const clear = jaw < face ? jaw : face;
+			if (clear > best) best = clear;
 		}
 		return best;
 	}
@@ -672,15 +668,21 @@ const ValveGeometry = (() => {
 			// primitive projections cannot see either, and the gradient is flat
 			// across a cap, which leaves a grain at a closing mouth stranded.
 			if (probe.inside) {
-				const reach = Math.sqrt(((x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy))) || 1;
+				const reach = Math.sqrt((x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy)) || 1;
 				const inward = RV - radius;
 				if (inward > 0) probeConsider(v.cx + ((x - v.cx) / reach) * inward, v.cy + ((y - v.cy) / reach) * inward);
 				for (let s = 0; s < 4; s++) {
 					const seam = v.seam[s];
-					if (seam <= radius) continue;
+					if (seam <= 0) continue;
 					const ux = DX[s];
 					const uy = DY[s];
 					const lat = (y - v.cy) * ux - (x - v.cx) * uy;
+					const gap = seam - Math.abs(lat);
+					if (gap > 0 && gap < radius) {
+						const jawIn = RV - Math.sqrt(radius * radius - gap * gap) - 1e-4;
+						if (jawIn > 0) probeConsider(v.cx + ((x - v.cx) / reach) * jawIn, v.cy + ((y - v.cy) / reach) * jawIn);
+					}
+					if (seam <= radius) continue;
 					const slack = seam - radius;
 					if (Math.abs(lat) <= slack) continue;
 					const shift = Math.sign(lat) * (Math.abs(lat) - slack);
@@ -694,9 +696,13 @@ const ValveGeometry = (() => {
 				const l = (py - st.ay) * DX[s] - (px - st.ax) * DY[s];
 				let ca = clamp(a, -st.hx, st.hx - (st.openOuter ? 0 : radius));
 				const cl = clamp(l, -band, band);
-				// Beside a shut seam the rim is a wall, so the corridor projection has
-				// to stop a radius short of it instead of sitting in the mouth.
-				if (Math.abs(cl) >= v.seam[s] && mid + ca < RV + radius) ca = RV + radius - mid;
+				// Beside a shut or narrowing seam the rim jaws bound the mouth, so the
+				// corridor projection stops far enough out to clear both jaws.
+				const gap = v.seam[s] - Math.abs(cl);
+				if (gap < radius) {
+					const push = (gap > 0 ? Math.sqrt(radius * radius - gap * gap) : radius) + 1e-4;
+					if (mid + ca < RV + push) ca = RV + push - mid;
+				}
 				const ox = st.ax + DX[s] * ca - DY[s] * cl;
 				const oy = st.ay + DY[s] * ca + DX[s] * cl;
 				probeConsider(v.cx + ox, v.cy + oy);

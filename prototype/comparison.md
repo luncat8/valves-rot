@@ -29,4 +29,4 @@ Use GLM Max's cached cutaway presentation and analytical geometry as the startin
 - Both pair solvers are quadratic. Neither has deterministic seeded regression fixtures or a measured performance budget.
 - The vanilla port intentionally shares a simpler semantic toolbar rather than preserving React/Tailwind layouts, SVG samples and editorial sidebars. Simulations remain distinct for comparison.
 - The draft's most important goal, convincing granular flow through intermittently aligned ports, remains the acceptance gate for a combined version.
-- `prototype/shared/` now provides the shared geometry, seam apertures and clearance field that neither prototype had; it has no grain solver yet, so the flow gap remains open.
+- `prototype/shared/` now provides the shared geometry, continuous seam apertures, fixed-step conservative grain solver (`simulation.js`), upper chamber/spout reservoirs and pointer/keyboard valve rotation; visual browser comparison across all prototype pages remains before archiving `0.1.1-plan.md`.

@@ -5,7 +5,7 @@ Open `index.html` directly in a browser to choose a prototype. No install, build
 - `prototype/draft.md`: original specification.
 - `prototype/comparison.md`: requirements comparison and solver limitations.
 - `0.1.1-plan.md`: standalone combined-version design and acceptance gates.
-- `prototype/shared/`: the combined implementation under construction. `geometry.js` is the single source of truth for housings, passages, seam apertures and clearance; `render.js` strokes those same primitives.
-- `experiments/`: Node validation scripts; run `node experiments/geometry-check.cjs`, `node experiments/geometry-fixtures.cjs` and `node experiments/render-smoke.cjs`.
+- `prototype/shared/`: combined implementation. `geometry.js` is the single source of truth for housings, passages, seam apertures and clearance; `simulation.js` advances conserved grains through `sweep` with moving-wall contact and spatial bins; `render.js` strokes those same primitives and batches grains.
+- `experiments/`: Node validation and timing scripts (`geometry-check.cjs`, `geometry-fixtures.cjs`, `simulation-fixtures.cjs`, `render-smoke.cjs`, `simulation-bench.cjs`).
 
-The two converted prototypes share a plain HTML toolbar, retaining distinct rendering and physics implementations. GPT supports click or arrow keys plus Enter/Space to turn a selected valve. Rotation speed controls valves, not gravity.
+Click any valve, or focus the canvas and use arrow keys plus Enter/Space (Shift to reverse), to turn a selected valve by 90°. Rotation speed controls valves, not gravity.

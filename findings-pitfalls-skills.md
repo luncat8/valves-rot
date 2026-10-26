@@ -16,3 +16,14 @@
 - Render cell-local geometry only after translating to the cell centre, and check the background sheet's size covers every pour spout; a clipped sheet loses them silently.
 - Paint crossing corridors in material passes over the whole field (edge, material, air), never strip by strip, or one corridor's dark edge lands on another's air.
 - For recovery, project onto each eroded primitive with a clamp and keep the nearest verified candidate. A fixed ring search can fail in a narrow channel; a projection always yields a point that is air by construction, and it stays deterministic if ties keep the first primitive.
+- Outside a narrowing seam (`0 < seam < HALF`), a disc centered at `|lat| < seam` still contacts the two solid rim jaws at `(±seam, RV)`. Cap corridor clearance by `hypot(r - RV, seam - |lat|)` (and inside by `hypot(RV - r, seam - |lat|)`): treating `|lat| < seam` as full-width channel air creates a discontinuous cliff the instant `seam` reaches zero, letting grains sink into the rim and stalling the rotor.
+
+# Simulation and rendering pitfalls
+
+- Integrate velocity in the inertial world frame (`orig + v * h`) while sweeping from the passage-carried position. Adding world velocity on top of a carried position double-counts `omega × r`, and rotating or damping inside a central hollow chamber makes empty air drag free-falling grains onto the ceiling.
+- Relax passive passage carries across seam mouths in a fixed-point loop before checking forced wall pinches; single-pass index order lets an inner grain rotate into a mouth grain that later drops its carry against a stationary corridor neighbour.
+- Initialize per-step stall stamps to `-1` (never `0`, which collides with `steps === 0` and stalls every valve on frame 0). When a stalled valve times out past 45°, back off to the detent behind the turn (`floor` for `+`, `ceil` for `-`), never `Math.round` which re-targets the blocked detent in an infinite loop.
+- Distinguish `G.sweep` wall hits from mid-air pile-bisection stops; applying clearance-gradient wall impulses on a mid-air pile contact kicks grains along the distant wall gradient.
+- Rotary drain reachability is graph connectivity over `ports.length > 0` (every ported rotor visits all four sides as it turns), not static `angle = 0` port alignment which starves whole seeds.
+- Mapping world `[-POUR, SIZE + POUR]` onto canvas `[0, SIZE + 2 * POUR]` requires `ctx.translate(0, +POUR)`, with background and overlay blitted at `(0, -POUR)` every frame even when `putImageData` updates are throttled.
+

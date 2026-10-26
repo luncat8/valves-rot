@@ -176,30 +176,33 @@ function quarterTurnElbow() {
 	return count(sim, left);
 }
 
-// Two nearly aligned ports: the throat is the grain radius. A hair under and the
-// grain is held in the channel, a hair over and it drops into the rotor.
+// Two nearly aligned ports across a cell edge: when the receiving port's seam
+// is narrower than the grain radius, the grain rests on the rim jaws outside
+// the lower rotor; widened past the grain radius, it drops into the lower rotor.
 function nearlyAligned() {
-	const layout = field({ "4,0": ["solid", [3]] });
-	const v = valve(layout, 4, 0);
-	const narrow = angleForSeam(v, 3, 1.9);
-	G.setAngle(v, narrow);
-	// The schedule owns the angle, so a sim created after the angle is set keeps
-	// that angle as its target and holds it.
+	const layout = field({
+		"4,0": ["solid", [1, 3]],
+		"4,1": ["solid", [3]],
+	});
+	const lower = valve(layout, 4, 1);
+	const narrow = angleForSeam(lower, 3, 1.9);
+	G.setAngle(lower, narrow);
 	const shut = S.create(layout, { turning: false });
-	assert.ok(v.seam[3] < 1.9, "the narrow throat must be narrower than the grain");
-	assert.ok(S.addGrain(shut, 4.5 * SIDE, -18, 2.5, 0) >= 0, "the pour band must take the grain");
+	assert.ok(lower.seam[3] < 1.9, "the narrow throat must be narrower than the grain");
+	assert.ok(S.addGrain(shut, 4.5 * SIDE, 0.5 * SIDE, 2.5, 0) >= 0, "upper rotor must take the grain");
 	runChecked(shut, 2, "narrow throat");
-	// The corridor tucks a hair under the rim, so "in the channel" is judged
-	// against the rim less that tuck rather than against the rim itself.
-	assert.ok(Math.hypot(shut.x[0] - v.cx, shut.y[0] - v.cy) > RV - 1.2, "a narrow throat holds the grain in the channel");
+	assert.ok(
+		Math.hypot(shut.x[0] - lower.cx, shut.y[0] - lower.cy) >= RV + 1.4,
+		"a narrow throat holds the grain outside the rim jaws",
+	);
 
-	const wide = angleForSeam(v, 3, 3.6);
-	G.setAngle(v, wide);
+	const wide = angleForSeam(lower, 3, 3.6);
+	G.setAngle(lower, wide);
 	const open = S.create(layout, { turning: false });
-	assert.ok(v.seam[3] > 3.5, "the wide throat must clear the grain");
-	assert.ok(S.addGrain(open, 4.5 * SIDE, -18, 2.5, 1) >= 0, "the pour band must take the grain");
+	assert.ok(lower.seam[3] > 3.5, "the wide throat must clear the grain");
+	assert.ok(S.addGrain(open, 4.5 * SIDE, 0.5 * SIDE, 2.5, 1) >= 0, "upper rotor must take the grain");
 	runChecked(open, 2, "wide throat");
-	assert.ok(Math.hypot(open.x[0] - v.cx, open.y[0] - v.cy) < RV - 12, "a wide throat lets the grain into the rotor");
+	assert.ok(Math.hypot(open.x[0] - lower.cx, open.y[0] - lower.cy) < RV - 12, "a wide throat lets the grain into the lower rotor");
 	assert.equal(shut.recovered + open.recovered, 0);
 	conserved(shut, "narrow throat");
 	conserved(open, "wide throat");
@@ -313,6 +316,17 @@ function rotatingPocket() {
 	assert.equal(sim.recovered, 0, "a carried grain never needs recovery");
 	conserved(sim, "rotating blind pocket");
 	tally(sim);
+
+	// Free air inside a spinning hollow chamber exerts zero torque on a falling grain.
+	const chamberLayout = field({ "4,4": ["hollow", [], 13] });
+	const cv = valve(chamberLayout, 4, 4);
+	const chamberSim = S.create(chamberLayout, { turning: false });
+	assert.ok(S.addGrain(chamberSim, cv.cx, cv.cy - 5, 2.2, 0) >= 0);
+	S.turn(chamberSim, 4 * N + 4, 1);
+	for (let k = 0; k < 15; k++) S.step(chamberSim, STEP);
+	assert.ok(Math.abs(chamberSim.x[0] - cv.cx) < 1e-9, "chamber air must not drag a free-falling grain");
+	conserved(chamberSim, "spinning chamber free fall");
+
 	return moved.toFixed(2);
 }
 
@@ -365,20 +379,26 @@ function counters() {
 	return `${seeded} seeded, ${poured} poured`;
 }
 
-// The whole machine for twelve seconds: the counters must add up and no grain
-// may end up inside metal or behind a wall.
+// The whole machine for twenty seconds across two seeds: counters must add up,
+// grains must drain through aligned ports, and overlap/penetration stay bounded.
 function machine() {
 	const sim = S.create(G.createLayout(11));
 	const seeded = S.seed(sim);
 	const t0 = process.hrtime.bigint();
-	runChecked(sim, 12, "machine");
+	runChecked(sim, 20, "machine-11");
+	const alt = S.create(G.createLayout(12));
+	assert.ok(S.seed(alt) >= 40, "seed 12 must populate upper reservoirs");
+	runChecked(alt, 15, "machine-12");
 	const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-	conserved(sim, "machine");
-	assert.ok(sim.maxOverlap < 1.5, `bounded overlap, got ${sim.maxOverlap.toFixed(2)}`);
-	assert.ok(sim.maxPen < 0.6, `bounded wall penetration, got ${sim.maxPen.toFixed(2)}`);
-	assert.ok(sim.maxPush < 3, `no teleports, biggest recovery push ${sim.maxPush.toFixed(2)} px`);
-	assert.ok(sim.recovered < 120, `recovery must stay rare, got ${sim.recovered}`);
+	conserved(sim, "machine-11");
+	conserved(alt, "machine-12");
+	assert.ok(sim.drained > 0 && alt.drained > 0, `grains must reach the drain (${sim.drained}, ${alt.drained})`);
+	assert.ok(sim.maxOverlap < 1 && alt.maxOverlap < 1, `bounded overlap, got ${sim.maxOverlap.toFixed(2)}`);
+	assert.ok(sim.maxPen < 0.25 && alt.maxPen < 0.25, `bounded wall penetration, got ${sim.maxPen.toFixed(3)}`);
+	assert.ok(sim.maxPush < 1.5 && alt.maxPush < 1.5, `no teleports, biggest recovery push ${sim.maxPush.toFixed(2)} px`);
+	assert.ok(sim.recovered < 40, `recovery must stay rare, got ${sim.recovered}`);
 	tally(sim);
+	tally(alt);
 	return `${seeded} seeded, ${sim.count} active, ${sim.drained} drained, ${ms.toFixed(0)} ms`;
 }
 
