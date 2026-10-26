@@ -139,21 +139,27 @@ const ValveGeometry = (() => {
 	// downward at the field border so grains can be poured in and drained out.
 	// Adjacent cells describe the same channel, so corridors overlap by a hair:
 	// the shared edge must not depend on which cell a grain is assigned to.
+	// The inner end also tucks under the rim: a straight corridor edge against a
+	// circular rim leaves a crescent of air belonging to neither, and a grain
+	// could sit in that seam of nothing.
 	const OVERLAP = 0.5;
+	const INNER = 1;
 	function buildStrips(i, j) {
 		const strips = [];
 		for (let s = 0; s < 4; s++) {
+			const spout = (s === 3 && j === 0) || (s === 1 && j === N - 1);
 			const ux = DX[s];
 			const uy = DY[s];
-			const spout = (s === 3 && j === 0) || (s === 1 && j === N - 1);
 			const far = S / 2 + OVERLAP + (spout ? POUR : 0);
+			const inner = RV - INNER;
 			const openOuter = !(s === 0 && i === N - 1) && !(s === 2 && i === 0);
 			strips.push({
 				ux,
 				uy,
-				ax: (ux * (RV + far)) / 2,
-				ay: (uy * (RV + far)) / 2,
-				hx: (far - RV) / 2,
+				ax: (ux * (inner + far)) / 2,
+				ay: (uy * (inner + far)) / 2,
+				hx: (far - inner) / 2,
+				inner,
 				far,
 				spout,
 				openOuter,
@@ -229,20 +235,106 @@ const ValveGeometry = (() => {
 		return v;
 	}
 
+	// Every layout needs one continuous route from the pour band to the drain;
+	// random port sets alone almost never percolate, and a field with no route
+	// cannot demonstrate a fall however well the solver behaves. The walk drifts
+	// sideways now and then so the route is not a straight shaft.
+	function carveRoute(specs, seed) {
+		const cols = new Int32Array(N);
+		let i = 1 + ((hashUnit(seed, N, N) * (N - 2)) | 0);
+		for (let j = 0; j < N; j++) {
+			cols[j] = i;
+			const drift = hashUnit(seed, i, j + N);
+			if (drift < 0.28 && i > 0) i--;
+			else if (drift > 0.72 && i < N - 1) i++;
+		}
+		addPort(specs[cols[0]], 3);
+		for (let j = 0; j < N; j++) {
+			const cur = cols[j];
+			const cell = specs[j * N + cur];
+			if (j > 0) addPort(cell, 3);
+			if (j === N - 1) {
+				addPort(cell, 1);
+				break;
+			}
+			const next = cols[j + 1];
+			const down = next === cur ? cell : specs[j * N + next];
+			if (next !== cur) {
+				addPort(cell, next < cur ? 2 : 0);
+				addPort(down, next < cur ? 0 : 2);
+			}
+			addPort(down, 1);
+		}
+	}
+
+	// Specs hold port directions in the rotor's own frame, so a world direction
+	// has to be brought back through the cell's base quarter.
+	function addPort(spec, world) {
+		const local = (world - spec.quarter) & 3;
+		if (spec.ports.indexOf(local) < 0) spec.ports.push(local);
+	}
+
 	function createLayout(seed) {
-		const valves = [];
+		const specs = [];
 		for (let j = 0; j < N; j++) {
 			for (let i = 0; i < N; i++) {
 				const rnd = rng(hash(seed, i, j));
 				const hollow = rnd() < 0.4;
 				const shapes = hollow ? HOLLOW_SHAPES : SOLID_SHAPES;
-				const ports = shapes[(rnd() * shapes.length) | 0];
 				const base = ((rnd() * 4) | 0) * HALF_PI;
 				const chamberR = hollow ? RV * (0.3 + rnd() * 0.12) : 0;
-				valves.push(makeValve(i, j, hollow ? "hollow" : "solid", ports, base, chamberR));
+				const quarter = ((Math.round(base / HALF_PI) % 4) + 4) % 4;
+				specs.push({
+					i,
+					j,
+					kind: hollow ? "hollow" : "solid",
+					ports: shapes[(rnd() * shapes.length) | 0].slice(),
+					base,
+					chamberR,
+					quarter,
+				});
 			}
 		}
+		carveRoute(specs, seed);
+		const valves = [];
+		for (let k = 0; k < specs.length; k++) {
+			const sp = specs[k];
+			valves.push(makeValve(sp.i, sp.j, sp.kind, sp.ports, sp.base, sp.chamberR));
+		}
 		return { seed, valves };
+	}
+
+	// Cells whose ports lead, without turning anything, to the drain spout. The
+	// pour slots come from this set so a seeded grain is not dropped into a
+	// pocket that no valve can ever open.
+	function drainReach(layout) {
+		const reach = new Uint8Array(N * N);
+		const queue = new Int32Array(N * N);
+		let head = 0;
+		let tail = 0;
+		for (let i = 0; i < N; i++) {
+			const k = (N - 1) * N + i;
+			if (layout.valves[k].ports.indexOf(1) < 0) continue;
+			reach[k] = 1;
+			queue[tail++] = k;
+		}
+		while (head < tail) {
+			const k = queue[head++];
+			const i = k % N;
+			const j = (k / N) | 0;
+			for (let s = 0; s < 4; s++) {
+				if (layout.valves[k].ports.indexOf(s) < 0) continue;
+				const ni = i + DX[s];
+				const nj = j + DY[s];
+				if (ni < 0 || ni >= N || nj < 0 || nj >= N) continue;
+				const nk = nj * N + ni;
+				if (reach[nk]) continue;
+				if (layout.valves[nk].ports.indexOf((s + 2) & 3) < 0) continue;
+				reach[nk] = 1;
+				queue[tail++] = nk;
+			}
+		}
+		return reach;
 	}
 
 	function tubeDepth(pr, x, y) {
@@ -345,7 +437,10 @@ const ValveGeometry = (() => {
 			}
 			if (best > rim) best = rim;
 		}
-		const outside = r2 >= RV * RV;
+		// Outside the rotor only the corridor grants air; inside it the passages and
+		// the seam opening already describe the mouth, and letting the corridor
+		// reach under the rim would open the aperture wider than the seam.
+		if (r2 < RV * RV) return best;
 		for (let s = 0; s < 4; s++) {
 			const ux = DX[s];
 			const uy = DY[s];
@@ -354,7 +449,7 @@ const ValveGeometry = (() => {
 			const st = v.strips[s];
 			let face = stripDepth(st, lx, ly);
 			if (face <= 0) continue;
-			if (outside && Math.abs(lat) >= seam) {
+			if (Math.abs(lat) >= seam) {
 				const a = lx * ux + ly * uy;
 				const rim = a - RV;
 				if (rim < face) face = rim;
@@ -405,14 +500,66 @@ const ValveGeometry = (() => {
 		return out;
 	}
 
-	const probe = { x: 0, y: 0, bx: 0, by: 0, best: 0, tx: 0, ty: 0, r: 0, v: null };
+	const probe = {
+		x: 0,
+		y: 0,
+		bx: 0,
+		by: 0,
+		best: 0,
+		ax: 0,
+		ay: 0,
+		alt: 0,
+		tx: 0,
+		ty: 0,
+		r: 0,
+		v: null,
+		layout: null,
+		inside: false,
+	};
+
+	// Air is connected along the cavity, not across metal. A projection that has
+	// to cross a wall to reach its candidate has left the grain's corridor and the
+	// hop would be a teleport, however short it looks.
+	function reachable(layout, x0, y0, x1, y1, radius) {
+		const dx = x1 - x0;
+		const dy = y1 - y0;
+		const len = Math.sqrt(dx * dx + dy * dy);
+		if (len < 1e-9) return true;
+		const count = Math.ceil(len / Math.max(radius * 0.5, 0.5));
+		const need = radius - 1e-6;
+		for (let k = 1; k <= count; k++) {
+			const t = k / count;
+			if (airClearance(layout, x0 + dx * t, y0 + dy * t) < need) return false;
+		}
+		return true;
+	}
 
 	function probeConsider(x, y) {
 		const dx = x - probe.tx;
 		const dy = y - probe.ty;
 		const d2 = dx * dx + dy * dy;
+		if (d2 >= probe.best && d2 >= probe.alt) return;
+		// Recovery never crosses the rim: the two sides of the rotor are different
+		// cavities, and a candidate on the far side is only reachable through metal.
+		const rx = x - probe.v.cx;
+		const ry = y - probe.v.cy;
+		if ((rx * rx + ry * ry < RV * RV) !== probe.inside) return;
+		// Verify against the same field the solver queries, bounds included: a
+		// projection onto a pour spout can land outside the air region, and a
+		// candidate there is not air even though its cell still reports some.
+		if (airClearance(probe.layout, x, y) < probe.r - 1e-6) return;
+		if (!reachable(probe.layout, probe.tx, probe.ty, x, y, probe.r)) {
+			// A grain the closing rim has just caught starts inside metal, so no
+			// straight line out of it can stay in air; keep the nearest verified
+			// air as the fallback rather than stranding the grain.
+			if (d2 < probe.alt) {
+				probe.alt = d2;
+				probe.ax = x;
+				probe.ay = y;
+			}
+			return;
+		}
 		if (d2 >= probe.best) return;
-		if (valveClearance(probe.v, x, y) < probe.r - 1e-6) return;
 		probe.best = d2;
 		probe.bx = x;
 		probe.by = y;
@@ -442,9 +589,38 @@ const ValveGeometry = (() => {
 		probe.ty = y;
 		probe.r = radius;
 		probe.v = v;
+		probe.layout = layout;
+		probe.inside = (x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy) < RV * RV;
 		probe.best = Infinity;
+		probe.alt = Infinity;
 		probe.bx = x;
 		probe.by = y;
+		probe.ax = x;
+		probe.ay = y;
+		// Shallow cases first: climb the clearance gradient, which is the minimal
+		// nudge that leaves a grain in contact. A primitive projection would hop it
+		// to that primitive's own eroded centre line, which for a grain grazing a
+		// wall is a jump of most of a radius, and for a grain in a pocket mouth it
+		// can be most of the passage. The climb is capped so it can never double as
+		// a teleport; deeper cases fall through to the projections below.
+		let wx = x;
+		let wy = y;
+		let climbed = 0;
+		for (let n = 0; n < 4 && climbed < radius * 2.5; n++) {
+			const level = airClearance(layout, wx, wy);
+			if (level >= radius - 1e-6) break;
+			const e = 0.5;
+			const gx = airClearance(layout, wx + e, wy) - airClearance(layout, wx - e, wy);
+			const gy = airClearance(layout, wx, wy + e) - airClearance(layout, wx, wy - e);
+			const len = Math.sqrt(gx * gx + gy * gy);
+			if (len < 1e-9) break;
+			const step = radius - level + 0.05;
+			wx += (gx / len) * step;
+			wy += (gy / len) * step;
+			climbed += step;
+			if (wx < 0 || wx > SIZE || wy < -POUR || wy > SIZE + POUR) break;
+			probeConsider(wx, wy);
+		}
 		const band = HALF - radius;
 		if (band > 0) {
 			const px = x - v.cx;
@@ -491,18 +667,49 @@ const ValveGeometry = (() => {
 					probeConsider(v.cx + ox * cos - oy * sin, v.cy + ox * sin + oy * cos);
 				}
 			}
+			// The rim and the seam caps limit clearance by a circle and by a plane,
+			// so inside the rotor the way out is one radial or lateral shift. The
+			// primitive projections cannot see either, and the gradient is flat
+			// across a cap, which leaves a grain at a closing mouth stranded.
+			if (probe.inside) {
+				const reach = Math.sqrt(((x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy))) || 1;
+				const inward = RV - radius;
+				if (inward > 0) probeConsider(v.cx + ((x - v.cx) / reach) * inward, v.cy + ((y - v.cy) / reach) * inward);
+				for (let s = 0; s < 4; s++) {
+					const seam = v.seam[s];
+					if (seam <= radius) continue;
+					const ux = DX[s];
+					const uy = DY[s];
+					const lat = (y - v.cy) * ux - (x - v.cx) * uy;
+					const slack = seam - radius;
+					if (Math.abs(lat) <= slack) continue;
+					const shift = Math.sign(lat) * (Math.abs(lat) - slack);
+					probeConsider(x + shift * uy, y - shift * ux);
+				}
+			}
 			for (let s = 0; s < 4; s++) {
 				const st = v.strips[s];
+				const mid = (st.inner + st.far) / 2;
 				const a = (px - st.ax) * DX[s] + (py - st.ay) * DY[s];
 				const l = (py - st.ay) * DX[s] - (px - st.ax) * DY[s];
-				const ca = clamp(a, -st.hx + radius, st.hx - (st.openOuter ? 0 : radius));
+				let ca = clamp(a, -st.hx, st.hx - (st.openOuter ? 0 : radius));
 				const cl = clamp(l, -band, band);
+				// Beside a shut seam the rim is a wall, so the corridor projection has
+				// to stop a radius short of it instead of sitting in the mouth.
+				if (Math.abs(cl) >= v.seam[s] && mid + ca < RV + radius) ca = RV + radius - mid;
 				const ox = st.ax + DX[s] * ca - DY[s] * cl;
 				const oy = st.ay + DY[s] * ca + DX[s] * cl;
 				probeConsider(v.cx + ox, v.cy + oy);
 			}
 		}
-		if (probe.best === Infinity) return out;
+		if (probe.best === Infinity) {
+			if (probe.alt === Infinity) return out;
+			out.x = probe.ax;
+			out.y = probe.ay;
+			out.dist = Math.sqrt(probe.alt);
+			out.found = true;
+			return out;
+		}
 		out.x = probe.bx;
 		out.y = probe.by;
 		out.dist = Math.sqrt(probe.best);
@@ -542,6 +749,7 @@ const ValveGeometry = (() => {
 		hashUnit,
 		rng,
 		createLayout,
+		drainReach,
 		makeValve,
 		setAngle,
 		cellAt,

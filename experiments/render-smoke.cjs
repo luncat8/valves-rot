@@ -93,13 +93,15 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "render.js", "app.js"]) {
+for (const file of ["geometry.js", "render.js", "simulation.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
 
 const G = vm.runInThisContext("ValveGeometry");
 const R = vm.runInThisContext("ValveRender");
+const SIM = vm.runInThisContext("ValveSimulation");
+assert.ok(SIM.STEP > 0 && SIM.GRAIN_COLORS.length >= 4);
 assert.equal(G.N, 10);
 assert.ok(calls.total > 0, "startup must draw");
 
@@ -136,7 +138,12 @@ for (let i = 0; i < 6; i++) {
 }
 element("pause").onclick();
 element("step").onclick();
+element("pour").onclick();
 element("model").checked = true;
+const arcsBefore = calls.arc;
+frames.shift()((now += 16.7));
+assert.ok(calls.arc > arcsBefore, "grains must be drawn as arcs");
+element("drain").onclick();
 const madeFrames = frames.length;
 frames.shift()((now += 16.7));
 assert.ok(calls.putImageData > 0, "air model overlay must be painted");

@@ -9,13 +9,15 @@
 <body>
 	<a href="../../index.html">All prototypes</a>
 	<h1>Shared geometry / Rotary Valve Field</h1>
-	<p>One geometry layer drives drawing and collision. Housings, rotor passages, seam apertures and clearance are derived from the same primitives. Grains arrive with the contact solver in the next step.</p>
+	<p>One geometry layer drives drawing and collision, and one fixed-step solver drives the grains. Housings, rotor passages, seam apertures and clearance come from the same primitives, so a closed port is closed to a grain as well.</p>
 	<div class="controls">
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
 		<button id="shuffle" type="button">Shuffle seed</button>
 		<button id="reset" type="button">Rebuild</button>
 		<button id="pause" type="button">Pause</button>
 		<button id="step" type="button">Step</button>
+		<button id="pour" type="button">Pour</button>
+		<button id="drain" type="button">Drain</button>
 		<label>Turn speed <input id="speed" type="range" min="0" max="3" step="0.1" value="1"><output id="speed-value">1</output></label>
 		<label><input id="air" type="checkbox"> Black air</label>
 		<label><input id="model" type="checkbox"> Air model</label>
@@ -24,6 +26,7 @@
 	<p id="stats" aria-live="off"></p>
 	<script src="geometry.js"></script>
 	<script src="render.js"></script>
+	<script src="simulation.js"></script>
 	<script src="app.js"></script>
 </body>
 </html>

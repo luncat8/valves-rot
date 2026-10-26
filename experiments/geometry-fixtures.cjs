@@ -510,12 +510,14 @@ function fixtureCrossCell(layout) {
 	return edges;
 }
 
-// 10. Recovery: a grain pushed into metal must land on verified air, deterministically
-// and without a longer move than a brute-force search would need.
+// 10. Recovery: a grain pushed into metal must land on verified air, deterministically,
+// without a longer move than a brute-force search would need, and never across the
+// rim: the two sides of the rotor are separate cavities and only the seam joins them.
 const recover = { x: 0, y: 0, dist: 0, found: false };
 function fixtureRecovery(layout) {
 	let cases = 0;
 	let worstGap = 0;
+	let sealed = 0;
 	for (const v of layout.valves) {
 		for (let k = 0; k < 6; k++) {
 			const a = (k * 2.399 + 0.4) % G.TAU;
@@ -523,6 +525,14 @@ function fixtureRecovery(layout) {
 			const x = v.cx + Math.cos(a) * r;
 			const y = v.cy + Math.sin(a) * r;
 			if (G.isAir(layout, x, y, 2.6)) continue;
+			if (!v.prims.length) {
+				// a plugged rotor has no air inside at all: the query must say so
+				// rather than reach out through the rim into the housing channel
+				G.nearestAir(layout, x, y, 2.6, recover);
+				assert.ok(!recover.found, "recovery must not cross the rim");
+				sealed++;
+				continue;
+			}
 			G.nearestAir(layout, x, y, 2.6, recover);
 			assert.ok(recover.found, "recovery must find air");
 			assert.ok(G.isAir(layout, recover.x, recover.y, 2.6), "recovery must land on air");
@@ -531,13 +541,19 @@ function fixtureRecovery(layout) {
 			assert.equal(recover.x, first.x);
 			assert.equal(recover.y, first.y);
 			assert.equal(recover.dist, first.dist);
-			// brute force over the reachable neighbourhood for optimality
+			// brute force over the reachable neighbourhood for optimality; the rim is
+			// metal, so only candidates in the same cavity count
+			const cell = layout.valves[G.cellAt(x, y)];
+			const sameSide = (px, py) =>
+				((px - cell.cx) * (px - cell.cx) + (py - cell.cy) * (py - cell.cy) < G.RV * G.RV) ===
+				((x - cell.cx) * (x - cell.cx) + (y - cell.cy) * (y - cell.cy) < G.RV * G.RV);
 			let best = Infinity;
 			const span = Math.min(recover.dist + 1.5, 36);
 			for (let dy = -span; dy <= span; dy += 0.75) {
 				for (let dx = -span; dx <= span; dx += 0.75) {
 					const d = Math.hypot(dx, dy);
 					if (d >= best) continue;
+					if (!sameSide(x + dx, y + dy)) continue;
 					if (G.isAir(layout, x + dx, y + dy, 2.6)) best = d;
 				}
 			}
@@ -549,6 +565,7 @@ function fixtureRecovery(layout) {
 	}
 	stats.recovery = cases;
 	stats.recoveryGap = worstGap;
+	stats.sealed = sealed;
 	return cases;
 }
 
@@ -631,7 +648,7 @@ console.log(
 		`housing ${housingSteps} passages ${passageSamples} seamRings ${stats.rimRings}`,
 		`noInventedAir ${noInvented} sweeps ${sweepTotal} contacts ${stats.hits} shutCrossings ${stats.shutSweeps}`,
 		`clearanceRefs ${clearanceRefs} roundTrips ${stats.roundTrips} pathCommands ${pathCommands}`,
-		`cellEdges ${edges} recovery ${recoveries} gap ${stats.recoveryGap.toFixed(2)} seamClosures ${closures} maxPush ${(stats.maxPush || 0).toFixed(2)}`,
+		`cellEdges ${edges} recovery ${recoveries} sealed ${stats.sealed} gap ${stats.recoveryGap.toFixed(2)} seamClosures ${closures} maxPush ${(stats.maxPush || 0).toFixed(2)}`,
 		`ms ${ms.toFixed(0)}`,
 	].join("\n"),
 );

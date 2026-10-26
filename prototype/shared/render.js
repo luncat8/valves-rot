@@ -266,6 +266,29 @@ const ValveRender = (() => {
 		map.ctx.putImageData(map.img, 0, 0);
 	}
 
+	// Grains are drawn last, over the housings, in one pass with a single fill
+	// colour per grain. Nothing here allocates: the palette is a plain table and
+	// the path is reused.
+	function renderGrains(ctx, sim, palette) {
+		const x = sim.x;
+		const y = sim.y;
+		const r = sim.r;
+		for (let k = 0; k < sim.count; k++) {
+			ctx.fillStyle = palette[sim.color[k]];
+			ctx.beginPath();
+			ctx.arc(x[k], y[k], r[k], 0, TAU);
+			ctx.fill();
+		}
+		ctx.strokeStyle = EDGE_C;
+		ctx.lineWidth = 0.6;
+		ctx.beginPath();
+		for (let k = 0; k < sim.count; k++) {
+			ctx.moveTo(x[k] + r[k], y[k]);
+			ctx.arc(x[k], y[k], r[k], 0, TAU);
+		}
+		ctx.stroke();
+	}
+
 	function makeAirMap(cell) {
 		const w = Math.ceil(SIZE / cell);
 		const h = Math.ceil((SIZE + G.POUR * 2) / cell);
@@ -282,6 +305,7 @@ const ValveRender = (() => {
 		renderScene: renderScene,
 		makeAirMap: makeAirMap,
 		renderAirMap: renderAirMap,
+		renderGrains: renderGrains,
 		makeCanvas: makeCanvas,
 	};
 })();
