@@ -1,0 +1,40 @@
+simulation layer 0.1.1
+node v22.22.3 linux/x64 Intel(R) Xeon(R) Processor @ 2.60GHz (2 cpus)
+solver: 3 iter, bin 8, step 0.00833 s, cap 1600
+
+load  turning   pressure  active  ms/60Hz  us/step  maxOverlap  maxWallPen  recovered
+ 120    false         off     120     0.74    367.7        0.02       0.000          0
+ 120    false        grid     120     0.76    378.4        0.06       0.000          0
+ 120    false   particles     120     3.10   1549.9        0.04       0.000          0
+ 120     true         off     120     0.86    428.2        0.74       0.024          2
+ 120     true        grid     120     1.65    827.4        0.32       0.004          1
+ 120     true   particles     120     3.59   1794.5        0.45       0.000          1
+ 500    false         off     500     3.15   1574.8        0.14       0.003          5
+ 500    false        grid     500     3.19   1596.7        0.12       0.009          8
+ 500    false   particles     500     5.41   2703.1        0.04       0.000          0
+ 500     true         off     500     3.23   1612.6        0.88       0.039          7
+ 500     true        grid     500     4.41   2205.1        0.64       0.006          2
+ 500     true   particles     500     6.04   3018.3        0.64       0.010          5
+1000    false         off    1000     6.03   3012.8        0.11       0.003          4
+1000    false        grid    1000     6.59   3293.6        0.29       0.002          2
+1000    false   particles    1000     8.54   4267.7        0.10       0.032         16
+1000     true         off    1000     6.20   3100.6        0.88       0.039         11
+1000     true        grid    1000     7.61   3806.2        0.65       0.018          7
+1000     true   particles    1000     8.98   4489.8        0.54       0.004         11
+
+60s seeded run (seed 11): 0.19 ms/step, seeded 77, active 69, drained 8, rec 1, pushes 227, stalls 412, maxOv 0.68, maxPen 0.000, maxPush 0.05
+
+30s seeded runs:
+seed  seeded  active  drained  rec  pushes  maxOverlap  maxWallPen
+   7      69      66        3    1     155        0.59       0.002
+  11      77      69        8    1     225        0.68       0.000
+1234      79      59       20    2     215        0.76       0.000
+   3      72      63        9    3     262        1.97       0.003
+  12      55      40       15    1     215        0.86       0.002
+  42      77      73        4    7     207        0.61       0.010
+
+
+pressure state
+     grid: 1.31 ms/60Hz, air 3300 of 15600 cells, 120x130, 148 rebuilds, mean p 0.51, flow 34
+particles: 2.99 ms/60Hz, air 900, contacts 3749, recycles 70
+retainedHeap(1200 steps): n/a

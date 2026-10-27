@@ -48,7 +48,9 @@ The kinetic prototype met its own gate but could not answer the question it was 
 - `node experiments/render-smoke.cjs`: loads the four modules, paints the scalar field over the full field rectangle, and hovers/clicks a band mouth while paused without turning a valve.
 - `geometry-fixtures`, `simulation-fixtures`, `behavior-probe` unchanged and passing; pressure off keeps identical grain trajectories.
 - Ten simulated seconds of seed 7 with grid gas: mean grain speed 45 px/s against 86 px/s with pressure off, no lost grains, no wall penetration, 256 mask rebuilds.
+- `experiments/simulation-bench.cjs` now times both backends at three grain loads (`experiments/logs/simulation-pressure.txt`): 120 × 130 grid cells, 3,300 air cells, 1.31 ms/60 Hz settled and +0.8 ms with every rotor turning; 900 air particles cost 2 to 2.5 ms/60 Hz more than pressure off because of air-grain contacts. No retained heap growth.
 - Not verified in a browser (none in this sandbox): the pixel ramp, legend and hover label were checked with an offline raycast of the same geometry, mask and ramp instead.
+- Mouths are clickable while paused (the field re-pins and re-solves immediately) and a manual quarter turn re-solves too, so a still frame still answers a click.
 
 ## Next step
 
