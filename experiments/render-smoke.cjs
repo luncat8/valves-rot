@@ -74,7 +74,7 @@ function element(id) {
 	if (elements[id]) return elements[id];
 	const el = {
 		id,
-		value: id === "seed" ? "7" : id === "speed" ? "1" : "",
+		value: id === "seed" ? "7" : id === "speed" || id === "force" ? "1" : "",
 		checked: false,
 		textContent: "",
 		width: 0,
@@ -197,6 +197,9 @@ c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, ctrlKey: true, deta
 c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault() {} });
 
 
+element("force").value = "1.5";
+element("force").oninput();
+assert.equal(element("force-value").value, "1.5", "air force slider is wired");
 element("pause").onclick();
 element("pressure-particles").checked = true;
 element("pressure-particles").onchange();

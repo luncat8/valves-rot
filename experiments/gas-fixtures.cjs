@@ -117,31 +117,44 @@ for (let n = 0; n < gas().count; n++) {
 	assert.ok(p >= 0 && p <= 1, "pressure stays normalized");
 	maxSpeed = Math.max(maxSpeed, Math.hypot(gas().gx[k], gas().gy[k]));
 }
-assert.ok(maxSpeed <= 221, "gas speed is bounded");
+assert.ok(maxSpeed <= GAS.GAS_MAX + 0.01, "gas speed is bounded");
 const rebuilds = gas().rebuilds;
 run(sim, 1);
 assert.ok(gas().rebuilds > rebuilds, "turning rotors rebuild the mask");
 
-// Drag: gas rising through a chamber slows a grain's fall.
-function chamberSim(opts) {
+// Coupling: a grain dropped through an open chamber falls slower in air and is
+// pushed sideways by the flow, and the air-force control scales both.
+function dropTest(mode, force) {
 	const s = S.create(G.createLayout(7), { turning: false });
-	s.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, 15);
+	s.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);
 	const v = s.layout.valves[44];
-	S.addGrain(s, v.cx, v.cy, 2.7, 0);
-	if (opts.pressure) S.setPressure(s, "grid");
-	return s;
+	S.addGrain(s, v.cx, v.cy - 12, 2.7, 0);
+	if (mode) {
+		S.setPressure(s, mode);
+		S.setAirForce(s, force);
+	}
+	const y0 = s.y[0];
+	const x0 = s.x[0];
+	let time = -1;
+	for (let k = 0; k < 360; k++) {
+		S.step(s);
+		if (time < 0 && s.y[0] - y0 > 30) time = k * S.STEP;
+	}
+	return { time: time < 0 ? Infinity : time, drift: Math.abs(s.x[0] - x0), sim: s };
 }
-const wet = chamberSim({ pressure: true });
-const dry = chamberSim({ pressure: false });
-const idx = GAS.index(wet.x[0], wet.y[0]);
-const gasVy = wet.pressure.gy[idx];
-S.step(wet);
-S.step(dry);
-assert.equal(wet.count, 1);
-assert.equal(dry.count, 1);
-const drag = wet.vy[0] - dry.vy[0];
-assert.ok(gasVy * drag > 0, `drag follows the gas velocity (${gasVy.toFixed(1)} px/s, dv ${drag.toFixed(2)})`);
-assert.ok(wet.pressure.drags > 0, "grains feel the field");
+const dry = dropTest(null, 0);
+const still = dropTest("grid", 0);
+assert.ok(Math.abs(still.time - dry.time) < 1e-9, "air force 0 matches pressure off");
+const wet = dropTest("grid", 1);
+const hard = dropTest("grid", 2);
+assert.ok(wet.time > dry.time * 1.5, `air clearly holds a fall back (${wet.time.toFixed(2)} s vs ${dry.time.toFixed(2)} s)`);
+assert.ok(wet.drift > 4, `the flow pushes a falling grain sideways (${wet.drift.toFixed(1)} px)`);
+assert.ok(!Number.isFinite(hard.time) || hard.time > wet.time * 1.2, "more air force means more lift");
+assert.ok(wet.sim.pressure.drags > 0, "grains feel the field");
+const particle = dropTest("particles", 1);
+assert.ok(particle.time > dry.time * 1.5, `air particles also hold a fall back (${particle.time.toFixed(2)} s)`);
+assert.ok(particle.sim.pressure.collisions > 0, "air particles hit grains");
+const show = r => (Number.isFinite(r.time) ? r.time.toFixed(2) + " s" : "hovering");
 
 // Cost of the field on top of the grain solver.
 function bench(mode, steps) {
@@ -156,5 +169,5 @@ const offMs = bench(null, 400);
 const gridMs = bench("grid", 400);
 assert.ok(gridMs < offMs * 3, `grid gas stays within budget (${gridMs.toFixed(3)} vs ${offMs.toFixed(3)} ms)`);
 console.log(
-	`OK gas: standing ${standing.bottom.toFixed(2)}/${standing.top.toFixed(2)} gradient, sealed and flipped inlets, bounded field, rotor mask, grain drag; off ${offMs.toFixed(3)} ms vs grid ${gridMs.toFixed(3)} ms per 120 Hz step (${process.version})`,
+	`OK gas: standing ${standing.bottom.toFixed(2)}/${standing.top.toFixed(2)} gradient, sealed and flipped inlets, bounded field, rotor mask; 30 px fall ${show(dry)} dry, ${show(wet)} at force 1, ${show(hard)} at force 2, ${show(particle)} with particles, drift ${wet.drift.toFixed(1)} px; off ${offMs.toFixed(3)} ms vs grid ${gridMs.toFixed(3)} ms per 120 Hz step (${process.version})`,
 );

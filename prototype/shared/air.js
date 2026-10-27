@@ -7,7 +7,10 @@ const ValveAir = (() => {
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
 	const I = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
 	const RADIUS = 0.65;
-	const MASS = 0.035;
+	// Air is lighter than a grain (r^2 = 7.3 for a 2.7 px grain) and deliberately
+	// not negligible: a 180 px/s impact moves a grain a few px/s, and a stream of
+	// impacts through a chamber visibly holds a fall back.
+	const MASS = 3;
 	const SPEED = 180;
 	const LIMIT = 450;
 	const BIN = 8;
@@ -108,7 +111,7 @@ const ValveAir = (() => {
 					const incoming = (p.vx[k] - sim.vx[j]) * nx + (p.vy[k] - sim.vy[j]) * ny;
 					if (incoming < 0) {
 						const mass = sim.r[j] * sim.r[j];
-						const impulse = -2 * incoming / (1 / MASS + 1 / mass);
+						const impulse = (-2 * incoming / (1 / MASS + 1 / mass)) * sim.airForce;
 						p.vx[k] += impulse * nx / MASS;
 						p.vy[k] += impulse * ny / MASS;
 						sim.vx[j] -= impulse * nx / mass;

@@ -3,26 +3,26 @@ node v22.22.3 linux/x64 Intel(R) Xeon(R) Processor @ 2.60GHz (2 cpus)
 solver: 3 iter, bin 8, step 0.00833 s, cap 1600
 
 load  turning   pressure  active  ms/60Hz  us/step  maxOverlap  maxWallPen  recovered
- 120    false         off     120     0.74    367.7        0.02       0.000          0
- 120    false        grid     120     0.76    378.4        0.06       0.000          0
- 120    false   particles     120     3.10   1549.9        0.04       0.000          0
- 120     true         off     120     0.86    428.2        0.74       0.024          2
- 120     true        grid     120     1.65    827.4        0.32       0.004          1
- 120     true   particles     120     3.59   1794.5        0.45       0.000          1
- 500    false         off     500     3.15   1574.8        0.14       0.003          5
- 500    false        grid     500     3.19   1596.7        0.12       0.009          8
- 500    false   particles     500     5.41   2703.1        0.04       0.000          0
- 500     true         off     500     3.23   1612.6        0.88       0.039          7
- 500     true        grid     500     4.41   2205.1        0.64       0.006          2
- 500     true   particles     500     6.04   3018.3        0.64       0.010          5
-1000    false         off    1000     6.03   3012.8        0.11       0.003          4
-1000    false        grid    1000     6.59   3293.6        0.29       0.002          2
-1000    false   particles    1000     8.54   4267.7        0.10       0.032         16
-1000     true         off    1000     6.20   3100.6        0.88       0.039         11
-1000     true        grid    1000     7.61   3806.2        0.65       0.018          7
-1000     true   particles    1000     8.98   4489.8        0.54       0.004         11
+ 120    false         off     120     0.87    435.8        0.02       0.000          0
+ 120    false        grid     120     0.79    394.3        0.00       0.000          0
+ 120    false   particles     120     3.26   1629.0        0.08       0.000          0
+ 120     true         off     120     0.84    417.6        0.74       0.024          2
+ 120     true        grid     120     1.72    860.6        0.33       0.000          0
+ 120     true   particles     120     3.81   1905.2        0.32       0.009          1
+ 500    false         off     500     3.63   1814.7        0.14       0.003          5
+ 500    false        grid     500     3.83   1914.7        0.07       0.001          2
+ 500    false   particles     500     6.03   3012.6        0.02       0.000          0
+ 500     true         off     500     3.66   1829.8        0.88       0.039          7
+ 500     true        grid     500     4.89   2444.1        0.47       0.008          1
+ 500     true   particles     500     6.82   3412.0        0.64       0.028          1
+1000    false         off    1000     7.44   3722.0        0.11       0.003          4
+1000    false        grid    1000     8.32   4158.1        0.20       0.028          3
+1000    false   particles    1000    10.83   5414.4        0.10       0.000          0
+1000     true         off    1000     7.13   3566.4        0.88       0.039         11
+1000     true        grid    1000     8.49   4245.1        0.89       0.024         16
+1000     true   particles    1000    10.77   5383.8        1.59       0.007          5
 
-60s seeded run (seed 11): 0.19 ms/step, seeded 77, active 69, drained 8, rec 1, pushes 227, stalls 412, maxOv 0.68, maxPen 0.000, maxPush 0.05
+60s seeded run (seed 11): 0.20 ms/step, seeded 77, active 69, drained 8, rec 1, pushes 227, stalls 412, maxOv 0.68, maxPen 0.000, maxPush 0.05
 
 30s seeded runs:
 seed  seeded  active  drained  rec  pushes  maxOverlap  maxWallPen
@@ -34,7 +34,17 @@ seed  seeded  active  drained  rec  pushes  maxOverlap  maxWallPen
   42      77      73        4    7     207        0.61       0.010
 
 
+air coupling (one grain, 30 px fall through an open chamber)
+mode  force  fall(s)  drift(px)
+      off      0     0.32        0.0
+     grid      0     0.32        0.0
+     grid    0.5     0.37        2.4
+     grid      1     0.42        5.5
+     grid      2     0.72       10.9
+particles      1     0.36        5.1
+particles      2     1.03       21.4
+
 pressure state
-     grid: 1.31 ms/60Hz, air 3300 of 15600 cells, 120x130, 148 rebuilds, mean p 0.51, flow 34
-particles: 2.99 ms/60Hz, air 900, contacts 3749, recycles 70
+     grid: 1.62 ms/60Hz, air 3297 of 15600 cells, 120x130, 148 rebuilds, mean p 0.52, flow 95
+particles: 3.18 ms/60Hz, air 900, contacts 2296, recycles 64
 retainedHeap(1200 steps): n/a

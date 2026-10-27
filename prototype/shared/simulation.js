@@ -130,6 +130,8 @@ const ValveSimulation = (() => {
 			layout,
 			pressure: null,
 			pressureMode: "off",
+			// Page slider: multiplies how hard the pressure backend pushes grains.
+			airForce: 1,
 			inlets: INL.create(),
 			turning: o.turning !== false,
 			speed: o.speed === undefined ? 1 : o.speed,
@@ -997,6 +999,10 @@ const ValveSimulation = (() => {
 		return added;
 	}
 
+	function setAirForce(sim, force) {
+		sim.airForce = force > 0 ? force : 0;
+	}
+
 	function setSpeed(sim, speed) {
 		sim.speed = speed > 0 ? speed : 0;
 	}
@@ -1047,6 +1053,7 @@ const ValveSimulation = (() => {
 		resume,
 		turn,
 		setSpeed,
+		setAirForce,
 		setPressure,
 		toggleInlet,
 		replaceValve,

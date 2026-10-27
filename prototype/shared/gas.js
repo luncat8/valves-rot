@@ -5,11 +5,16 @@
 // fast lanes that warp the field, a shut seam only leaks a trickle, and a
 // standing bottom-to-top gradient survives while the rotors turn.
 //
-// Gas velocity is Darcy-like inside air only: proportional to the pressure
-// gradient and throttled by grain-filled cells, so grains feel the induced flow
-// as drag. This is a normalized relative potential, not a calibrated
+// Gas velocity is Darcy-like: proportional to the local pressure gradient divided
+// by the cell's openness, so the pressure drop concentrates at the tight places
+// (valve mouths, seam gaps, grain-packed cells) and the gas streams through them
+// like a nozzle while open chambers stay nearly isobaric. That is what makes the
+// air punctuate a fall instead of breathing on the whole field at once. Grains feel two couplings: drag toward
+// the local gas velocity, and the pressure force itself, which lifts a grain
+// against gravity wherever the field points up. Both scale with the page's
+// air-force control. This is a normalized relative potential, not a calibrated
 // thermodynamic gas; momentum is supplied and absorbed by the pinned reservoirs,
-// so grain drag is one-way.
+// so the grain coupling is one-way.
 const ValveGas = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -28,17 +33,26 @@ const ValveGas = (() => {
 	const MASK_DT = 1 / 30;
 	const ANGLE_EPS = 0.02;
 	const AIR_MIN = 0.75;
+	// Openness of a cell from its clearance: a corridor cell is about half a cell
+	// free, so it counts as fully open and a mouth a fraction of that is a nozzle.
+	const OPEN_CLEAR = CELL * 0.5;
+	const OPEN_MIN = 0.12;
 	// Relative cost of pushing the potential through a metal cell; a shut seam is
 	// a shared wall, not a hole.
 	const METAL = 6;
 	const FILL_COST = 3;
 	const SWEEPS = 2;
 	const FAR = 1e9;
-	// Pressure gradient -> gas speed, px^2/s. A full-field gradient is about
-	// 1 / (SIZE + 2 * POUR), so a wide open shaft flows near GAS_MAX.
-	const CONDUCTANCE = 60000;
-	const GAS_MAX = 220;
-	const DRAG = 3.2;
+	// Gradient to gas speed, px/s per unit pressure-per-px. A passage crossing the
+	// field pays a gradient near 1.3e-3, so it flows around 150 px/s and a jet
+	// through an open seam is two or three times faster.
+	const SPEED_SCALE = 180000;
+	const GAS_MAX = 460;
+	// Grain coupling. Drag is a relaxation rate toward the gas; LIFT is pressure
+	// force per unit gas velocity, in px/s^2 per px/s, so a passage lifting at
+	// 150 px/s adds about a quarter of gravity.
+	const DRAG = 1.35;
+	const LIFT = 1.15;
 	const GRAIN_CAPACITY = 1.5;
 
 	function index(x, y) {
@@ -62,6 +76,7 @@ const ValveGas = (() => {
 			face: new Uint8Array(COUNT),
 			pin: new Uint8Array(COUNT),
 			cost: new Float32Array(COUNT),
+			open: new Float32Array(COUNT),
 			fill: new Float32Array(COUNT),
 			gx: new Float32Array(COUNT),
 			gy: new Float32Array(COUNT),
@@ -83,6 +98,8 @@ const ValveGas = (() => {
 			drags: 0,
 			mean: 0,
 			flow: 0,
+			gain: 0,
+			lift: 0,
 		};
 		gas.p.fill(0.5);
 		rebuild(sim, gas);
@@ -104,10 +121,13 @@ const ValveGas = (() => {
 		for (let gy = 0; gy < NY; gy++) {
 			const y = gy * CELL + CELL / 2 - G.POUR;
 			for (let gx = 0; gx < NX; gx++) {
-				if (G.airClearance(layout, gx * CELL + CELL / 2, y) < AIR_MIN) continue;
+				const clear = G.airClearance(layout, gx * CELL + CELL / 2, y);
+				if (clear < AIR_MIN) continue;
 				const k = gy * NX + gx;
 				air[k] = 1;
 				gas.list[gas.count++] = k;
+				const open = clear / OPEN_CLEAR;
+				gas.open[k] = open > 1 ? 1 : open < OPEN_MIN ? OPEN_MIN : open;
 			}
 		}
 		const list = gas.list;
@@ -169,13 +189,15 @@ const ValveGas = (() => {
 			const idx = index(sim.x[k], sim.y[k]);
 			if (gas.air[idx]) fill[idx]++;
 		}
+		const face = gas.face;
 		const cost = gas.cost;
+		const open = gas.open;
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
 			let f = fill[k] / GRAIN_CAPACITY;
 			if (f > 1) f = 1;
 			fill[k] = f;
-			cost[k] = 1 + FILL_COST * f;
+			cost[k] = (1 + FILL_COST * f) / open[k];
 		}
 		const air = gas.air;
 		for (let k = 0; k < COUNT; k++) if (!air[k]) cost[k] = METAL;
@@ -186,6 +208,7 @@ const ValveGas = (() => {
 	// pays its own crossing cost.
 	function distances(gas, dist, level) {
 		const pin = gas.pin;
+		const face = gas.face;
 		const cost = gas.cost;
 		dist.fill(FAR);
 		const want = level + 1;
@@ -257,18 +280,19 @@ const ValveGas = (() => {
 		const cost = gas.cost;
 		const gx = gas.gx;
 		const gy = gas.gy;
-		// Central difference over two cells, so the gradient is per pixel.
-		const scale = CONDUCTANCE / (2 * CELL);
 		let flow = 0;
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
 			const f = face[k];
 			const c = p[k];
-			const open = 1 / cost[k];
-			const ux = ((f & L ? p[k - 1] : c) - (f & R ? p[k + 1] : c)) * open;
-			const uy = ((f & U ? p[k - NX] : c) - (f & D ? p[k + NX] : c)) * open;
-			let vx = ux * scale;
-			let vy = uy * scale;
+			// Darcy flux from the gradient, then the interstitial speed that same flux
+			// has to reach through a cell this tight. Central difference over two
+			// cells, so this is a gradient per pixel.
+			const scale = (SPEED_SCALE / (2 * CELL)) / cost[k];
+			const ux = ((f & L ? p[k - 1] : c) - (f & R ? p[k + 1] : c)) * scale;
+			const uy = ((f & U ? p[k - NX] : c) - (f & D ? p[k + NX] : c)) * scale;
+			let vx = ux;
+			let vy = uy;
 			const speed = Math.sqrt(vx * vx + vy * vy);
 			if (speed > GAS_MAX) {
 				const s = GAS_MAX / speed;
@@ -303,18 +327,54 @@ const ValveGas = (() => {
 		gas.maskClock = gas.clock;
 	}
 
-	// Drag grains toward the local gas velocity; integrate() keeps the result
-	// inside the grain speed ceiling.
+	// A grain resting on a wall or a rim sits in a cell whose centre is metal, so
+	// the nearest air cell stands in for the flow around it; without this the
+	// grains that are actually visible in a pile feel no air at all.
+	function sampleCell(gas, x, y) {
+		const k = index(x, y);
+		if (gas.air[k]) return k;
+		const gx = k % NX;
+		const gy = (k / NX) | 0;
+		let best = -1;
+		let bestD = Infinity;
+		for (let oy = gy - 1; oy <= gy + 1; oy++) {
+			if (oy < 0 || oy >= NY) continue;
+			for (let ox = gx - 1; ox <= gx + 1; ox++) {
+				if (ox < 0 || ox >= NX) continue;
+				const j = oy * NX + ox;
+				if (!gas.air[j]) continue;
+				const dx = (ox + 0.5) * CELL - x;
+				const dy = (oy + 0.5) * CELL - (y + G.POUR);
+				const d = dx * dx + dy * dy;
+				if (d >= bestD) continue;
+				bestD = d;
+				best = j;
+			}
+		}
+		return best;
+	}
+
+	// Two couplings: drag toward the local gas velocity, and the pressure force
+	// itself, which lifts a still grain wherever the field points up. Air is left
+	// out of the reservoir bands: a grain waiting in a pour slot is not yet in the
+	// machine, and holding it there would stop the field from being fed.
+	// integrate() keeps the result inside the grain speed ceiling.
 	function drag(sim, gas, h) {
 		if (!gas.count) return;
+		const force = sim.airForce;
+		if (force <= 0) return;
+		const drag = DRAG * force;
+		const lift = LIFT * force;
 		for (let k = 0; k < sim.count; k++) {
-			const idx = index(sim.x[k], sim.y[k]);
-			if (!gas.air[idx]) continue;
+			const y = sim.y[k];
+			if (y < 0 || y > G.SIZE) continue;
+			const idx = sampleCell(gas, sim.x[k], y);
+			if (idx < 0) continue;
 			const gvx = gas.gx[idx];
 			const gvy = gas.gy[idx];
 			if (gvx === 0 && gvy === 0) continue;
-			sim.vx[k] += DRAG * (gvx - sim.vx[k]) * h;
-			sim.vy[k] += DRAG * (gvy - sim.vy[k]) * h;
+			sim.vx[k] += (drag * (gvx - sim.vx[k]) + lift * gvx) * h;
+			sim.vy[k] += (drag * (gvy - sim.vy[k]) + lift * gvy) * h;
 			gas.drags++;
 		}
 	}
@@ -340,6 +400,6 @@ const ValveGas = (() => {
 		drag(sim, gas, h);
 	}
 
-	return { create, step, refresh, index, CELL, NX, NY, AIR_MIN, DRAG, CONDUCTANCE, METAL };
+	return { create, step, refresh, index, sampleCell, CELL, NX, NY, AIR_MIN, DRAG, LIFT, SPEED_SCALE, GAS_MAX };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveGas;

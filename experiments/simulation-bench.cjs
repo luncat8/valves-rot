@@ -107,6 +107,35 @@ for (const seed of [7, 11, 1234, 3, 12, 42]) {
 	);
 }
 lines.push("");
+// Coupling: one grain dropped through an open chamber, and what the machine
+// still transports over a minute with the air on.
+function drop(mode, force) {
+	const sim = S.create(G.createLayout(SEED), { turning: false });
+	sim.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);
+	const v = sim.layout.valves[44];
+	S.addGrain(sim, v.cx, v.cy - 12, S.R_GRAIN, 0);
+	if (mode) {
+		S.setPressure(sim, mode);
+		S.setAirForce(sim, force);
+	}
+	const y0 = sim.y[0];
+	const x0 = sim.x[0];
+	let time = -1;
+	for (let k = 0; k < 360; k++) {
+		S.step(sim, STEP);
+		if (time < 0 && sim.y[0] - y0 > 30) time = k * STEP;
+	}
+	return { time: time < 0 ? Infinity : time, drift: Math.abs(sim.x[0] - x0) };
+}
+
+lines.push("");
+lines.push("air coupling (one grain, 30 px fall through an open chamber)");
+lines.push("mode  force  fall(s)  drift(px)");
+for (const [mode, force] of [[null, 0], ["grid", 0], ["grid", 0.5], ["grid", 1], ["grid", 2], ["particles", 1], ["particles", 2]]) {
+	const r = drop(mode, force);
+	lines.push(`${String(mode || "off").padStart(9)}  ${String(force).padStart(5)}  ${(r.time === Infinity ? "stalled" : r.time.toFixed(2)).padStart(7)}  ${r.drift.toFixed(1).padStart(9)}`);
+}
+
 // Pressure state: grid cells, air particles and the cost of a settled field
 // against a field whose rotors are turning.
 lines.push("");

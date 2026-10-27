@@ -55,3 +55,45 @@ The kinetic prototype met its own gate but could not answer the question it was 
 ## Next step
 
 Calibrate rather than add: measure the momentum flux the field delivers to walls and grains so the ramp can carry a physical unit, and validate compression/equalization against analytical seams at two grid resolutions before considering a GPU backend. Until then the field is a normalized relative potential and the legend stays relative.
+
+# Making the air push
+
+## Review
+
+The first pressure slice was honest about being a field, but the field barely reached the grains, and the visible result was a colour map with grains that fell as if the air were not there. Three separate reasons, found by measuring one dropped grain instead of the whole machine:
+
+- The coupling sampled the gas cell at the grain centre and skipped anything whose cell was metal. A grain resting on a wall or under a rim — which is most of what is visible in a pile or in a mouth — is exactly such a cell, so it felt nothing.
+- The force was velocity drag only. Drag vanishes when the relative velocity does, so it could slow a fall but never lift a resting grain.
+- While fixing the scale I dropped the `/(2 * CELL)` divisor from the central difference, which saturated the whole field at the speed cap: a uniform gale, uniform lift, and grains levitating at the top of the field.
+
+## Changes
+
+- Gas velocity is now the gradient divided by a crossing cost that is fill throttle times tightness (1 / clearance), so the pressure drop concentrates at valve mouths and seam gaps and the gas streams through them like a nozzle while open chambers stay nearly isobaric. The field is capped, and openness is sampled once per mask rebuild.
+- Two grain couplings, both scaled by the new air-force slider: drag toward the local gas velocity, and the pressure force along it. A grain in a metal cell samples the nearest air cell. Air is excluded from the reservoir bands so a full pour spout can still feed the machine.
+- Air-force slider (0-2, default 1). At 0 the grain path is bit-identical to pressure off, which the fixture asserts.
+- Particle backend: air mass raised from 0.6 to 3 (a 2.7 px grain is r^2 = 7.3) so impacts are not invisible; the slider scales the impulse the grain receives without making the particles heavy.
+- `gas.js` exposes `sampleCell`, `GAS_MAX`, `SPEED_SCALE`, `DRAG`, `LIFT`; the unused normalisation-by-mean-gradient code is gone.
+
+## Validation
+
+Tuned against single-grain probes rather than whole-field averages, sweeping `SPEED_SCALE` 115k-600k, `DRAG` 0.55-1.5 and `LIFT` 0.2-1.6, then confirming that transport survives. A grain dropped 30 px through an open chamber (`experiments/logs/simulation-pressure.txt`):
+
+| setting | fall time | lateral drift |
+| --- | --- | --- |
+| pressure off | 0.32 s | 0.0 px |
+| grid, air force 0 | 0.32 s | 0.0 px |
+| grid, force 0.5 | 0.42 s | 5.6 px |
+| grid, force 1 | 0.71 s | 13.2 px |
+| grid, force 1.5 and up | hovering in the updraft | 6 px |
+| particles, force 1 | 1.30 s | 4.3 px |
+| particles, force 2 | hovering | 17.4 px |
+
+- Chosen defaults: `SPEED_SCALE` 180000, `DRAG` 1.35, `LIFT` 1.15, particle mass 3. A weaker default (0.9 / 0.8) measured only 0.42 s and 5 px of drift, which is what "visually nothing" looked like.
+- Transport at force 1 over 60 s across five seeds: 48 grains drained against 51 with pressure off, so the stronger air speeds the machine up slightly rather than jamming it. At force 2 it drops to 11 drained: pinned into the upper half. That is intentional headroom on the slider, not the default.
+- `node experiments/gas-fixtures.cjs` now asserts the coupling: force 0 equals dry exactly, force 1 is at least 1.5x slower with at least 4 px of drift, force 2 is slower still or hovering, and particle mode is at least 1.5x slower with contacts recorded.
+- `air-fixtures` and `render-smoke` cover the slider wiring and the conserved air population; `geometry-fixtures`, `simulation-fixtures` unchanged and passing.
+- Cost unchanged in practice: 1.6 ms/60 Hz with the field settled, 0.6 ms of that the field, and no retained heap growth.
+
+## Next step
+
+Reciprocity: a dense pile should damp the flow it sits in, not only be lifted by it. That needs a grain-to-field feedback term (fill already throttles the flux, so the missing piece is charging the field's momentum, which means giving the pinned reservoirs a way to absorb it) and a fixture that measures a pile's own pressure drop across its thickness.

@@ -28,6 +28,7 @@
 	let overlayDirty = true;
 
 	S.seed(sim);
+	S.setAirForce(sim, +$("force").value);
 	S.setPressure(sim, readMode());
 
 	function readSeed() {
@@ -49,6 +50,7 @@
 		layout = G.createLayout(readSeed());
 		sim = S.create(layout);
 		S.setSpeed(sim, +$("speed").value);
+		S.setAirForce(sim, +$("force").value);
 		S.seed(sim);
 		S.setPressure(sim, readMode());
 		rebuild(true);
@@ -58,6 +60,7 @@
 	function resetSim() {
 		S.reset(sim);
 		S.setSpeed(sim, +$("speed").value);
+		S.setAirForce(sim, +$("force").value);
 		S.seed(sim);
 		overlayDirty = true;
 		if (paused) drawFrame(true);
@@ -116,6 +119,11 @@
 	$("speed").oninput = () => {
 		S.setSpeed(sim, +$("speed").value);
 		$("speed-value").value = $("speed").value;
+	};
+	$("force").oninput = () => {
+		S.setAirForce(sim, +$("force").value);
+		$("force-value").value = $("force").value;
+		if (paused) drawFrame(false);
 	};
 	$("air").onchange = () => {
 		paint.air = $("air").checked ? "#000000" : "#ffffff";
