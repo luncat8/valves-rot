@@ -222,3 +222,33 @@ The previous stage fixed the symptom by hiding the overlay. The model itself was
 ## Next step
 
 Profile a finer 3 px grid with aperture-based face conductance: the current 6 px centre-sampling mask still misses sub-cell seam openings (aperture errors 11.27 / 5.14 px in the calibration fixture). A multigrid preconditioner would cut the 700-sweep steady solve needed by long corridor chains before increasing resolution.
+
+# Faster fronts through pipes, and rotation in the gas
+
+## Review
+
+The pressure model from the last stage was correct but two of its behaviours did not survive contact with the corridor graphs the game actually builds.
+
+- Propagation was solver-starved, not slow: Jacobi-preconditioned CG needs one sweep per corridor cell, so on long chains it hit the 400-iteration cap every tick and exited with residual 2e-3 (measured: the serpentine probe capped on every early tick and crawled for 60+ ticks). The visible "front" was partly the iteration budget walking outward, which is also why the planned multigrid preconditioner seemed necessary.
+- The mask clock was compared as `clock - maskClock < 1/30`, so frame-dt rounding dropped every other tick on alternating frames (measured 15 Hz effective tick rate under steady 1/30 s settling) — front speed depended on frame timing.
+- Grid gas ignored rotor rotation entirely. The particle backend reflects off moving rotor walls with `omega x r` (`air.js`), but grid velocity came only from pressure flux: a spinning rotor moved no air, and a sealed machine had no coupling at all, so the two backends disagreed about the same physical event.
+
+## Changes
+
+- **IC(0) preconditioner (`gas.js`)**: the factor shares the 5-point stencil, so its diagonal is fused into the unknown-list build (lower neighbours already carry their factors; pinned mouths are eliminated, not divided by) and each preconditioner application is two allocation-free sweeps over the same list. It is exact along a 1-D pipe: a scrambled 301-cell chain solves in one PCG step. Jacobi division is gone from both apply sites; the caps, tolerance and warm start are unchanged.
+- **`DIFFUSE_DT` 2400 → 1200**: with a converged solve, the front profile on a connected machine is 6% → 100% coverage over nine mask ticks (~0.3 s) instead of either an iteration crawl or an instant repaint, and the settle tail is ~0.6 s.
+- **Mask clock keeps phase**: `maskClock += MASK_DT`, dropping only a backlog larger than two periods (pause/seek), so ticks run at 30 Hz regardless of frame rounding.
+- **Rotor swirl, no inertia**: `velocity()` now takes `sim` and adds the rigid wall velocity `omega x r` inside any turning rotor disc to the target velocity, alongside the pressure flux; the existing easing and `GAS_MAX` cap apply. The velocity array is re-derived every mask tick, so the swirl follows the sign of omega and dies within a few ticks of the rotor stopping — no momentum state anywhere. `drag()` no longer requires an open mouth: rotation, not the pressure boundary, is what stirs the air, so only the force slider gates the grain coupling.
+- Fixtures, `pressure-plan.md`, README, the Help drawer and `findings-pitfalls-skills.md` updated; `experiments/front-probe.cjs` kept as the front/iteration diagnostic.
+
+## Validation
+
+- New `gas-fixtures` gates, each verified to fail on the previous build: a scrambled 301-cell pipe steady-solve in ≤10 sweeps (old: 291) with linear error <1e-4; ten full-strength ticks filling a 121-cell pipe to <0.1 error; a mouth change crossing a connected machine within 15 mask ticks with no solve at the 400 cap; swirl on a fully sealed machine — mean tangential disc velocity +25 px/s at omega +2.4, -17 px/s reversed, decaying below 35% within 8 ticks of omega 0 (old code: 0.00 px/s in every case), while `pins == 0`.
+- All fixtures pass on Node v22.22.3: `geometry-check`, `geometry-fixtures`, `simulation-fixtures`, `air-fixtures`, `calibration` (serial-seam errors unchanged at 2.98e-7 / 5.96e-7), `gas-fixtures`, `game-fixtures` (bots 2 quests / 60 pts), `render-smoke`, `behavior-probe`.
+- Cost: off 0.23 ms vs grid 0.89 ms per 120 Hz step (budget 3× headroom); steady solves ~0.7 ms; `simulation-bench` grid 1.69 ms/60 Hz (was 1.87) with 169 rebuilds; coupling unchanged — 0.32 s dry, 0.49 s at force 1, stalled at force 2.
+- Front-profile and iteration measurements: `experiments/front-probe.cjs`, numbers in `experiments/logs/grid-gas-rotation-0.2.txt`.
+- Not verified in a real browser (none in this sandbox); the swirl and front were checked through the scalar field and fixtures only.
+
+## Next step
+
+The remaining propagation caveat is still resolution, not the solver: the 6 px centre-sampled mask misses sub-cell seam openings (aperture errors 11.27 / 5.14 px). A finer grid with aperture-based face conductance can now lean on IC(0) directly instead of needing multigrid first. On the visual side, the swirl is local to the disc by construction — carrying it one step into the adjacent corridor as a divergence-free advection would be the next increment if a spinning rotor should visibly push air down a pipe.

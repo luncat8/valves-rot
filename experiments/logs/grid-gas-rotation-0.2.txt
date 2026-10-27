@@ -1,0 +1,31 @@
+Grid gas front + rotation measurements, Node v22.22.3, this sandbox CPU.
+Compared against build eeb7c0c (Jacobi, dt=2400, no rotor coupling).
+
+front profile, connected cross machine, coverage of steady within 0.02 by mask tick
+  dt=600:  5 6 8 10 14 20 24 31 37 44 51 60 68 79 (still rising at t14)
+  dt=1200: 6 10 16 26 38 50 67 87 100 ...        <- chosen DIFFUSE_DT
+  dt=2400: 9 20 39 65 100 ...                     (near-instant after t4)
+
+PCG iterations per solve, connected cross, dt=1200
+  before (Jacobi): 179-290 with residual stall at ~2e-3 on chains
+  after  (IC(0)):  max 75, converged; serpentine machine max 128, 0 cap hits
+                   (old: cap 400 on every early tick)
+  301-cell chain steady from scrambled p: 291 iters before -> 1 after
+  121-cell chain steady: 1 IC-PCG step to machine precision (res 4e-22)
+
+cost per 120 Hz step (gas-fixtures bench, turning layout)
+  off 0.234 ms vs grid 0.897 ms  (budget off*6 = 1.4)
+  simulation-bench: grid 1.69 ms/60 Hz (was 1.87), 169 rebuilds, heap flat
+  steady snap ~0.74 ms, rebuild+refresh ~2.9 ms, cold diffuse dt=1200 ~5 ms
+
+coupling (simulation-bench, 30 px fall)
+  off 0.32 s | grid f0 0.32 s | f0.5 0.38 s | f1 0.49 s | f2 stalled
+  particles f1 0.41 s
+
+rotation swirl, sealed machine, mean tangential velocity in rotor disc (r < 0.6 RV)
+  omega +2.4: +25 px/s   omega -2.4: -17 px/s (after 8 ticks easing from +25)
+  omega 0:    -2.8 px/s within 8 ticks   (old code: 0.00 px/s always)
+
+mask clock
+  old comparison dropped every other tick under steady 1/30 s settling (15 Hz
+  effective); phase-preserving advance fires on every period.

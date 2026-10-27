@@ -233,6 +233,51 @@ let steadyError = 0;
 for (let k = 0; k < 121; k++) steadyError = Math.max(steadyError, Math.abs(both.p[k] - (1 - k / 120)));
 assert.ok(steadyError < 1e-4, `the steady solve gives the linear 1-D profile (${steadyError.toExponential(2)})`);
 
+// ---- long pipes converge instead of starving ------------------------------
+// IC(0) is exact along a chain, so even a scrambled 301-cell pipe solves in a
+// few sweeps; Jacobi needed one iteration per cell and stalled the front.
+const longPipe = oneD(301, 6, true);
+for (let k = 0; k < 301; k++) longPipe.p[k] = 0.5 + 0.4 * Math.sin(k * 0.37);
+GAS.steady(longPipe, longPipe.p);
+assert.ok(longPipe.pcgIters <= 10, `a 301-cell pipe solves in a few sweeps (${longPipe.pcgIters})`);
+let pipeError = 0;
+for (let k = 0; k < 301; k++) pipeError = Math.max(pipeError, Math.abs(longPipe.p[k] - (1 - k / 300)));
+assert.ok(pipeError < 1e-4, `the long pipe reaches the linear profile (${pipeError.toExponential(2)})`);
+// A full-strength implicit step carries the transient through the pipe too.
+const rush = oneD(121, 6, true);
+rush.p.fill(0.5);
+for (let k = 0; k < 10; k++) GAS.diffuse(rush, GAS.DIFFUSE_DT);
+let rushError = 0;
+for (let k = 0; k < 121; k++) rushError = Math.max(rushError, Math.abs(rush.p[k] - (1 - k / 120)));
+assert.ok(rushError < 0.1, `ten mask ticks fill a 121-cell pipe (${rushError.toFixed(3)})`);
+
+// On a connected machine the same must hold end to end: after a mouth change
+// the front arrives within a handful of mask ticks and no solve hits the
+// iteration cap.
+const brisk = S.create(crossLayout(), { turning: false });
+S.setPressure(brisk, "grid");
+setOpen(brisk, I.TOP, false);
+setOpen(brisk, I.BOTTOM, false);
+run(brisk, 0.3);
+S.toggleInlet(brisk, I.TOP * G.N + 0, false);
+S.toggleInlet(brisk, I.BOTTOM * G.N + (G.N - 1), false);
+GAS.steady(brisk.pressure, brisk.pressure.pTarget);
+let briskTicks = 0;
+for (; briskTicks < 30; briskTicks++) {
+	S.settlePressure(brisk, 1 / 30);
+	assert.ok(brisk.pressure.pcgIters < 400, "no solve starves against the iteration cap");
+	let near = 0;
+	let active = 0;
+	for (let n = 0; n < brisk.pressure.count; n++) {
+		const k = brisk.pressure.list[n];
+		if (!brisk.pressure.active[k] || brisk.pressure.pin[k]) continue;
+		active++;
+		if (Math.abs(brisk.pressure.p[k] - brisk.pressure.pTarget[k]) <= 0.02) near++;
+	}
+	if (active && near / active >= 0.95) break;
+}
+assert.ok(briskTicks <= 15, `the front crosses a connected machine quickly (${briskTicks} mask ticks)`);
+
 // ---- valves decide where the air can go ---------------------------------
 const gated = S.create(crossLayout(), { turning: false });
 gated.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);
@@ -273,6 +318,55 @@ for (let i = 0; i < turned.pressure.count; i++) {
 	if (Math.abs(beforeTurn[k] - turned.pressure.p[k]) > 0.02) moved++;
 }
 assert.ok(moved > 20, `a rotor turn moves the field (${moved} cells)`);
+
+// ---- rotation drives the gas with no inertia state ------------------------
+// A turning rotor drags the air in its disc the way the particle backend's
+// moving walls do, straight from omega: no momentum is stored, so the swirl
+// stops a few mask ticks after the rotor does, and no pressure boundary is
+// needed for it to exist.
+const swirl = S.create(G.createLayout(7), { turning: false });
+S.setPressure(swirl, "grid");
+S.installValve(swirl, 44, G.typeById("hollow-cross"), 0, G.RV * 0.8);
+setOpen(swirl, I.TOP, false);
+setOpen(swirl, I.BOTTOM, false);
+GAS.refresh(swirl, true); // sealed snapshot with zeroed velocity
+const spun = swirl.pressure;
+function swirlSettle() {
+	for (let k = 0; k < 8; k++) S.settlePressure(swirl, 1 / 30);
+}
+function discTangential() {
+	const v = swirl.layout.valves[44];
+	let sum = 0;
+	let n = 0;
+	for (let i = 0; i < spun.count; i++) {
+		const k = spun.list[i];
+		const cx = (k % spun.nx) * spun.cell + spun.cell / 2;
+		const cy = ((k / spun.nx) | 0) * spun.cell + spun.cell / 2 - G.POUR;
+		const dx = cx - v.cx;
+		const dy = cy - v.cy;
+		const d2 = dx * dx + dy * dy;
+		if (d2 > (G.RV * 0.6) * (G.RV * 0.6) || d2 < 4) continue;
+		sum += (spun.gx[k] * -dy + spun.gy[k] * dx) / Math.sqrt(d2);
+		n++;
+	}
+	return n ? sum / n : 0;
+}
+swirlSettle();
+const stillSwirl = discTangential();
+assert.equal(spun.pins, 0, "rotation needs no pressure boundary");
+assert.ok(Math.abs(stillSwirl) < 2, `a sealed still machine carries no swirl (${stillSwirl.toFixed(1)} px/s)`);
+swirl.omega[44] = 2.4;
+swirlSettle();
+const cw = discTangential();
+assert.ok(cw > 10, `a turning rotor drags the gas with it (${cw.toFixed(0)} px/s)`);
+swirl.omega[44] = -2.4;
+swirlSettle();
+const ccw = discTangential();
+assert.ok(ccw < -10, `the swirl follows the direction of rotation (${ccw.toFixed(0)} px/s)`);
+swirl.omega[44] = 0;
+swirlSettle();
+const stopped = discTangential();
+assert.ok(Math.abs(stopped) < Math.abs(cw) * 0.35, `the swirl stops with the rotor: no inertia state (${stopped.toFixed(1)} px/s)`);
 
 // ---- occupancy and reciprocation ----------------------------------------
 const vacant = chamber(false);

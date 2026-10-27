@@ -5,10 +5,15 @@
 // conductance, so the valves decide which pockets fill, drain or stay sealed.
 //
 // One backward-Euler diffusion step runs on the 30 Hz mask clock, solved with a
-// preconditioned conjugate gradient on the real face-conductance graph. Pressure therefore starts at the mouths and
-// travels as a front instead of being recomputed as one global distance ratio. A
-// connected region without any mouth keeps the air it had: there is nowhere for
-// that air to go. Gas velocity is the local face flux, and grains feel empirical
+// preconditioned conjugate gradient on the real face-conductance graph. The
+// preconditioner is IC(0): two triangular sweeps over the same 5-point stencil,
+// exact along a 1-D pipe, so a front crosses a long corridor at the physical
+// rate of the implicit step instead of crawling at the CG iteration budget.
+// Pressure therefore starts at the mouths and travels as a front instead of
+// being recomputed as one global distance ratio. A connected region without any
+// mouth keeps the air it had: there is nowhere for that air to go. Gas velocity
+// is the local face flux plus the rigid swirl of any turning rotor disc — a
+// kinematic wall velocity with no momentum state — and grains feel empirical
 // drag and lift from it; packed cells lower the conductance and pay back the
 // impulse they deliver. The field is a normalized relative pressure, not a
 // calibrated thermodynamic gas.
@@ -39,11 +44,15 @@ const ValveGas = (() => {
 	const FILL_COST = 3;
 	const GRAIN_CAPACITY = 1.5;
 	// Implicit step per mask tick. In cell units this spreads the front about
-	// sqrt(DIFFUSE_DT) cells per tick; the implicit solve stays stable at any dt.
-	const DIFFUSE_DT = 2400;
-	// The graph is a maze of long corridors, so plain relaxation crawls. A Jacobi-
-	// preconditioned conjugate gradient solves the same sparse system in tens of
-	// sweeps and needs no relaxation factor tuned to the layout.
+	// sqrt(DIFFUSE_DT) cells per tick, so a mouth click is readable as a front
+	// crossing the machine in about a third of a second instead of either an
+	// instant repaint or an iteration-starved crawl; the implicit solve stays
+	// stable at any dt.
+	const DIFFUSE_DT = 1200;
+	// The graph is a maze of long corridors, where Jacobi preconditioning needs
+	// one sweep per corridor cell and starves the front. IC(0) gives the same
+	// sparse system a factorization that is exact along a pipe, so both the
+	// transient and the steady solve converge in tens of sweeps.
 	const PCG_STEADY_ITERS = 700;
 	const PCG_STEP_ITERS = 400;
 	const PCG_TOL = 1e-6;
@@ -110,6 +119,7 @@ const ValveGas = (() => {
 			pcgQ: new Float64Array(size),
 			pcgB: new Float64Array(size),
 			pcgDiag: new Float64Array(size),
+			pcgIC: new Float64Array(size),
 			unknowns: new Int32Array(size),
 			solves: 0,
 			pcgIters: 0,
@@ -262,6 +272,43 @@ const ValveGas = (() => {
 		return dot;
 	}
 
+	// One IC(0) preconditioner application: forward then backward substitution
+	// with the stored factor, z = (L L^T)^{-1} r. L shares the 5-point stencil
+	// of A, so both sweeps walk the unknown list in order — exact along a 1-D
+	// pipe, where Jacobi needed one iteration per cell and starved the front.
+	// Dirichlet mouths are not in the system: their rows never touch a pin.
+	function applyIC(f, src, dst, w, nu) {
+		const uk = f.unknowns;
+		const ic = f.pcgIC;
+		const pin = f.pin;
+		const nL = f.nL;
+		const nR = f.nR;
+		const nU = f.nU;
+		const nD = f.nD;
+		const gL = f.gL;
+		const gR = f.gR;
+		const gU = f.gU;
+		const gD = f.gD;
+		for (let i = 0; i < nu; i++) {
+			const k = uk[i];
+			let s = src[k];
+			const l = nL[k];
+			if (l !== k && !pin[l]) s += w * gL[k] / ic[l] * dst[l];
+			const u = nU[k];
+			if (u !== k && !pin[u]) s += w * gU[k] / ic[u] * dst[u];
+			dst[k] = s / ic[k];
+		}
+		for (let i = nu - 1; i >= 0; i--) {
+			const k = uk[i];
+			let s = dst[k];
+			const r = nR[k];
+			if (r !== k && !pin[r]) s += w * gR[k] / ic[k] * dst[r];
+			const d = nD[k];
+			if (d !== k && !pin[d]) s += w * gD[k] / ic[k] * dst[d];
+			dst[k] = s / ic[k];
+		}
+	}
+
 	function pinnedValue(f, k) {
 		return f.pin[k] === 2 ? 1 : 0;
 	}
@@ -293,6 +340,20 @@ const ValveGas = (() => {
 			const rr = f.nR[k];
 			const u = f.nU[k];
 			const dd = f.nD[k];
+			// IC(0) factor row fused into the build: the unknown list follows
+			// cell order, so the lower neighbours (left, up) already carry their
+			// diagonal factors. Pinned mouths were eliminated with x = value.
+			const floor = diag[k] * 1e-10;
+			let pivot = diag[k];
+			if (l !== k && !pin[l]) {
+				const c = w * f.gL[k] / f.pcgIC[l];
+				pivot -= c * c;
+			}
+			if (u !== k && !pin[u]) {
+				const c = w * f.gU[k] / f.pcgIC[u];
+				pivot -= c * c;
+			}
+			f.pcgIC[k] = Math.sqrt(pivot > floor ? pivot : floor);
 			if (l !== k && pin[l]) bp += f.gL[k] * pinnedValue(f, l);
 			if (rr !== k && pin[rr]) bp += f.gR[k] * pinnedValue(f, rr);
 			if (u !== k && pin[u]) bp += f.gU[k] * pinnedValue(f, u);
@@ -307,7 +368,10 @@ const ValveGas = (() => {
 		for (let i = 0; i < nu; i++) {
 			const k = uk[i];
 			r[k] = b[k] - q[k];
-			z[k] = r[k] / diag[k];
+		}
+		applyIC(f, r, z, w, nu);
+		for (let i = 0; i < nu; i++) {
+			const k = uk[i];
 			d[k] = z[k];
 			rz += r[k] * z[k];
 		}
@@ -327,10 +391,10 @@ const ValveGas = (() => {
 					if (ar > residual) residual = ar;
 				}
 				if (residual < tol) break;
+				applyIC(f, r, z, w, nu);
 				let rzNext = 0;
 				for (let i = 0; i < nu; i++) {
 					const k = uk[i];
-					z[k] = r[k] / diag[k];
 					rzNext += r[k] * z[k];
 				}
 				const beta = rzNext / rz;
@@ -418,7 +482,7 @@ const ValveGas = (() => {
 		applyPins(sim, gas);
 		steady(gas, gas.p);
 		markActive(gas);
-		velocity(gas, true);
+		velocity(sim, gas, true);
 		measure(gas);
 		gas.settled = true;
 		return gas;
@@ -537,9 +601,13 @@ const ValveGas = (() => {
 		return changed;
 	}
 
-	// Cell-centred velocity from the actual face fluxes. A sealed component has no
-	// reservoir and therefore no through-flow; its cells carry no gas velocity.
-	function velocity(gas, snap) {
+	// Cell-centred velocity from the actual face fluxes plus the rigid swirl of
+	// a turning rotor disc: the wall velocity at this point is applied straight
+	// to the gas with no momentum state of its own, so rotation shows up in the
+	// flow without an inertia model and stops on the next mask tick. A sealed
+	// component has no reservoir and therefore no through-flow; its cells carry
+	// only the swirl of a rotor inside them.
+	function velocity(sim, gas, snap) {
 		const p = gas.p;
 		const list = gas.list;
 		const open = gas.open;
@@ -554,6 +622,15 @@ const ValveGas = (() => {
 		const nR = gas.nR;
 		const nU = gas.nU;
 		const nD = gas.nD;
+		const omega = sim.omega;
+		const valves = sim.layout.valves;
+		let spinning = false;
+		for (let k = 0; k < omega.length; k++) {
+			if (omega[k] !== 0) {
+				spinning = true;
+				break;
+			}
+		}
 		let flow = 0;
 		for (let n = 0; n < gas.count; n++) {
 			const k = list[n];
@@ -564,12 +641,26 @@ const ValveGas = (() => {
 				const scale = FLOW_SCALE / open[k] * 0.5;
 				vx = (gL[k] * (p[nL[k]] - c) + gR[k] * (c - p[nR[k]])) * scale;
 				vy = (gU[k] * (p[nU[k]] - c) + gD[k] * (c - p[nD[k]])) * scale;
-				const speed = Math.sqrt(vx * vx + vy * vy);
-				if (speed > GAS_MAX) {
-					const s = GAS_MAX / speed;
-					vx *= s;
-					vy *= s;
+			}
+			if (spinning) {
+				const cx = (k % NX) * CELL + CELL / 2;
+				const cy = ((k / NX) | 0) * CELL + CELL / 2 - G.POUR;
+				const vi = G.cellAt(cx, cy);
+				const om = omega[vi];
+				if (om !== 0) {
+					const dx = cx - valves[vi].cx;
+					const dy = cy - valves[vi].cy;
+					if (dx * dx + dy * dy < G.RV * G.RV) {
+						vx += -om * dy;
+						vy += om * dx;
+					}
 				}
+			}
+			const speed = Math.sqrt(vx * vx + vy * vy);
+			if (speed > GAS_MAX) {
+				const s = GAS_MAX / speed;
+				vx *= s;
+				vy *= s;
 			}
 			if (snap) {
 				gx[k] = vx;
@@ -597,7 +688,7 @@ const ValveGas = (() => {
 		} else if (force || changed || !gas.settled) {
 			gas.settled = diffuse(gas, DIFFUSE_DT) < SETTLE_TOL;
 		}
-		velocity(gas, snap);
+		velocity(sim, gas, snap);
 		measure(gas);
 		gas.updates++;
 	}
@@ -617,7 +708,12 @@ const ValveGas = (() => {
 			applyPins(sim, gas);
 		}
 		update(sim, gas, false, moved);
-		gas.maskClock = gas.clock;
+		// Keep the tick phase instead of snapping to the frame clock: a frame
+		// that lands just under 1/30 s would otherwise drop every other tick
+		// and halve the effective front speed. A long stall drops its backlog
+		// rather than catching up with a burst of solves.
+		gas.maskClock += MASK_DT;
+		if (gas.clock - gas.maskClock > 2 * MASK_DT) gas.maskClock = gas.clock;
 	}
 
 	// A grain resting on a wall or a rim sits in a cell whose centre is metal, so
@@ -649,9 +745,11 @@ const ValveGas = (() => {
 	// Drag toward the gas and lift along its velocity, both scaled by air force.
 	// The cell pays that impulse back; a dense pile damps the flow through it.
 	// Grains in the reservoir bands are left alone so a full spout still feeds.
+	// Rotation drives this even with every mouth sealed: a turning rotor has no
+	// use for a pressure reference, so only the force slider gates the coupling.
 	function drag(sim, gas, h) {
 		const force = sim.airForce;
-		if (force <= 0 || !gas.pins) return;
+		if (force <= 0) return;
 		const dragRate = DRAG * force;
 		const lift = LIFT * force;
 		const invMass = 1 / CELL_MASS;
@@ -715,7 +813,7 @@ const ValveGas = (() => {
 		applyPins(sim, gas);
 		if (snap) steady(gas, gas.p);
 		gas.settled = !!snap;
-		velocity(gas, !!snap);
+		velocity(sim, gas, !!snap);
 		measure(gas);
 		gas.updates++;
 		gas.maskClock = gas.clock;
@@ -725,7 +823,7 @@ const ValveGas = (() => {
 	function repin(sim) {
 		const gas = sim.pressure;
 		applyPins(sim, gas);
-		velocity(gas, false);
+		velocity(sim, gas, false);
 		measure(gas);
 		gas.updates++;
 	}
