@@ -2,6 +2,7 @@ const ValveRender = (() => {
 	"use strict";
 
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
+	const I = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
 	const N = G.N;
 	const S = G.S;
 	const SIZE = G.SIZE;
@@ -24,6 +25,52 @@ const ValveRender = (() => {
 	const SELECT_C = "#efc179";
 	const RIM_BAND = 1.1;
 	const SPR = Math.ceil(2 * RV + 6);
+	const LEGEND_W = 7;
+	const LEGEND_H = 104;
+	const LEGEND_X = SIZE - 30;
+	const LEGEND_Y = 22;
+	const LEGEND_STEPS = 16;
+
+	// Scalar pressure ramp, low to high: deep blue through cyan and amber to red.
+	// Both the texel lookup and the legend swatches are precomputed once.
+	const PRESS_STOPS = [
+		[0, 30, 88, 176],
+		[0.3, 32, 200, 214],
+		[0.55, 224, 224, 74],
+		[0.78, 255, 150, 48],
+		[1, 255, 52, 60],
+	];
+
+	function buildRamp(stops) {
+		const lut = new Uint8ClampedArray(256 * 4);
+		let seg = 0;
+		for (let i = 0; i < 256; i++) {
+			const t = i / 255;
+			while (seg < stops.length - 2 && t > stops[seg + 1][0]) seg++;
+			const a = stops[seg];
+			const b = stops[seg + 1];
+			const f = clamp01((t - a[0]) / (b[0] - a[0]));
+			lut[i * 4] = a[1] + (b[1] - a[1]) * f;
+			lut[i * 4 + 1] = a[2] + (b[2] - a[2]) * f;
+			lut[i * 4 + 2] = a[3] + (b[3] - a[3]) * f;
+			lut[i * 4 + 3] = 255;
+		}
+		return lut;
+	}
+
+	function clamp01(v) {
+		return v < 0 ? 0 : v > 1 ? 1 : v;
+	}
+
+	const PRESS_LUT = buildRamp(PRESS_STOPS);
+	const PRESS_CSS = (() => {
+		const out = [];
+		for (let i = 0; i < LEGEND_STEPS; i++) {
+			const c = ((i / (LEGEND_STEPS - 1)) * 255) | 0;
+			out.push("rgb(" + PRESS_LUT[c * 4] + "," + PRESS_LUT[c * 4 + 1] + "," + PRESS_LUT[c * 4 + 2] + ")");
+		}
+		return out;
+	})();
 
 	function hsl(h, s, l) {
 		return "hsl(" + h.toFixed(1) + "," + s.toFixed(1) + "%," + l.toFixed(1) + "%)";
@@ -410,6 +457,112 @@ const ValveRender = (() => {
 		ctx.fill();
 	}
 
+	// Scalar pressure overlay: one texel per gas cell, tinted by the ramp and
+	// transparent over metal. The caller scales it up with smoothing on.
+	function makeFieldMap(nx, ny) {
+		const c = document.createElement("canvas");
+		c.width = nx;
+		c.height = ny;
+		const ctx = c.getContext("2d");
+		return { canvas: c, ctx, img: ctx.createImageData(nx, ny), nx, ny };
+	}
+
+	function renderField(map, gas) {
+		const data = map.img.data;
+		const lut = PRESS_LUT;
+		const air = gas.air;
+		const p = gas.p;
+		const n = air.length;
+		for (let k = 0, o = 0; k < n; k++, o += 4) {
+			if (!air[k]) {
+				data[o + 3] = 0;
+				continue;
+			}
+			const v = clamp01(p[k] > 0 ? p[k] : 0);
+			const q = ((v * 255) | 0) * 4;
+			data[o] = lut[q];
+			data[o + 1] = lut[q + 1];
+			data[o + 2] = lut[q + 2];
+			data[o + 3] = lut[q + 3];
+		}
+		map.ctx.putImageData(map.img, 0, 0);
+	}
+
+	function renderPressureLegend(ctx) {
+		const x = LEGEND_X;
+		const y = LEGEND_Y;
+		ctx.save();
+		roundRect(ctx, x - 16, y - 12, LEGEND_W + 26, LEGEND_H + 24, 4);
+		ctx.fillStyle = "rgba(10,14,20,0.55)";
+		ctx.fill();
+		const step = LEGEND_H / LEGEND_STEPS;
+		for (let i = 0; i < LEGEND_STEPS; i++) {
+			ctx.fillStyle = PRESS_CSS[i];
+			ctx.fillRect(x, y + i * step, LEGEND_W, step + 0.7);
+		}
+		ctx.fillStyle = "rgba(226,236,245,0.86)";
+		ctx.font = "7px system-ui, sans-serif";
+		ctx.textAlign = "right";
+		ctx.textBaseline = "middle";
+		ctx.fillText("low", x - 2.5, y + 4);
+		ctx.fillText("high", x - 2.5, y + LEGEND_H - 4);
+		ctx.restore();
+	}
+
+	// One mouth marker per column: an arrow pointing into the field for a source
+	// and out of it for a vent, with sealed mouths dimmed.
+	function renderInlets(ctx, inlets, hover) {
+		for (let k = 0; k < inlets.count; k++) {
+			const x = inlets.x[k];
+			const y = inlets.y[k];
+			const active = k === hover;
+			const open = inlets.open[k] === 1;
+			const inward = inlets.side[k] === I.TOP ? 1 : -1;
+			ctx.beginPath();
+			ctx.arc(x, y, 6.2, 0, TAU);
+			ctx.fillStyle = active ? "rgba(240,248,255,0.34)" : "rgba(8,12,18,0.46)";
+			ctx.fill();
+			if (open) {
+				ctx.beginPath();
+				ctx.moveTo(x, y + inward * 4.2);
+				ctx.lineTo(x - 3.3, y - inward * 2.2);
+				ctx.lineTo(x + 3.3, y - inward * 2.2);
+				ctx.closePath();
+				ctx.fillStyle = inlets.level[k] === I.HIGH ? "#ff8a5c" : "#5cc8ff";
+				ctx.fill();
+			} else {
+				ctx.beginPath();
+				ctx.moveTo(x - 2.6, y - 2.6);
+				ctx.lineTo(x + 2.6, y + 2.6);
+				ctx.moveTo(x + 2.6, y - 2.6);
+				ctx.lineTo(x - 2.6, y + 2.6);
+				ctx.lineWidth = 1.4;
+				ctx.strokeStyle = "rgba(190,202,214,0.6)";
+				ctx.stroke();
+			}
+			if (!active) continue;
+			ctx.beginPath();
+			ctx.arc(x, y, 7.6, 0, TAU);
+			ctx.lineWidth = 1.2;
+			ctx.strokeStyle = SELECT_C;
+			ctx.stroke();
+			// Hovering names the mouth: polarity and whether it holds the field.
+			const source = inlets.level[k] === I.HIGH;
+			const label = (source ? "source" : "vent") + (open ? "" : " sealed");
+			ctx.font = "7px system-ui, sans-serif";
+			ctx.textBaseline = "middle";
+			ctx.textAlign = x > SIZE - 90 ? "right" : "left";
+			const tx = x > SIZE - 90 ? x - 10 : x + 10;
+			// Fixed estimate instead of measureText: no per-frame allocation.
+			const width = label.length * 3.9;
+			roundRect(ctx, ctx.textAlign === "right" ? tx - width - 3 : tx - 3, y - 6, width + 6, 12, 3);
+			ctx.fillStyle = "rgba(10,14,20,0.72)";
+			ctx.fill();
+			ctx.fillStyle = source ? "#ffb08c" : "#a8e2ff";
+			ctx.fillText(label, tx, y);
+		}
+	}
+
 	function makeAirMap(cell) {
 		const w = Math.ceil(SIZE / cell);
 		const h = Math.ceil((SIZE + G.POUR * 2) / cell);
@@ -429,6 +582,10 @@ const ValveRender = (() => {
 		renderAirMap,
 		renderGrains,
 		renderPressure,
+		makeFieldMap,
+		renderField,
+		renderPressureLegend,
+		renderInlets,
 		makeCanvas,
 	};
 })();

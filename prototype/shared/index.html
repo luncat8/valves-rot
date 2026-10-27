@@ -10,7 +10,7 @@
 	<header>
 	<a href="../../index.html">All prototypes</a>
 	<h1>Combined / Rotary Valve Field</h1>
-	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Double-click to replace a valve (clears its grains); Ctrl-click to fill with one random color. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor.</p>
+	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Double-click to replace a valve (clears its grains); Ctrl-click to fill with one random color. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor. The mouths in the pour and drain bands are pressure inlets: bottom rows are constant high pressure, top rows constant low pressure. Click a mouth to seal or open it, Shift-click to swap its high/low polarity.</p>
 	</header>
 	<div class="controls">
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
@@ -26,17 +26,19 @@
 		<label><input id="model" type="checkbox"> Air model</label>
 		<fieldset class="pressure-controls">
 			<legend>Pressure</legend>
-			<label><input id="pressure-off" name="pressure" type="radio" value="off" checked> Off</label>
+			<label><input id="pressure-off" name="pressure" type="radio" value="off"> Off</label>
 			<label><input id="pressure-particles" name="pressure" type="radio" value="particles"> Air particles</label>
-			<label title="Planned: low-resolution CPU gas solver"><input type="radio" name="pressure" disabled> Grid gas (planned)</label>
+			<label><input id="pressure-grid" name="pressure" type="radio" value="grid" checked> Grid gas</label>
 		</fieldset>
-		<label><input id="pressure-draw" type="checkbox"> Draw pressure as air color</label>
+		<label><input id="pressure-draw" type="checkbox" checked> Draw pressure as air color</label>
 	</div>
-	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve."></canvas>
+	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve. Click an inlet mouth in the bands to toggle it."></canvas>
 	<p id="stats" aria-live="off"></p>
 	<script src="geometry.js"></script>
+	<script src="inlets.js"></script>
+	<script src="air.js"></script>
+	<script src="gas.js"></script>
 	<script src="render.js"></script>
-	<script src="pressure.js"></script>
 	<script src="simulation.js"></script>
 	<script src="app.js"></script>
 </body>

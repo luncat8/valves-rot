@@ -115,13 +115,14 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "render.js", "pressure.js", "simulation.js", "app.js"]) {
+for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "render.js", "simulation.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
 
 const G = vm.runInThisContext("ValveGeometry");
 const R = vm.runInThisContext("ValveRender");
+const INL = vm.runInThisContext("ValveInlets");
 const SIM = vm.runInThisContext("ValveSimulation");
 assert.ok(SIM.STEP > 0 && SIM.GRAIN_COLORS.length >= 4);
 assert.equal(G.N, 10);

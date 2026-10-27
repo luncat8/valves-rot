@@ -4,6 +4,7 @@
 	const G = ValveGeometry;
 	const R = ValveRender;
 	const S = ValveSimulation;
+	const I = ValveInlets;
 	const $ = id => document.getElementById(id);
 
 	const HEIGHT = G.SIZE + G.POUR * 2;
@@ -12,17 +13,22 @@
 	const airMap = R.makeAirMap(4);
 	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
+	const point = { x: 0, y: 0 };
+	const at = { inlet: -1, cell: -1 };
 
 	let layout = G.createLayout(readSeed());
 	let sim = S.create(layout);
 	let scene = null;
 	let paused = false;
 	let selected = -1;
+	let hoverInlet = -1;
+	let fieldMap = null;
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
 
 	S.seed(sim);
+	S.setPressure(sim, readMode());
 
 	function readSeed() {
 		const value = parseInt($("seed").value, 10);
@@ -44,7 +50,7 @@
 		sim = S.create(layout);
 		S.setSpeed(sim, +$("speed").value);
 		S.seed(sim);
-		S.setPressure(sim, $("pressure-particles").checked ? "particles" : "off");
+		S.setPressure(sim, readMode());
 		rebuild(true);
 		if (paused) drawFrame(true);
 	}
@@ -57,11 +63,22 @@
 		if (paused) drawFrame(true);
 	}
 
-	function cellFromPointer(event) {
+	function readMode() {
+		if ($("pressure-grid").checked) return "grid";
+		if ($("pressure-particles").checked) return "particles";
+		return "off";
+	}
+
+	// Pointer in world coordinates: [-POUR, SIZE + POUR] vertically.
+	function worldFromPointer(event) {
 		const b = canvas.getBoundingClientRect();
-		if (!(b.width > 0 && b.height > 0)) return -1;
-		const wx = ((event.clientX - b.left) / b.width) * G.SIZE;
-		const wy = ((event.clientY - b.top) / b.height) * HEIGHT - G.POUR;
+		if (!(b.width > 0 && b.height > 0)) return null;
+		point.x = ((event.clientX - b.left) / b.width) * G.SIZE;
+		point.y = ((event.clientY - b.top) / b.height) * HEIGHT - G.POUR;
+		return point;
+	}
+
+	function cellFromPointer(wx, wy) {
 		if (wx < 0 || wx >= G.SIZE || wy < 0 || wy >= G.SIZE) return -1;
 		return ((wy / G.S) | 0) * G.N + ((wx / G.S) | 0);
 	}
@@ -116,28 +133,52 @@
 	};
 
 	function pressureChanged() {
-		S.setPressure(sim, $("pressure-particles").checked ? "particles" : "off");
-		if (paused) drawFrame(false);
+		S.setPressure(sim, readMode());
+		if (paused) drawFrame(true);
 	}
 	$("pressure-off").onchange = pressureChanged;
 	$("pressure-particles").onchange = pressureChanged;
+	$("pressure-grid").onchange = pressureChanged;
 	$("pressure-draw").onchange = () => { if (paused) drawFrame(false); };
 
+	function setHover(inlet) {
+		if (hoverInlet === inlet) return;
+		hoverInlet = inlet;
+		if (paused) drawFrame(false);
+	}
+
+	function pointerState(event) {
+		const w = worldFromPointer(event);
+		at.inlet = w ? I.hit(sim.inlets, w.x, w.y) : -1;
+		at.cell = w ? cellFromPointer(w.x, w.y) : -1;
+		return at;
+	}
+
 	canvas.onpointermove = event => {
-		selected = cellFromPointer(event);
+		pointerState(event);
+		setHover(at.inlet);
+		selected = at.inlet >= 0 ? -1 : at.cell;
 		if (paused) drawFrame(false);
 	};
 	canvas.onpointerleave = () => {
 		if (document.activeElement === canvas) return;
 		selected = -1;
+		setHover(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onblur = () => {
 		selected = -1;
+		setHover(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onclick = event => {
-		selected = cellFromPointer(event);
+		pointerState(event);
+		if (at.inlet >= 0) {
+			S.toggleInlet(sim, at.inlet, event.shiftKey);
+			if (paused) drawFrame(true);
+			return;
+		}
+		selected = at.cell;
 		if (selected < 0 || event.detail > 1) return;
 		if (event.ctrlKey) S.fillValve(sim, selected);
 		else turnSelected(event.shiftKey ? -1 : 1);
@@ -145,8 +186,11 @@
 	};
 	canvas.ondblclick = event => {
 		event.preventDefault();
-		selected = cellFromPointer(event);
-		if (event.ctrlKey || !S.replaceValve(sim, selected)) return;
+		const w = worldFromPointer(event);
+		if (!w) return;
+		selected = cellFromPointer(w.x, w.y);
+		if (selected < 0 || event.ctrlKey || !S.replaceValve(sim, selected)) return;
+		hoverInlet = -1;
 		rebuild(true);
 		if (paused) drawFrame(true);
 	};
@@ -188,13 +232,31 @@
 		ctx.restore();
 	}
 
+	// Scalar field, drawn as one smoothed texel per gas cell plus the legend.
+	function drawPressureGrid() {
+		const gas = sim.pressure;
+		if (!fieldMap || fieldMap.nx !== gas.nx || fieldMap.ny !== gas.ny) fieldMap = R.makeFieldMap(gas.nx, gas.ny);
+		R.renderField(fieldMap, gas);
+		ctx.save();
+		ctx.globalAlpha = 0.62;
+		ctx.imageSmoothingEnabled = true;
+		ctx.drawImage(fieldMap.canvas, 0, -G.POUR, gas.nx * gas.cell, gas.ny * gas.cell);
+		ctx.restore();
+		R.renderPressureLegend(ctx);
+	}
+
 	function drawFrame(forceOverlay) {
 		ctx.save();
 		// Shift world [-POUR, SIZE + POUR] down into canvas [0, SIZE + 2 * POUR].
 		ctx.translate(0, G.POUR);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
-		if ($("pressure-draw").checked && sim.pressure) R.renderPressure(ctx, sim.pressure);
+		if ($("pressure-draw").checked && sim.pressure) {
+			if (sim.pressure.kind === "grid") drawPressureGrid();
+			else R.renderPressure(ctx, sim.pressure);
+		}
+		// Mouths sit under the grain piles that share the bands.
+		R.renderInlets(ctx, sim.inlets, hoverInlet);
 		R.renderGrains(ctx, sim, scene);
 		R.renderSelection(ctx, layout, selected);
 		ctx.restore();
@@ -202,6 +264,7 @@
 
 	function formatStats(fps) {
 		const purged = sim.purged > 0 ? " · purged " + sim.purged : "";
+		const gas = sim.pressure && sim.pressure.kind === "grid" ? " · gas p " + sim.pressure.mean.toFixed(2) + " · flow " + sim.pressure.flow.toFixed(0) : "";
 		return (
 			fps.toFixed(0).padStart(3) +
 			" fps · seed " +
@@ -216,7 +279,8 @@
 			" · recovered " +
 			sim.recovered +
 			" · pushes " +
-			sim.pushed
+			sim.pushed +
+			gas
 		);
 	}
 

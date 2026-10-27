@@ -1,12 +1,20 @@
 // Optional kinetic air. Independent state and counters; no DOM or drawing.
-const ValvePressure = (() => {
+// Air is a dilute population of elastic discs; the inlets drive it as a
+// reservoir circuit, cycling particles that reach a low-pressure vent back into
+// a high-pressure source so the cloud circulates bottom to top.
+const ValveAir = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
+	const I = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
 	const RADIUS = 0.65;
 	const MASS = 0.035;
 	const SPEED = 180;
 	const LIMIT = 450;
 	const BIN = 8;
+	// Particles recycled per second per open source/vent pair, and how deep into a
+	// band a particle has to reach before a vent takes it.
+	const CYCLE_RATE = 26;
+	const VENT_DEPTH = 9;
 	const W = Math.ceil(G.SIZE / BIN);
 	const H = Math.ceil((G.SIZE + 2 * G.POUR) / BIN);
 
@@ -18,7 +26,10 @@ const ValvePressure = (() => {
 
 	function create(sim, capacity = 900) {
 		const p = {
-			count: 0, capacity, collisions: 0, recoveries: 0,
+			kind: "particles",
+			count: 0, capacity, collisions: 0, recoveries: 0, cycles: 0,
+			exchange: 0, cursor: 0,
+			random: G.rng((sim.layout.seed | 0) ^ 0x2f1d5),
 			x: new Float64Array(capacity), y: new Float64Array(capacity),
 			vx: new Float64Array(capacity), vy: new Float64Array(capacity),
 			head: new Int32Array(W * H), next: new Int32Array(sim.capacity),
@@ -113,6 +124,60 @@ const ValvePressure = (() => {
 		return false;
 	}
 
+	function band(y) {
+		if (y <= -G.POUR + VENT_DEPTH) return I.TOP;
+		if (y >= G.SIZE + G.POUR - VENT_DEPTH) return I.BOTTOM;
+		return -1;
+	}
+
+	// Moves one particle from the vent it reached back to a random high-pressure
+	// source, aimed into the field. The population stays constant; only its
+	// placement circulates.
+	function respire(sim, p, k) {
+		const inlets = sim.inlets;
+		for (let trial = 0; trial < 12; trial++) {
+			const idx = (p.random() * inlets.count) | 0;
+			if (!inlets.open[idx] || inlets.level[idx] !== I.HIGH) continue;
+			const side = inlets.side[idx];
+			const spread = (p.random() * 2 - 1) * (G.HALF - RADIUS - 0.5);
+			const depth = p.random() * (G.POUR - 2 * RADIUS - 3);
+			const x = inlets.x[idx] + spread;
+			const y = side === I.BOTTOM ? inlets.y[idx] - depth : inlets.y[idx] + depth;
+			if (G.airClearance(sim.layout, x, y) < RADIUS) continue;
+			const angle = p.random() * G.TAU;
+			const inward = (side === I.BOTTOM ? -1 : 1) * SPEED * 0.7;
+			p.x[k] = x;
+			p.y[k] = y;
+			p.vx[k] = Math.cos(angle) * SPEED * 0.5;
+			p.vy[k] = Math.sin(angle) * SPEED * 0.5 + inward;
+			p.cycles++;
+			return true;
+		}
+		return false;
+	}
+
+	function exchange(sim, p, h) {
+		const inlets = sim.inlets;
+		const pairs = Math.min(I.count(inlets, I.HIGH), I.count(inlets, I.LOW));
+		if (pairs === 0) return;
+		p.exchange += h * CYCLE_RATE * pairs;
+		const moves = p.exchange | 0;
+		if (moves <= 0) return;
+		p.exchange -= moves;
+		// A rolling cursor keeps the recycles spread over the population.
+		for (let moved = 0, scanned = 0; moved < moves && scanned < p.count; scanned++) {
+			const k = p.cursor;
+			p.cursor = k + 1 >= p.count ? 0 : k + 1;
+			const side = band(p.y[k]);
+			if (side < 0) continue;
+			const column = Math.max(0, Math.min(G.N - 1, (p.x[k] / G.S) | 0));
+			const idx = side * G.N + column;
+			if (!inlets.open[idx] || inlets.level[idx] !== I.LOW) continue;
+			if (!respire(sim, p, k)) continue;
+			moved++;
+		}
+	}
+
 	function step(sim, h) {
 		const p = sim.pressure;
 		p.head.fill(-1);
@@ -148,8 +213,9 @@ const ValvePressure = (() => {
 				if (hit) wall(sim, p, k, dx, dy);
 			}
 		}
+		exchange(sim, p, h);
 	}
 
-	return { create, step, RADIUS, MASS, LIMIT };
+	return { create, step, RADIUS, MASS, LIMIT, CYCLE_RATE };
 })();
-if (typeof module !== "undefined" && module.exports) module.exports = ValvePressure;
+if (typeof module !== "undefined" && module.exports) module.exports = ValveAir;

@@ -12,7 +12,9 @@ const ValveSimulation = (() => {
 
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
 
-	const P = typeof ValvePressure !== "undefined" ? ValvePressure : require("./pressure.js");
+	const AIR = typeof ValveAir !== "undefined" ? ValveAir : require("./air.js");
+	const GAS = typeof ValveGas !== "undefined" ? ValveGas : require("./gas.js");
+	const INL = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
 	const N = G.N;
 	const SIZE = G.SIZE;
 	const POUR = G.POUR;
@@ -127,6 +129,8 @@ const ValveSimulation = (() => {
 		const sim = {
 			layout,
 			pressure: null,
+			pressureMode: "off",
+			inlets: INL.create(),
 			turning: o.turning !== false,
 			speed: o.speed === undefined ? 1 : o.speed,
 			capacity,
@@ -766,7 +770,8 @@ const ValveSimulation = (() => {
 		updateTurns(sim, h);
 		carryWalls(sim, h);
 		buildBins(sim);
-		if (sim.pressure) P.step(sim, h);
+		if (sim.pressureMode === "grid") GAS.step(sim, h);
+		else if (sim.pressureMode === "particles") AIR.step(sim, h);
 		integrate(sim, h);
 		repair(sim);
 		buildBins(sim);
@@ -921,7 +926,8 @@ const ValveSimulation = (() => {
 		sim.stallTime.fill(0);
 		sim.pushFlag.fill(0);
 		initSchedule(sim);
-		if (sim.pressure) sim.pressure = P.create(sim);
+		INL.reset(sim.inlets);
+		sim.pressure = pressureFor(sim, sim.pressureMode);
 	}
 
 	// Snaps from the current target detent so repeated clicks mid-turn always
@@ -932,6 +938,7 @@ const ValveSimulation = (() => {
 		sim.target[index] = base + quarters * HALF_PI;
 		sim.dwell[index] = TURN_DWELL_MIN + 1;
 		sim.stallTime[index] = 0;
+		if (sim.pressureMode === "grid") GAS.refresh(sim);
 		return true;
 	}
 
@@ -970,7 +977,7 @@ const ValveSimulation = (() => {
 		sim.dwell[index] = 1;
 		sim.reach = G.drainReach(sim.layout);
 		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
-		if (sim.pressure) sim.pressure = P.create(sim);
+		sim.pressure = pressureFor(sim, sim.pressureMode);
 		return true;
 	}
 
@@ -994,11 +1001,26 @@ const ValveSimulation = (() => {
 		sim.speed = speed > 0 ? speed : 0;
 	}
 
+	function pressureFor(sim, mode) {
+		if (mode === "grid") return GAS.create(sim);
+		if (mode === "particles") return AIR.create(sim);
+		return null;
+	}
+
+	// Switching only replaces pressure state: grains, counters and valve targets
+	// are untouched.
 	function setPressure(sim, mode) {
-		if (mode !== "off" && mode !== "particles") return false;
-		if ((mode === "particles") === !!sim.pressure) return true;
-		sim.pressure = mode === "particles" ? P.create(sim) : null;
+		if (mode !== "off" && mode !== "particles" && mode !== "grid") return false;
+		if (sim.pressureMode === mode) return true;
+		sim.pressureMode = mode;
+		sim.pressure = pressureFor(sim, mode);
 		return true;
+	}
+
+	function toggleInlet(sim, index, flip) {
+		const changed = INL.press(sim.inlets, index, flip);
+		if (changed && sim.pressureMode === "grid") GAS.refresh(sim);
+		return changed;
 	}
 
 	function active(sim) {
@@ -1026,6 +1048,7 @@ const ValveSimulation = (() => {
 		turn,
 		setSpeed,
 		setPressure,
+		toggleInlet,
 		replaceValve,
 		fillValve,
 		seed,
