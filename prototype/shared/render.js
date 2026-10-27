@@ -399,6 +399,17 @@ const ValveRender = (() => {
 		ctx.stroke();
 	}
 
+	// Kinetic pressure preview: local air population appears as a cyan tint.
+	function renderPressure(ctx, p) {
+		ctx.beginPath();
+		for (let k = 0; k < p.count; k++) {
+			ctx.moveTo(p.x[k] + 0.65, p.y[k]);
+			ctx.arc(p.x[k], p.y[k], 0.65, 0, TAU);
+		}
+		ctx.fillStyle = "rgba(30,165,210,0.8)";
+		ctx.fill();
+	}
+
 	function makeAirMap(cell) {
 		const w = Math.ceil(SIZE / cell);
 		const h = Math.ceil((SIZE + G.POUR * 2) / cell);
@@ -417,6 +428,7 @@ const ValveRender = (() => {
 		makeAirMap,
 		renderAirMap,
 		renderGrains,
+		renderPressure,
 		makeCanvas,
 	};
 })();

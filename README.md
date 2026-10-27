@@ -9,3 +9,5 @@ Open `index.html` directly in a browser to choose a prototype. No install, build
 - `experiments/`: Node validation and timing scripts (`geometry-check.cjs`, `geometry-fixtures.cjs`, `simulation-fixtures.cjs`, `render-smoke.cjs`, `simulation-bench.cjs`, `behavior-probe.cjs` for grain liveliness against the GLM reference).
 
 Click any valve, or focus the canvas and use arrow keys plus Enter/Space (Shift to reverse), to turn a selected valve by 90°. Rotation speed controls valves, not gravity.
+
+The combined page has optional **Air particles** pressure and a **Draw pressure as air color** checkbox (cyan air-particle preview). Pressure defaults to Off; switching it does not reset grains or valve targets. Grid gas is labeled as planned and disabled. See `pressure-plan.md` for the CPU-grid and scalar-pressure stages. Run `node experiments/pressure-fixtures.cjs` for kinetic-air checks.

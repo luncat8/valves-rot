@@ -96,3 +96,11 @@ select {
 	}
 	.combined #stats { grid-column: 1; font-size: 11px; margin: 0; }
 }
+
+.pressure-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	border: 1px solid #596576;
+	border-radius: 5px;
+}

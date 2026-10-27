@@ -24,11 +24,19 @@
 		<label>Skin <select id="skin"><option value="glm">GLM5.3-max</option><option value="combined">Combined</option><option value="gpt">GPT6sol-max</option></select></label>
 		<label><input id="air" type="checkbox"> Black air</label>
 		<label><input id="model" type="checkbox"> Air model</label>
+		<fieldset class="pressure-controls">
+			<legend>Pressure</legend>
+			<label><input id="pressure-off" name="pressure" type="radio" value="off" checked> Off</label>
+			<label><input id="pressure-particles" name="pressure" type="radio" value="particles"> Air particles</label>
+			<label title="Planned: low-resolution CPU gas solver"><input type="radio" name="pressure" disabled> Grid gas (planned)</label>
+		</fieldset>
+		<label><input id="pressure-draw" type="checkbox"> Draw pressure as air color</label>
 	</div>
 	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve."></canvas>
 	<p id="stats" aria-live="off"></p>
 	<script src="geometry.js"></script>
 	<script src="render.js"></script>
+	<script src="pressure.js"></script>
 	<script src="simulation.js"></script>
 	<script src="app.js"></script>
 </body>

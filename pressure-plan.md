@@ -30,3 +30,12 @@ Add optional pressure without changing the conservative colored-grain geometry o
 - Draw scalar pressure with an air-tinted opacity ramp, readable against both air backgrounds; optionally draw air particles in particle mode.
 - Fixtures: sealed chamber pressure, equalization through open ports, blocked seams, moving-wall compression, grain pushing, mode switching, finite state and bounded energy/mass drift.
 - Measure CPU update/render cost and memory at several grid resolutions and air populations. Pressure-off must retain existing grain behavior and cost.
+
+## Staged delivery
+
+1. Kinetic prototype: off-by-default air population, swept wall reflection, reciprocal grain impulses, independent air drawing and deterministic fixtures. Treat particle tint as a qualitative air-population view, not a calibrated pressure measurement.
+2. Kinetic accuracy: measure wall momentum flux over fixed time windows for a scalar pressure overlay; validate compression and equalization, moving-wall recovery and energy drift at several populations. Replace the dissipative emergency speed ceiling with a validated energy policy if physical calibration is required.
+3. CPU grid gas: add the enabled Grid gas radio only with a working conservative compressible solver. Start around 120 × 130 cells, then measure narrower passages at finer resolutions. Validate connected face apertures against analytical seams, not only solid cell centers. Keep pressure/density and velocity separate from render buffers.
+4. Compare cost and behavior on identical layouts before considering a GPU backend.
+
+Use reflecting closed end caps for the first kinetic prototype (including the ends of pour/drain bands); atmospheric reservoir boundaries are a separate explicit experiment. Geometry replacement may reinitialize air while preserving grain accounting. Reset and layout changes reinitialize the selected pressure backend; pause and single-step advance it on the grain clock.

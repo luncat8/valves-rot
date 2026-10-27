@@ -115,7 +115,7 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "render.js", "simulation.js", "app.js"]) {
+for (const file of ["geometry.js", "render.js", "pressure.js", "simulation.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
@@ -197,7 +197,13 @@ c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault()
 
 
 element("pause").onclick();
+element("pressure-particles").checked = true;
+element("pressure-particles").onchange();
+element("pressure-draw").checked = true;
+element("pressure-draw").onchange();
 element("step").onclick();
+element("pressure-particles").checked = false;
+element("pressure-off").onchange();
 element("pour").onclick();
 const arcsBefore = calls.arc;
 frames.shift()((now += 16.7));

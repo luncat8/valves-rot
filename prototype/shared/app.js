@@ -44,6 +44,7 @@
 		sim = S.create(layout);
 		S.setSpeed(sim, +$("speed").value);
 		S.seed(sim);
+		S.setPressure(sim, $("pressure-particles").checked ? "particles" : "off");
 		rebuild(true);
 		if (paused) drawFrame(true);
 	}
@@ -113,6 +114,14 @@
 		overlayDirty = true;
 		if (paused) drawFrame(true);
 	};
+
+	function pressureChanged() {
+		S.setPressure(sim, $("pressure-particles").checked ? "particles" : "off");
+		if (paused) drawFrame(false);
+	}
+	$("pressure-off").onchange = pressureChanged;
+	$("pressure-particles").onchange = pressureChanged;
+	$("pressure-draw").onchange = () => { if (paused) drawFrame(false); };
 
 	canvas.onpointermove = event => {
 		selected = cellFromPointer(event);
@@ -185,6 +194,7 @@
 		ctx.translate(0, G.POUR);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
+		if ($("pressure-draw").checked && sim.pressure) R.renderPressure(ctx, sim.pressure);
 		R.renderGrains(ctx, sim, scene);
 		R.renderSelection(ctx, layout, selected);
 		ctx.restore();

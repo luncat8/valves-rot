@@ -12,6 +12,7 @@ const ValveSimulation = (() => {
 
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
 
+	const P = typeof ValvePressure !== "undefined" ? ValvePressure : require("./pressure.js");
 	const N = G.N;
 	const SIZE = G.SIZE;
 	const POUR = G.POUR;
@@ -125,6 +126,7 @@ const ValveSimulation = (() => {
 		const reach = G.drainReach(layout);
 		const sim = {
 			layout,
+			pressure: null,
 			turning: o.turning !== false,
 			speed: o.speed === undefined ? 1 : o.speed,
 			capacity,
@@ -764,6 +766,7 @@ const ValveSimulation = (() => {
 		updateTurns(sim, h);
 		carryWalls(sim, h);
 		buildBins(sim);
+		if (sim.pressure) P.step(sim, h);
 		integrate(sim, h);
 		repair(sim);
 		buildBins(sim);
@@ -918,6 +921,7 @@ const ValveSimulation = (() => {
 		sim.stallTime.fill(0);
 		sim.pushFlag.fill(0);
 		initSchedule(sim);
+		if (sim.pressure) sim.pressure = P.create(sim);
 	}
 
 	// Snaps from the current target detent so repeated clicks mid-turn always
@@ -966,6 +970,7 @@ const ValveSimulation = (() => {
 		sim.dwell[index] = 1;
 		sim.reach = G.drainReach(sim.layout);
 		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
+		if (sim.pressure) sim.pressure = P.create(sim);
 		return true;
 	}
 
@@ -987,6 +992,13 @@ const ValveSimulation = (() => {
 
 	function setSpeed(sim, speed) {
 		sim.speed = speed > 0 ? speed : 0;
+	}
+
+	function setPressure(sim, mode) {
+		if (mode !== "off" && mode !== "particles") return false;
+		if ((mode === "particles") === !!sim.pressure) return true;
+		sim.pressure = mode === "particles" ? P.create(sim) : null;
+		return true;
 	}
 
 	function active(sim) {
@@ -1013,6 +1025,7 @@ const ValveSimulation = (() => {
 		resume,
 		turn,
 		setSpeed,
+		setPressure,
 		replaceValve,
 		fillValve,
 		seed,
