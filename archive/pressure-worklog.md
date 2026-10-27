@@ -194,3 +194,31 @@ Measured over one second per action, that recipe lifts a central cell from 0.48 
 ## Next step
 
 The field is now localized enough that a quest could ask for a *gradient* rather than a level (a drop across two neighbouring bottles), which is what the model actually measures well. Before that, give the legend a second reference for a fully sealed machine: the current "no through-flow" state is honest but gives a player nothing to aim at.
+
+# Grid gas: constant-pressure mouths and a real transient field
+
+## Review
+
+The previous stage fixed the symptom by hiding the overlay. The model itself was still wrong: `p = d_low / (d_high + d_low)` is a distance ratio that needs both polarities, leaks through metal, and is recomputed instantly. The user reported that closing all vents made the whole field one colour immediately, and that the tests were validating the faulty implementation. A sealed machine must keep its air, not repaint.
+
+## Changes
+
+- `gas.js` replaced: 6 px air cells, open-face conductance graph, connected components, band cells outside the 10x10 field pinned to `1`/`0` while their mouth is open, sealed mouths unpinned. One backward-Euler diffusion step per 30 Hz mask tick, solved by Jacobi-preconditioned conjugate gradient on a compact unknown list (up to 400 sweeps; steady startup/snap/quest probes up to 700). Metal and shut rims have zero conductance; a component with no mouth holds its pressure. Gas velocity comes from face flux; piles lower conductance and take reciprocal impulse. Removed `solvePotential`, `anchored`, the SOR sweeps and the distance-ratio buffers.
+- A mouth click or rotor turn re-pins/rebuilds at once but does **not** solve; the next mask tick carries the front. `simulation.js` uses a new `GAS.repin` for inlet changes. A settled machine skips the solve. A paused page keeps the mask clock running.
+- `render.js` and `app.js`: the overlay and its Pa-equivalent scale stay visible for any grid state, including a fully sealed machine. The legend names `all mouths sealed`, `no source open` or `no vent open`; stats show mean pressure, flow and `sealed`.
+- `game.js`: pressure quests install a four-way `hollow cross` bottle and open a shaft of `solid cross` valves in its column, so the bottle has a real route to both bands. `probeMouths` solves the bots' mouth recipe; `fitPressureQuest` snaps the live field, fits the threshold 60% of the way to a reachable extreme and keeps the quest uncommitted at spawn. Sealing every mouth freezes the field, so a quest cannot advance until a boundary reopens.
+- Rewrote `experiments/gas-fixtures.cjs` and the grid half of `experiments/calibration-fixtures.cjs`; updated `game-fixtures.cjs`, `render-smoke.cjs` and `simulation-bench.cjs`. New checks: constant-pressure boundary cells, linear steady gradient on a connected machine, sealed field with zero pressure change, 1-D front propagation, valve-gated chambers, no leak through metal, analytical serial seam, closed-wall isolation, huge implicit step stability, pile conductance, grain coupling and cost.
+- Rewrote `pressure-plan.md`, README, Help drawer, `findings-pitfalls-skills.md` and small stale comments. `index.html` now documents mouths as cells outside the field and the pressure-quest air shaft.
+
+## Validation
+
+- `node --check` on every file; `geometry-check`, `geometry-fixtures`, `simulation-fixtures`, `air-fixtures`, `calibration-fixtures`, `gas-fixtures`, `game-fixtures`, `render-smoke` all pass on Node v22.22.3.
+- `gas-fixtures`: 200 pinned band cells, 1 component / linear 0-1 gradient on a connected machine, sealed field keeps 1.00 of its colour with exactly zero pressure change and flow <1 px/s, 1-D front and steady linear profile, valve gating, pile flow 71 vs empty 97 px/s, 30 px fall 0.32 s dry / 0.48 s at force 1 / hovering at force 2 / 1.69 s with particles and 3.9 px drift; 0.247 ms off vs 0.913 ms grid per 120 Hz step.
+- `calibration-fixtures`: steady serial-seam errors 2.98e-7 / 5.96e-7 at 6/3 px, a `1e6` implicit step converging without overshoot, metal splitting a row into two exact boundary values, 16,969 real faces checked against geometry sweeps, 0.7125 Pa reference vs 0.7187 Pa theory.
+- `game-fixtures`: fitted quests start uncommitted, a sealed field freezes and never satisfies a quest, the mouth recipe completes it, bots complete 3 quests (85 pts). `render-smoke`: sealed grid still draws 103 images/frame with the ramp and legend; texels follow live pressure.
+- `simulation-bench`: grid 1.87 ms/60 Hz with 3,312 air cells and 148 mask rebuilds; coupling on a mouth-connected chamber 0.32 s dry / 0.48 s at force 1 / stalled at force 2.
+- Not verified in a real browser (none in this sandbox); `render-smoke.cjs` exercises the page through a DOM/canvas stub, including span editing, inlet toggles, mode switching and the legend.
+
+## Next step
+
+Profile a finer 3 px grid with aperture-based face conductance: the current 6 px centre-sampling mask still misses sub-cell seam openings (aperture errors 11.27 / 5.14 px in the calibration fixture). A multigrid preconditioner would cut the 700-sweep steady solve needed by long corridor chains before increasing resolution.

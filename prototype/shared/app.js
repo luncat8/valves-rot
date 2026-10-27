@@ -823,15 +823,13 @@
 
 	const FIELD_ALPHA = 0.62;
 
-	// A potential only exists between a source and a vent, so an unanchored field
-	// fades out instead of repainting as one flat colour.
+	// The pressure is state, not a difference between two live mouths: a sealed
+	// machine keeps its air, so the overlay and its scale never disappear.
 	function drawPressureGrid() {
 		const gas = sim.pressure;
-		fieldAlpha += ((gas.anchored ? FIELD_ALPHA : 0) - fieldAlpha) * 0.16;
-		if (fieldAlpha < 0.004) return;
+		fieldAlpha += (FIELD_ALPHA - fieldAlpha) * 0.16;
 		if (!fieldMap || fieldMap.nx !== gas.nx || fieldMap.ny !== gas.ny) fieldMap = R.makeFieldMap(gas.nx, gas.ny);
-		// The stale map stays painted while the overlay fades out.
-		if (gas.anchored) R.renderField(fieldMap, gas);
+		R.renderField(fieldMap, gas);
 		ctx.save();
 		ctx.globalAlpha = fieldAlpha;
 		ctx.imageSmoothingEnabled = true;
@@ -842,25 +840,26 @@
 	function pressureState() {
 		const gas = sim.pressure;
 		if (!$("pressure-draw").checked || !gas || gas.kind !== "grid") return 0;
-		return gas.anchored ? 2 : 1;
+		return 1;
 	}
 
 	function pressureReason() {
 		const gas = sim.pressure;
-		if (!gas.sources && !gas.vents) return "no open mouth";
-		return gas.sources ? "no vent open" : "no source open";
+		if (!gas.pins) return " · all mouths sealed";
+		if (!gas.sources) return " · no source open";
+		if (!gas.vents) return " · no vent open";
+		return "";
 	}
 
 	function syncLegend() {
 		const state = pressureState();
-		const reason = state === 1 ? pressureReason() : "";
-		if (state === legendState && reason === legendReason && (state !== 2 || legendLabel === pressureSpanLabel)) return;
+		const reason = state ? pressureReason() : "";
+		if (state === legendState && reason === legendReason && (state === 0 || legendLabel === pressureSpanLabel)) return;
 		legendState = state;
 		legendReason = reason;
 		legendLabel = pressureSpanLabel;
 		legendRange.hidden = state === 0;
-		legendRange.textContent =
-			state === 1 ? "· no through-flow (" + reason + ")" : state === 2 ? "· 0–" + pressureSpanLabel + " Pa equivalent" : "";
+		legendRange.textContent = state ? "· 0–" + pressureSpanLabel + " Pa equivalent" + reason : "";
 	}
 
 	function drawFrame(forceOverlay) {
@@ -883,9 +882,7 @@
 		R.renderGoals(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
 		R.renderDrag(ctx, layout, sim, drag);
-		if (drawPressure && pressure.kind === "grid" && pressure.anchored) {
-			R.renderPressureLegend(ctx, pressureSpanLabel);
-		}
+		if (drawPressure && pressure.kind === "grid") R.renderPressureLegend(ctx, pressureSpanLabel);
 		ctx.restore();
 	}
 
@@ -894,9 +891,8 @@
 		let gas = "";
 		if (sim.pressure && sim.pressure.kind === "grid") {
 			const field = sim.pressure;
-			gas = field.anchored
-				? " · potential " + field.mean.toFixed(2) + " · flow " + field.flow.toFixed(0) + " px/s"
-				: " · no through-flow";
+			gas = " · pressure " + field.mean.toFixed(2) + " · flow " + field.flow.toFixed(0) + " px/s" +
+				(field.pins ? "" : " · sealed");
 		}
 		return (
 			fps.toFixed(0).padStart(3) +

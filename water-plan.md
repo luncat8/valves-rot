@@ -4,7 +4,7 @@
 
 Add a water inlet (vent/spout) above the field. Opening it supplies water at a controlled rate and raises the water level in reachable passages. Grains have distinct material densities and masses, so some sink and others float. The first implementation shows a changing water level, **not falling drops or a waterfall**. Falling water is a separate, deferred stage.
 
-Keep the existing file-friendly, fixed-step simulation, conserved grains, shared geometry and preallocated hot-path buffers. Water is separate from the current air inlet controls and from the grid's relative potential.
+Keep the existing file-friendly, fixed-step simulation, conserved grains, shared geometry and preallocated hot-path buffers. Water is separate from the current air inlet controls and from the grid's relative pressure.
 
 ## Physical conventions
 

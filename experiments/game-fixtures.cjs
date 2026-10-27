@@ -277,8 +277,8 @@ function testQuestLifecycle() {
 	conserved(sim, "after timer expiry");
 }
 
-// 6. Pressure quest: auto-enables Grid gas, starts uncommitted, and completes when
-// inlets/routes satisfy the target potential.
+// 6. Pressure quest: auto-enables Grid gas, opens an air route to both mouth
+// bands, starts uncommitted, and freezes (rather than repaints) when sealed.
 function testPressureQuest() {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
@@ -297,30 +297,44 @@ function testPressureQuest() {
 	assert.equal(Game.signQuest(game, pq.id, 0), true);
 	assert.equal(sim.pressureMode, "grid", "signing a pressure quest enables Grid gas");
 	const cell = pq.cells[0];
+	assert.equal(G.typeOf(layout.valves[cell]).id, "hollow-cross", "a pressure bottle is open on all four faces");
+	const col = cell % G.N;
+	for (let j = 0; j < G.N; j++) {
+		if (j * G.N + col === cell) continue;
+		assert.equal(G.typeOf(layout.valves[j * G.N + col]).id, "solid-cross", "the goal column is an open air shaft");
+	}
+	assert.ok(pq.threshold > 0 && pq.threshold < 1, "the target is fitted to a reachable pressure");
 	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "spawned pressure quest requires player action");
 
-	// A sealed field has no potential at all: the cap must be avoided, not the flow.
-	const wantHigh = pq.op === ">";
-	const opposite = wantHigh ? I.TOP : I.BOTTOM;
-	for (let c = 0; c < G.N; c++) {
-		const idx = opposite * G.N + c;
-		if (sim.inlets.open[idx]) S.toggleInlet(sim, idx, false);
-	}
+	// Sealing every mouth must not recolor the machine: with no constant-pressure
+	// boundary the air simply holds, so the quest cannot advance.
+	for (let k = 0; k < 2 * G.N; k++) if (sim.inlets.open[k]) S.toggleInlet(sim, k, false);
+	const frozen = Float32Array.from(sim.pressure.p);
 	GAS.refresh(sim);
-	runGame(sim, game, 0.3);
-	assert.equal(sim.pressure.anchored, false, "one polarity cannot anchor the field");
-	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a sealed field never satisfies a pressure quest");
+	runGame(sim, game, 0.4);
+	let moved = 0;
+	for (let k = 0; k < frozen.length; k++) if (Math.abs(frozen[k] - sim.pressure.p[k]) > 1e-6) moved++;
+	assert.equal(sim.pressure.pins, 0, "every mouth is sealed");
+	assert.equal(moved, 0, "a sealed machine keeps its pressure pattern");
+	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a frozen field never satisfies a pressure quest");
 
-	// Choke the mouths near the bottle but keep one of the opposite polarity open
-	// far away, so the field stays defined and the drop happens elsewhere.
-	const col = cell % G.N;
-	let keep = 0;
-	for (let c = 0; c < G.N; c++) if (Math.abs(c - col) > Math.abs(keep - col)) keep = c;
-	S.toggleInlet(sim, opposite * G.N + keep, false);
-	runGame(sim, game, 1.4);
-	assert.equal(sim.pressure.anchored, true, "a distant mouth anchors the field again");
-	assert.equal(game.players[0].completed, 1, "pressure quest completes once potential holds");
+	// The bots' recipe: open the favourable band, keep one far mouth of the other
+	// band open as a reference. The pressure front then reaches the bottle.
+	const wantHigh = pq.op === ">";
+	const favourable = wantHigh ? I.BOTTOM : I.TOP;
+	const opposite = wantHigh ? I.TOP : I.BOTTOM;
+	const far = col <= G.N / 2 ? G.N - 1 : 0;
+	for (let c = 0; c < G.N; c++) {
+		const fav = favourable * G.N + c;
+		const opp = opposite * G.N + c;
+		if (!sim.inlets.open[fav]) S.toggleInlet(sim, fav, false);
+		if (!!sim.inlets.open[opp] !== (c === far)) S.toggleInlet(sim, opp, false);
+	}
+	assert.ok(sim.pressure.pins > 0, "the recipe reopens constant-pressure mouths");
+	runGame(sim, game, 2.4);
+	assert.equal(game.players[0].completed, 1, "pressure quest completes once the front arrives");
 	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "pressure bottle seals to solid blank");
+	conserved(sim, "pressure quest");
 }
 
 // 6b. A pressure quest is fitted to what the cell can reach, so an impossible
@@ -354,7 +368,7 @@ function testPressureReach() {
 		if (c !== far && sim.inlets.open[idx]) S.toggleInlet(sim, idx, false);
 	}
 	runGame(sim, game, 2.4);
-	assert.equal(sim.pressure.anchored, true, "the reference mouth keeps the field anchored");
+	assert.ok(sim.pressure.pins > 0, "the reference mouth keeps a constant-pressure boundary");
 	assert.equal(game.players[0].completed, 1, `the fitted pressure quest completes (${q.threshold})`);
 	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "the fitted bottle seals to solid blank");
 	conserved(sim, "fitted pressure quest");

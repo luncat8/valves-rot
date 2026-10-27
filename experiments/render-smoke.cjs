@@ -227,8 +227,8 @@ for (let i = 0; i < 3; i++) {
 	assert.deepEqual(mainDrawImages[102], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 }
 
-// The calibrated legend is visible, editable while paused, and disappears when
-// every reference mouth is sealed. Invalid input keeps the last valid span.
+// The calibrated legend is visible and editable while paused. Sealing every
+// mouth keeps the ramp on screen because the trapped air is still described.
 const CAL = vm.runInThisContext("ValveCalibration");
 assert.ok(Math.abs(Number(element("pressure-span").value) - CAL.DEFAULT_SPAN) < 1e-6);
 element("pause").onclick();
@@ -265,20 +265,20 @@ for (let side = 0; side < 2; side++) {
 		clickMouth(side, column);
 	}
 }
-assert.ok(!mainTexts.includes("eq. Pa"), "no legend without a through-flow");
-assert.equal(element("legend-range").textContent, "· no through-flow (no open mouth)");
-// The overlay fades out over a few frames instead of vanishing in one repaint.
+assert.ok(mainTexts.includes("eq. Pa"), "the ramp still describes the trapped air");
+assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent · all mouths sealed");
+// The overlay keeps drawing the frozen pressure instead of hiding the field.
 for (let i = 0; i < 20; i++) {
 	mainDrawImages.length = 0;
 	frames.shift()((now += 16.7));
 }
-assert.equal(mainDrawImages.length, 102, "an unanchored grid fades out and stays hidden");
+assert.equal(mainDrawImages.length, 103, "a sealed grid still draws the air field");
 
-// One polarity alone is still not a reference, and the legend says which is missing.
+// With one polarity open the legend names the missing side.
 clickMouth(1, 3);
-assert.equal(element("legend-range").textContent, "· no through-flow (no vent open)");
+assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent · no vent open");
 clickMouth(0, 3);
-assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent", "a source plus a vent anchors the field");
+assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent", "both polarities give a clean scale");
 mainTexts.length = 0;
 clickMouth(0, 0);
 assert.ok(mainTexts.includes("eq. Pa") && mainTexts.includes("1.25"), "reopening a mouth restores the selected scale");
@@ -291,13 +291,14 @@ for (let side = 0; side < 2; side++) {
 element("pause").onclick();
 
 const fieldMap = R.makeFieldMap(2, 1);
-const field = { air: new Uint8Array([1, 0]), p: new Float32Array([0.5, 1]), anchored: true };
+const field = { air: new Uint8Array([1, 0]), p: new Float32Array([0.5, 1]) };
 R.renderField(fieldMap, field);
-assert.equal(fieldMap.img.data[3], 255);
+assert.equal(fieldMap.img.data[3], 255, "a sealed field keeps its colours");
 assert.equal(fieldMap.img.data[7], 0, "metal remains transparent");
-field.anchored = false;
+const lowColor = fieldMap.img.data[2];
+field.p[0] = 0;
 R.renderField(fieldMap, field);
-assert.equal(fieldMap.img.data[3], 0, "unanchored values cannot leave stale colors");
+assert.notEqual(fieldMap.img.data[2], lowColor, "the texel follows the live pressure");
 
 // Pointer and keyboard valve selection + rotation.
 c.onpointermove({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S });

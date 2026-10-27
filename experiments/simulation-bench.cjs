@@ -110,8 +110,10 @@ lines.push("");
 // Coupling: one grain dropped through an open chamber, and what the machine
 // still transports over a minute with the air on.
 function drop(mode, force) {
-	const sim = S.create(G.createLayout(SEED), { turning: false });
-	sim.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);
+	const valves = [];
+	for (let j = 0; j < G.N; j++) for (let i = 0; i < G.N; i++) valves.push(G.makeValve(i, j, "solid", [0, 1, 2, 3], 0, 0));
+	const sim = S.create({ seed: SEED, valves }, { turning: false });
+	sim.layout.valves[44] = G.makeValve(4, 4, "hollow", [0, 1, 2, 3], 0, G.RV * 0.8);
 	const v = sim.layout.valves[44];
 	S.addGrain(sim, v.cx, v.cy - 12, S.R_GRAIN, 0);
 	if (mode) {
@@ -129,7 +131,7 @@ function drop(mode, force) {
 }
 
 lines.push("");
-lines.push("air coupling (one grain, 30 px fall through an open chamber)");
+lines.push("air coupling (one grain, 30 px fall through a mouth-connected chamber)");
 lines.push("mode  force  fall(s)  drift(px)");
 for (const [mode, force] of [[null, 0], ["grid", 0], ["grid", 0.5], ["grid", 1], ["grid", 2], ["particles", 1], ["particles", 2]]) {
 	const r = drop(mode, force);

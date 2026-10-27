@@ -1118,7 +1118,7 @@ const ValveSimulation = (() => {
 
 	function toggleInlet(sim, index, flip) {
 		const changed = INL.press(sim.inlets, index, flip);
-		if (changed && sim.pressureMode === "grid") GAS.refresh(sim);
+		if (changed && sim.pressureMode === "grid") GAS.repin(sim);
 		return changed;
 	}
 

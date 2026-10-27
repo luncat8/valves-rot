@@ -57,3 +57,11 @@
 - Circular-mean average-hue matching (`atan2(Σ sin θ, Σ cos θ)`) requires a resultant vector-length floor (`R = hypot(Σ cos θ, Σ sin θ) / n >= 0.42`); without a coherence check, near-cancelling rainbow mixtures produce an arbitrary residual angle that spuriously satisfies narrow `6`-band quests.
 - Prevent bots from simultaneously signing opposite-polarity pressure quests (`> x` vs `< x`): otherwise two bots toggle the same top/bottom boundary vents in an endless tug-of-war.
 
+
+# Grid gas replacement (2026-10-27)
+- The distance-ratio potential was the wrong model, not just a badly tuned one. A `p = d_low / (d_high + d_low)` field needs both polarities, hides itself when one is missing, and lets pressure step through metal. Tests that asserted the resulting all-one-colour state were validating the bug.
+- Make open mouths **Dirichlet cells outside the 10x10 field** (1 or 0) and solve a transient diffusion on the graph of open faces only. Then a single mouth is a valid boundary, a shut rim is a real wall, and a component with no mouth holds the air it has. With every mouth sealed there are no pins, so the field is frozen rather than repainted.
+- Do not force a solve on every mouth click. Re-pin at once and let the 1/30 s mask clock carry the front; otherwise a large implicit step reads as an instant global repaint, which is the symptom the user reported.
+- Jacobi-preconditioned conjugate gradient converges in tens of sweeps on these corridor graphs; plain SOR needs hundreds and stalls on the long 1-D chains. Keep the unknown list compact (only active, unpinned air cells) and fuse the matrix-vector product with the PCG dot product.
+- Verify the new model with a connected cross-valve layout: one component and a linear 0-1 gradient from the high band to the low band. Repainting the whole field on a click is not "air filling".
+- Strict connectivity means a random machine can isolate a goal chamber from both mouth bands. Pressure quests must open a real air route (a four-way bottle plus a shaft of cross valves) and probe the same mouth recipe the bots use, otherwise fitted thresholds are unreachable.

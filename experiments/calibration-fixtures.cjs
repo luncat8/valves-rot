@@ -140,59 +140,85 @@ const denser = reference(200, AIR.SPEED, C.REF_SECONDS);
 near(denser.pa / ref.pa, 2, 0.08, "wall flux scales with population");
 
 // Open seam: an ideal 1-D serial resistance with a narrow section has an exact
-// piecewise-linear potential. Exercise the actual distance solver at two grid
-// resolutions; this is not a general 2-D pressure or transient validation.
-function serialSeam(cell, aperture) {
+// piecewise-linear pressure. The production steady kernel must reproduce that
+// resistance on the same face-conductance graph at two grid resolutions.
+function seamChain(cell, aperture) {
 	const nx = 120 / cell + 1;
-	// One open row: every cell is air and every neighbour pair is a face, so the
-	// kernel sees the same fully connected stencil a passage does.
-	const field = {
-		nx, ny: 1, count: nx,
-		p: new Float32Array(nx), cost: new Float32Array(nx),
-		pin: new Uint8Array(nx), list: new Int32Array(nx),
-		air: new Uint8Array(nx).fill(1), face: new Uint8Array(nx).fill(15),
-		fromHigh: new Float32Array(nx), fromLow: new Float32Array(nx),
-	};
+	const f = GAS.blankField(nx, 1, cell);
+	f.air.fill(1);
+	f.face.fill(15);
+	f.open.fill(1);
 	for (let k = 0; k < nx; k++) {
-		field.list[k] = k;
-		field.cost[k] = k * cell >= 48 && k * cell < 72 ? 1 / aperture : 1;
+		f.list[k] = k;
+		if (k * cell >= 48 && k * cell < 72) f.open[k] = aperture;
 	}
-	field.pin[0] = 2;
-	field.pin[nx - 1] = 1;
-	GAS.solvePotential(field);
+	f.pin[0] = 2;
+	f.pin[nx - 1] = 1;
+	GAS.link(f);
+	GAS.components(f);
+	GAS.conductance(f);
+	GAS.steady(f, f.p);
 	const resistance = new Float64Array(nx);
-	for (let k = 1; k < nx; k++) resistance[k] = resistance[k - 1] + (field.cost[k - 1] + field.cost[k]) * cell / 2;
+	for (let k = 1; k < nx; k++) resistance[k] = resistance[k - 1] + 1 / f.gR[k - 1];
 	let error = 0;
 	for (let k = 0; k < nx; k++) {
 		const exact = 1 - resistance[k] / resistance[nx - 1];
-		error = Math.max(error, Math.abs(field.p[k] - exact));
-		near(C.equivalentPressure(field.p[k], C.DEFAULT_SPAN), field.p[k] * C.DEFAULT_SPAN, 1e-12, "ramp preserves linear gauge mapping");
+		error = Math.max(error, Math.abs(f.p[k] - exact));
+		near(C.equivalentPressure(f.p[k], C.DEFAULT_SPAN), f.p[k] * C.DEFAULT_SPAN, 1e-6, "ramp preserves linear gauge mapping");
 	}
-	near(field.p[0], 1, 1e-8, "source pin");
-	near(field.p[nx - 1], 0, 1e-8, "vent pin");
-	const drop = field.p[48 / cell] - field.p[72 / cell];
-	return { error, drop };
+	near(f.p[0], 1, 1e-8, "source pin");
+	near(f.p[nx - 1], 0, 1e-8, "vent pin");
+	const drop = f.p[48 / cell] - f.p[72 / cell];
+	return { f, error, drop };
 }
-const coarse = serialSeam(6, 0.25);
-const fine = serialSeam(3, 0.25);
-const open = serialSeam(3, 1);
-assert.ok(coarse.error < 0.02 && fine.error < 0.012, "open serial-seam profile matches its analytical resistance");
-assert.ok(fine.error < coarse.error, "the serial-seam profile converges when the grid is refined");
-assert.ok(fine.drop > open.drop * 2, "a narrow seam concentrates the potential drop");
+const coarse = seamChain(6, 0.25);
+const fine = seamChain(3, 0.25);
+const open = seamChain(3, 1);
+assert.ok(coarse.error < 1e-4 && fine.error < 1e-4, `serial-seam profile matches its analytical resistance (${coarse.error.toExponential(2)} / ${fine.error.toExponential(2)})`);
+assert.ok(fine.drop > open.drop * 2, "a narrow seam concentrates the pressure drop");
 
-// Report, rather than conceal, the distance heuristic's closed-wall limitation.
-// Two compartments each have one pinned boundary, so a sealed physical model
-// would be exactly 1 on the left and 0 on the right after equilibration.
-const separated = {
-	nx: 5, ny: 1, count: 4,
-	p: new Float32Array(5), cost: new Float32Array([1, 1, 6, 1, 1]),
-	pin: new Uint8Array([2, 0, 0, 0, 1]), list: new Int32Array([0, 1, 3, 4]),
-	air: new Uint8Array([1, 1, 0, 1, 1]), face: new Uint8Array([15, 15, 0, 15, 15]),
-	fromHigh: new Float32Array(5), fromLow: new Float32Array(5),
-};
-GAS.solvePotential(separated);
-const closedError = Math.max(Math.abs(1 - separated.p[1]), Math.abs(separated.p[3]));
-assert.ok(Number.isFinite(closedError));
+// A huge implicit step is stable and lands on the same equilibrium: pressure
+// never overshoots a constant-pressure boundary.
+const jump = seamChain(6, 1).f;
+jump.p.fill(0);
+jump.p[0] = 1;
+GAS.diffuse(jump, 1e6);
+let jumpError = 0;
+for (let k = 0; k < jump.nx; k++) {
+	assert.ok(jump.p[k] >= 0 && jump.p[k] <= 1, "an implicit step stays normalized");
+	jumpError = Math.max(jumpError, Math.abs(jump.p[k] - (1 - k / (jump.nx - 1))));
+}
+assert.ok(jumpError < 1e-3, `a large implicit step converges to the same profile (${jumpError.toExponential(2)})`);
+
+// Closed wall: a metal cell splits the row into two components. Each half takes
+// exactly its own boundary value, and a half with no mouth keeps its own air.
+function splitChain(rightPin) {
+	const nx = 7;
+	const f = GAS.blankField(nx, 1, 6);
+	f.air.fill(1);
+	f.face.fill(15);
+	f.open.fill(1);
+	f.air[3] = 0;
+	f.face[3] = 0;
+	f.face[2] &= ~2;
+	f.face[4] &= ~1;
+	f.count = 0;
+	for (let k = 0; k < nx; k++) if (f.air[k]) f.list[f.count++] = k;
+	f.p.fill(0.25);
+	f.pin[0] = 2;
+	if (rightPin) f.pin[nx - 1] = 1;
+	GAS.link(f);
+	GAS.components(f);
+	GAS.conductance(f);
+	GAS.steady(f, f.p);
+	return f;
+}
+const sealedWall = splitChain(true);
+assert.equal(sealedWall.compCount, 2, "a metal cell splits the air graph");
+for (let k = 0; k < 3; k++) near(sealedWall.p[k], 1, 1e-6, "high half cannot leak through the wall");
+for (let k = 4; k < 7; k++) near(sealedWall.p[k], 0, 1e-6, "low half cannot leak through the wall");
+const trapped = splitChain(false);
+for (let k = 4; k < 7; k++) near(trapped.p[k], 0.25, 1e-6, "a compartment with no mouth keeps its air");
 
 // Analytical chord aperture vs the real clearance/face stencil. A sub-cell
 // opening can disappear at 6 px; the 3 px stencil resolves it. Both converge
@@ -287,7 +313,7 @@ assert.ok(links > 15000, "validate a representative set of actual grid links");
 
 console.log(
 	`OK calibration: ${ref.hits} wall hits, ${ref.pa.toFixed(4)} Pa vs ${theory.toFixed(4)} Pa theory; ` +
-	`serial seam max errors ${coarse.error.toFixed(4)} / ${fine.error.toFixed(4)} (6/3 px); ` +
+	`steady serial seam errors ${coarse.error.toExponential(2)} / ${fine.error.toExponential(2)} (6/3 px); ` +
 	`aperture errors ${coarseError.toFixed(2)} / ${fineError.toFixed(2)} px; ${links} real faces clear; ` +
-	`closed-wall potential error ${closedError.toFixed(3)} (heuristic limitation). The grid remains a relative potential.`,
+	`closed wall isolates both halves and a pinless half keeps its air. The grid is a conservative relative pressure.`,
 );

@@ -1,4 +1,4 @@
-// SI reference for the display only. The grid itself remains a relative potential.
+// SI reference for the display only. The grid itself stores a normalized relative pressure.
 const ValveCalibration = (() => {
 	"use strict";
 
