@@ -158,11 +158,11 @@ assert.ok(html.indexOf("Shortcuts") > html.indexOf('id="help-drawer"'), "shortcu
 assert.ok(html.indexOf('id="calibration-note"') > html.indexOf('id="help-drawer"'), "calibration note moved into Help");
 assert.ok(!html.includes('data-dir="keep"'), "no 'not change' direction button: re-click unselects instead");
 const styleCss = fs.readFileSync(path.join(root, "..", "style.css"), "utf8");
-assert.ok(styleCss.includes(".combined header") && styleCss.includes("font-size: 18px"), "compact one-line header styles present");
+assert.ok(styleCss.includes(".combined header") && styleCss.includes("flex-wrap: nowrap"), "compact one-line header styles present");
 const typeList = element("valve-types").innerHTML;
 assert.ok(!typeList.includes('data-type="keep"'), "no 'not change' type button: re-click unselects instead");
 for (const type of G.TYPES) assert.ok(typeList.includes('data-type="' + type.id + '"') && typeList.includes(type.name), "picker lists " + type.id);
-assert.equal(typeList.split("data-copy-name").length - 1, G.TYPES.length, "one copy-name button per type");
+assert.equal(typeList.split("data-copy-type").length - 1, G.TYPES.length, "one copy-name button per type");
 assert.ok(element("brush-summary").textContent.includes("random valve type"), "default brush keeps double-click random");
 
 // Only one drawer opens at a time, with aria-expanded kept in sync.
@@ -314,15 +314,18 @@ function pickDir(dir) {
 	element("dir-picker").onclick({ target: { closest: () => ({ dataset: { dir } }) } });
 }
 pickType("random");
-assert.ok(element("brush-summary").textContent.includes("keep valve type (not change)"), "re-clicking the selected ? unselects the type");
+assert.ok(element("brush-summary").textContent.includes("keep current type"), "re-clicking the selected ? unselects the type");
 pickType("solid-elbow");
 pickDir("1");
 assert.ok(element("brush-summary").textContent.includes("solid elbow (ports E,S)"), "brush summary names type, ports and direction");
 assert.ok(element("brush-detail").textContent.includes("direction ↓ S"));
 element("copy-brush").onclick();
 assert.ok(copiedTexts.some(text => text.includes("solid elbow (ports E,S)")), "brush name copied as text");
-element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-name]" ? { dataset: { copyName: "hollow tee" } } : null) } });
-assert.ok(copiedTexts.includes("hollow tee"), "a type row copies just its name for chat");
+element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-type]" ? { dataset: { copyType: "hollow-tee" } } : null) } });
+assert.ok(
+	copiedTexts.includes("hollow tee · direction ↓ S · 90° (ports S,W,N)"),
+	"a type row copy includes the selected direction and its ports, got: " + copiedTexts[copiedTexts.length - 1],
+);
 
 const cellX = 4.5 * G.S;
 const cellY = G.POUR + 2.5 * G.S;
@@ -342,13 +345,15 @@ assert.ok(copiedTexts.some(text => text.includes("cell (5,3)") && text.includes(
 // not change); a double-click gesture must then leave the valve exactly as
 // it was: the first click's turn is undone.
 pickType("solid-elbow");
-assert.ok(element("brush-summary").textContent.includes("keep valve type (not change)"), "re-click unselects the type");
+assert.ok(element("brush-summary").textContent.includes("keep current type"), "re-click unselects the type");
 pickDir("1");
 assert.ok(element("brush-detail").textContent.includes("changes nothing"));
 c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
 c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
 frames.shift()((now += 16.7));
 assert.equal(element("selected-valve").textContent, placedText, "unselected type/direction double-click is a no-op");
+element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-type]" ? { dataset: { copyType: "hollow-tee" } } : null) } });
+assert.ok(copiedTexts.includes("hollow tee"), "with no direction selected, a type row copies just its name");
 c.onkeydown({ key: "p", preventDefault() {} });
 
 

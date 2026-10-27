@@ -36,7 +36,7 @@
 		<button id="pressure-reference" type="button">Use reference span</button>
 		<button id="open-valves" type="button" aria-expanded="false" aria-controls="valve-drawer">Place valve…</button>
 		<button id="open-help" type="button" aria-expanded="false" aria-controls="help-drawer">Help</button>
-		<span id="brush-summary">Double-click places: ? random type · direction not change</span>
+		<span id="brush-summary">Double-click places: random valve type · keep current direction</span>
 	</div>
 	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it."></canvas>
 	<p id="stats" aria-live="off"></p>
@@ -45,7 +45,7 @@
 			<h2 id="valve-drawer-title">Place valve</h2>
 			<button id="close-valves" type="button">Close ×</button>
 		</div>
-		<p>Pick a type and/or a direction, then <strong>double-click</strong> a valve on the field to place it — or select a valve and press <kbd>P</kbd> or Apply. Type and direction apply together; either can be <strong>?</strong> random, and either left unselected means not change — click a selected button again to unselect it. Changing the type clears grains in that cell; changing only the direction turns the rotor and keeps its grains.</p>
+		<p>Pick a type and/or a direction, then <strong>double-click</strong> a valve on the field to place it — or select a valve and press <kbd>P</kbd> or Apply. Type and direction apply together; either can be <strong>?</strong> random, and either left unselected keeps that valve’s current type/direction — click a selected button again to unselect it. Changing the type clears grains in that cell; changing only the direction turns the rotor and keeps its grains.</p>
 		<div class="brush-box">
 			<h3>Double-click will place</h3>
 			<p id="brush-detail"></p>
@@ -68,7 +68,7 @@
 		<p id="selected-valve">Hover or select a valve on the field.</p>
 		<button id="use-selected" type="button">Copy to brush (type + direction)</button>
 		<button id="copy-selected" type="button">Copy its name</button>
-		<p class="hint"><strong>Copy to brush</strong> loads that valve above, so you can place copies of it with double-click. The ⧉ and Copy name buttons put the valve type name on the clipboard as text, ready to paste into chat.</p>
+		<p class="hint"><strong>Copy to brush</strong> loads that valve above, so you can place copies of it with double-click. The ⧉ and Copy name buttons put the valve type name — plus the selected direction and its ports, when a direction is selected — on the clipboard as text, ready to paste into chat.</p>
 	</aside>
 	<aside id="help-drawer" class="drawer" hidden aria-labelledby="help-drawer-title">
 		<div class="drawer-head">

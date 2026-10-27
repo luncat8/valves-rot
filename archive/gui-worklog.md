@@ -27,6 +27,15 @@ Previous work (pressure calibration) left two things this task touches:
 - Combined page header is now one line: the "All prototypes" link and the title sit on a shared baseline at 18 px (16 px in the short-landscape rail), with no heading margins.
 - `experiments/render-smoke.cjs` now asserts there are no keep buttons, that re-clicking `?`, a type and a direction unselects them, and that an unselected/unselected double-click is still a no-op.
 
+## Follow-up 2 (user feedback)
+
+The user still saw the old buttons/header and no unselect: their preview tab was running the pre-change page. Verified that disk and the preview server both already served the new files (no keep buttons, toggle handlers, one-line header CSS), then hardened all three anyway:
+
+- Header is now `flex-wrap: nowrap` with a responsive `clamp(13px, 3.8vw, 17px)` title and a 13 px back link, so the line cannot wrap in a narrow rail or phone viewport either (14 px in the short-landscape rail).
+- Brush wording no longer says "not change" anywhere in the GUI: unselected reads "keep current type / direction".
+- Type-row ⧉ copy now appends the selected direction and rotated ports (`hollow tee · direction ↓ S · 90° (ports S,W,N)`); with no direction selected it still copies just the name. The copy button carries the type id (`data-copy-type`) so the text is built at click time by `typeText()` from the live brush.
+- The preview server was restarted with `Cache-Control: no-store`; a hard refresh (Ctrl+Shift+R) drops any pre-change cached scripts.
+
 ## Next step
 
 Open the combined page in a browser and check both drawers at desktop and short-landscape sizes, clipboard copy from `file://`, and double-click placement with each combination (`?` / fixed / not change × type / direction). If the brush feels right, `water-plan.md` is the next unimplemented plan.

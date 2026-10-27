@@ -224,13 +224,23 @@
 		return brush.type && brush.type !== "random" ? G.typeById(brush.type) : null;
 	}
 
-	// Chat-ready name of the brush, with the ports it will face when the
-	// direction is fixed.
+	function dirText() {
+		return brush.dir === "random" ? "random direction" : brush.dir === null ? "keep current direction" : "direction " + dirLabel(brush.dir);
+	}
+
+	// Chat-ready name of a type, with the selected direction (and the ports
+	// it will face) appended whenever a direction is selected.
+	function typeText(type) {
+		if (brush.dir === null) return type.name;
+		const ports = typeof brush.dir === "number" ? " (ports " + G.portsText(G.rotatePorts(type.ports, brush.dir)) + ")" : "";
+		return type.name + " · " + dirText() + ports;
+	}
+
 	function brushText() {
 		const type = brushType();
-		let text = brush.type === "random" ? "random valve type" : type ? type.name : "keep valve type (not change)";
+		let text = brush.type === "random" ? "random valve type" : type ? type.name : "keep current type";
 		if (type && typeof brush.dir === "number") text += " (ports " + G.portsText(G.rotatePorts(type.ports, brush.dir)) + ")";
-		return text + " · " + (brush.dir === "random" ? "random direction" : brush.dir === null ? "direction not change" : "direction " + dirLabel(brush.dir));
+		return text + " · " + dirText();
 	}
 
 	function syncBrush() {
@@ -255,9 +265,9 @@
 		return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + lines + chamber + "</svg>";
 	}
 
-	function typeRow(value, badge, name, note, copyName) {
+	function typeRow(value, badge, name, note, copyId) {
 		let row = '<div class="type-row"><button type="button" class="type-pick" data-type="' + value + '" aria-pressed="false">' + badge + "<span>" + name + "<small>" + note + "</small></span></button>";
-		if (copyName) row += '<button type="button" class="copy-name" data-copy-name="' + copyName + '" title="Copy “' + copyName + '” to the clipboard" aria-label="Copy name ' + copyName + '">⧉</button>';
+		if (copyId) row += '<button type="button" class="copy-name" data-copy-type="' + copyId + '" title="Copy “' + name + '” (plus the selected direction) to the clipboard" aria-label="Copy name ' + name + '">⧉</button>';
 		return row + "</div>";
 	}
 
@@ -269,15 +279,16 @@
 				kind = type.kind;
 				html += "<h4>" + kind + "</h4>";
 			}
-			html += typeRow(type.id, typeIcon(type), type.name, "ports " + G.portsText(type.ports) + " at 0°", type.name);
+			html += typeRow(type.id, typeIcon(type), type.name, "ports " + G.portsText(type.ports) + " at 0°", type.id);
 		}
 		$("valve-types").innerHTML = html;
 	}
 
 	$("valve-types").onclick = event => {
-		const copy = event.target.closest("[data-copy-name]");
+		const copy = event.target.closest("[data-copy-type]");
 		if (copy) {
-			copyText(copy.dataset.copyName);
+			const type = G.typeById(copy.dataset.copyType);
+			if (type) copyText(typeText(type));
 			return;
 		}
 		const pick = event.target.closest("[data-type]");

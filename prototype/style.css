@@ -58,11 +58,13 @@ p {
 .combined header {
 	display: flex;
 	align-items: baseline;
-	flex-wrap: wrap;
-	gap: 4px 14px;
+	flex-wrap: nowrap;
+	white-space: nowrap;
+	gap: 10px;
 }
+.combined header a { font-size: 13px; }
 .combined h1 {
-	font-size: 18px;
+	font-size: clamp(13px, 3.8vw, 17px);
 	margin: 0;
 }
 
@@ -89,7 +91,7 @@ select {
 		box-sizing: border-box;
 	}
 	.combined header { grid-column: 1; }
-	.combined h1 { font-size: 16px; margin: 0; }
+	.combined h1 { font-size: 14px; margin: 0; }
 	.combined .controls {
 		grid-column: 1;
 		align-content: start;
