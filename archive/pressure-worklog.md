@@ -97,3 +97,30 @@ Tuned against single-grain probes rather than whole-field averages, sweeping `SP
 ## Next step
 
 Reciprocity: a dense pile should damp the flow it sits in, not only be lifted by it. That needs a grain-to-field feedback term (fill already throttles the flux, so the missing piece is charging the field's momentum, which means giving the pinned reservoirs a way to absorb it) and a fixture that measures a pile's own pressure drop across its thickness.
+
+# Reciprocity: piles resist the air
+
+## Review
+
+The one-way coupling made a pile levitate in an updraft that never noticed it. Two independent reasons, both visible on a frozen packed chamber:
+
+- `update()` ran only when a rotor moved or a mouth changed, so `measureCost` was dead after create. A grain that had fallen still occupied its launch cell; a pile that formed later occupied nothing.
+- Fill cost in the distance-ratio potential does not throttle local speed. `p = d_low / (d_high + d_low)` makes `∇p` scale with cost on the only path, and Darcy then divides by the same cost, so a packed cell drops pressure (empty chamber Δp 0.027, packed 0.071) while still flowing at 88% of the empty speed. Cranking `FILL_COST` cannot make a plug. Unused `gain`/`lift` fields and a `maskClock` that never advanced on a still machine were leftovers of that incomplete coupling.
+
+## Changes
+
+- Occupancy and Darcy re-solve on the 1/30 s mask clock even while rotors are still; the mask itself still rebuilds only when a rotor has moved. `maskClock` always advances, so a still field is not reswept every substep.
+- Gas velocity is state. Interior cells relax toward Darcy (`RELAX` 0.2 per tick) and pay the impulse they deliver to grains (`CELL_MASS` 1, equal to a grain). Pinned mouths snap to Darcy and so supply or absorb that momentum. A falling grain keeps meeting fresh cells; a sitting pile drains the same ones.
+- `experiments/gas-fixtures.cjs` measures a packed hollow chamber against an empty one: pressure drop across the pile, flow after frozen gas steps, live fill on a still machine, and the existing single-grain drop.
+
+## Validation
+
+- Frozen packed chamber (52 grains, valve 44 hollow): Δp 0.071 vs 0.027 empty; after 0.4 s of `GAS.step` (grains held still) mid-chamber speed 124 vs 175 empty and vs 154 at create; `gain` 5e3 vs 0. Live fill: a grain added after create occupies its cell on the next mask tick.
+- Single-grain 30 px fall unchanged in character: 0.32 s dry and at force 0 (bit-identical), 0.52 s / 8 px drift at force 1, hovering at force 2, 1.30 s with particles.
+- `node experiments/gas-fixtures.cjs`: standing 0.93/0.10, sealed and flipped inlets, pile Δp 0.071 vs 0.027, flow 124 vs 175, drop times above. Grid stays under 3× pressure-off per 120 Hz step on Node v22.22.3 in this sandbox.
+- `node experiments/air-fixtures.cjs`, `simulation-fixtures.cjs`, `render-smoke.cjs` pass; pressure off keeps identical grain trajectories.
+- Not verified in a browser: the overlay now recolors a still pile on the occupancy clock, which was only checked through the scalar field, not pixels.
+
+## Next step
+
+Calibrate rather than add: measure the momentum flux the field delivers to walls and grains so the ramp can carry a physical unit, and validate compression/equalization against analytical seams at two grid resolutions before considering a GPU backend. Until then the field is a normalized relative potential and the legend stays relative.

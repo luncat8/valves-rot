@@ -31,6 +31,11 @@
 - A pile contact blocks only its normal. Bisecting the whole displacement vector when the straight step dips into the contact circle scales the tangential component to nothing: stacks become stable equilibria, columns never spread, grains "fall and sit". Project the velocity onto the contact tangent (normal of the deepest overlapping pair) and re-sweep the step along it.
 - Pair friction coefficients above ~0.05 cancel the small lateral impulses a tilted contact produces, so a two-grain vertical stack stays balanced forever. Round grains need near-zero pair friction; pyramids then push themselves apart and piles spread like the prototypes.
 - Wall friction is a Coulomb cap on the gravity impulse each substep: mu * g is the deceleration of a rolling grain. Keep it small (<= 0.05) or inertia dies within a cell.
+# Pressure pitfalls
+- Distance-ratio pressure with Darcy `v = ∇p / cost` is almost invariant to a *local* fill cost: both the gradient and the divisor scale with cost, so occupancy warps the overlay without slowing the gas. A uniform fill does throttle. Sitting grains have to charge cell momentum (and pinned mouths restore it) rather than relying on FILL_COST.
+- Re-solve occupancy on a clock even when rotors are still. Measuring fill only at mask rebuilds leaves cost stuck on the cells grains have left, so a pile never becomes a plug.
+- A falling grain keeps meeting fresh cells, so it still feels the lift; a sitting pile drains the same cells. That difference is the reciprocity, not a stronger one-way force.
+
 # Skin fidelity pitfalls
 - A skin named after a prototype page must copy its exact colour lists and band structure, including the bands the page does NOT draw (the gpt page has no light material band and no screws); an "inspired by" palette reads as a different product. Rasterise both headlessly and compare crops before calling a skin done.
 - A hub bolt at a rotor centre only reads as machining where channels leave the centre solid; on a blank plug it looks like a foreign axis object. Gate decorative centre details on the passage actually existing.

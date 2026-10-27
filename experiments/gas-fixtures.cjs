@@ -156,6 +156,74 @@ assert.ok(particle.time > dry.time * 1.5, `air particles also hold a fall back (
 assert.ok(particle.sim.pressure.collisions > 0, "air particles hit grains");
 const show = r => (Number.isFinite(r.time) ? r.time.toFixed(2) + " s" : "hovering");
 
+// Reciprocity: occupancy warps the potential, and a sitting pile drains the gas
+// that lifts it. Positions stay frozen so the measurement is the field, not the
+// grains sliding out of the chamber.
+function slice(field, x, y, r) {
+	let p = 0;
+	let spd = 0;
+	let n = 0;
+	for (let i = 0; i < field.count; i++) {
+		const k = field.list[i];
+		const gx = (k % field.nx) * field.cell + field.cell / 2;
+		const gy = ((k / field.nx) | 0) * field.cell + field.cell / 2 - G.POUR;
+		if ((gx - x) * (gx - x) + (gy - y) * (gy - y) > r * r) continue;
+		p += field.p[k];
+		spd += Math.hypot(field.gx[k], field.gy[k]);
+		n++;
+	}
+	return { n, p: p / n, spd: spd / n };
+}
+
+function chamber(pack) {
+	const s = S.create(G.createLayout(7), { turning: false });
+	s.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);
+	const v = s.layout.valves[44];
+	if (pack) {
+		const rad = 2.7;
+		const reach = (v.chamberR - rad) * (v.chamberR - rad);
+		for (let y = v.cy - 20; y <= v.cy + 20; y += 5.5) {
+			for (let x = v.cx - 20; x <= v.cx + 20; x += 5.5) {
+				if ((x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy) < reach) S.addGrain(s, x, y, rad, 0);
+			}
+		}
+	}
+	S.setPressure(s, "grid");
+	return { s, v };
+}
+
+const vacant = chamber(false);
+const piled = chamber(true);
+assert.ok(piled.s.count > 20, "the chamber holds a pile");
+const vacantDrop =
+	slice(vacant.s.pressure, vacant.v.cx, vacant.v.cy + 16, 8).p - slice(vacant.s.pressure, vacant.v.cx, vacant.v.cy - 16, 8).p;
+const piledDrop =
+	slice(piled.s.pressure, piled.v.cx, piled.v.cy + 16, 8).p - slice(piled.s.pressure, piled.v.cx, piled.v.cy - 16, 8).p;
+assert.ok(
+	piledDrop > vacantDrop * 2,
+	`a pile drops pressure across its thickness (${piledDrop.toFixed(3)} vs ${vacantDrop.toFixed(3)})`,
+);
+const vacantMid = slice(vacant.s.pressure, vacant.v.cx, vacant.v.cy, 14).spd;
+const piledMid0 = slice(piled.s.pressure, piled.v.cx, piled.v.cy, 14).spd;
+for (let k = 0; k < 48; k++) {
+	GAS.step(vacant.s, S.STEP);
+	GAS.step(piled.s, S.STEP);
+}
+const piledMid = slice(piled.s.pressure, piled.v.cx, piled.v.cy, 14).spd;
+assert.ok(piledMid < vacantMid * 0.85, `a sitting pile damps the flow (${piledMid.toFixed(0)} vs ${vacantMid.toFixed(0)})`);
+assert.ok(piledMid < piledMid0 * 0.95, "grains take momentum from the cells they sit in");
+assert.ok(piled.s.pressure.gain > 0, "reciprocal impulse is counted");
+assert.equal(vacant.s.pressure.gain, 0);
+
+const late = chamber(false);
+const cell = GAS.index(late.v.cx, late.v.cy);
+assert.equal(late.s.pressure.fill[cell], 0);
+S.addGrain(late.s, late.v.cx, late.v.cy, 2.7, 0);
+const updates = late.s.pressure.updates;
+for (let k = 0; k < 8; k++) GAS.step(late.s, S.STEP);
+assert.ok(late.s.pressure.updates > updates, "a still machine still re-solves for fill");
+assert.ok(late.s.pressure.fill[cell] > 0.4, "a grain occupies its cell");
+
 // Cost of the field on top of the grain solver.
 function bench(mode, steps) {
 	const s = S.create(G.createLayout(7));
@@ -169,5 +237,5 @@ const offMs = bench(null, 400);
 const gridMs = bench("grid", 400);
 assert.ok(gridMs < offMs * 3, `grid gas stays within budget (${gridMs.toFixed(3)} vs ${offMs.toFixed(3)} ms)`);
 console.log(
-	`OK gas: standing ${standing.bottom.toFixed(2)}/${standing.top.toFixed(2)} gradient, sealed and flipped inlets, bounded field, rotor mask; 30 px fall ${show(dry)} dry, ${show(wet)} at force 1, ${show(hard)} at force 2, ${show(particle)} with particles, drift ${wet.drift.toFixed(1)} px; off ${offMs.toFixed(3)} ms vs grid ${gridMs.toFixed(3)} ms per 120 Hz step (${process.version})`,
+	`OK gas: standing ${standing.bottom.toFixed(2)}/${standing.top.toFixed(2)} gradient, sealed and flipped inlets, bounded field, rotor mask; pile Δp ${piledDrop.toFixed(3)} vs empty ${vacantDrop.toFixed(3)}, flow ${piledMid.toFixed(0)} vs ${vacantMid.toFixed(0)}; 30 px fall ${show(dry)} dry, ${show(wet)} at force 1, ${show(hard)} at force 2, ${show(particle)} with particles, drift ${wet.drift.toFixed(1)} px; off ${offMs.toFixed(3)} ms vs grid ${gridMs.toFixed(3)} ms per 120 Hz step (${process.version})`,
 );

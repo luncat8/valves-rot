@@ -9,12 +9,15 @@
 // by the cell's openness, so the pressure drop concentrates at the tight places
 // (valve mouths, seam gaps, grain-packed cells) and the gas streams through them
 // like a nozzle while open chambers stay nearly isobaric. That is what makes the
-// air punctuate a fall instead of breathing on the whole field at once. Grains feel two couplings: drag toward
-// the local gas velocity, and the pressure force itself, which lifts a grain
-// against gravity wherever the field points up. Both scale with the page's
-// air-force control. This is a normalized relative potential, not a calibrated
-// thermodynamic gas; momentum is supplied and absorbed by the pinned reservoirs,
-// so the grain coupling is one-way.
+// air punctuate a fall instead of breathing on the whole field at once. Grains
+// feel two couplings: drag toward the local gas velocity, and the pressure force
+// itself, which lifts a grain against gravity wherever the field points up. Both
+// scale with the page's air-force control. This is a normalized relative
+// potential, not a calibrated thermodynamic gas. Occupancy feeds the potential
+// on the mask clock even while the rotors are still, so a pile drops pressure
+// across its thickness. Gas velocity is state: it relaxes toward Darcy and pays
+// the impulse it delivers to grains, and pinned mouths restore it, so a dense
+// pile damps the flow it sits in.
 const ValveGas = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -54,6 +57,11 @@ const ValveGas = (() => {
 	const DRAG = 1.35;
 	const LIFT = 1.15;
 	const GRAIN_CAPACITY = 1.5;
+	// Blend toward Darcy each mask tick, and the air mass of one cell in grain
+	// units. A falling grain keeps meeting fresh cells, so it still feels the
+	// lift; a sitting pile drains the same cells until the mouths restore them.
+	const RELAX = 0.2;
+	const CELL_MASS = 1;
 
 	function index(x, y) {
 		let gx = (x / CELL) | 0;
@@ -92,19 +100,18 @@ const ValveGas = (() => {
 			angles: new Float64Array(G.N * G.N),
 			inletVersion: -1,
 			clock: 0,
-			maskClock: -1,
+			maskClock: 0,
 			updates: 0,
 			rebuilds: 0,
 			drags: 0,
 			mean: 0,
 			flow: 0,
 			gain: 0,
-			lift: 0,
 		};
 		gas.p.fill(0.5);
 		rebuild(sim, gas);
 		applyPins(sim, gas);
-		update(sim, gas);
+		update(sim, gas, true);
 		return gas;
 	}
 
@@ -189,7 +196,6 @@ const ValveGas = (() => {
 			const idx = index(sim.x[k], sim.y[k]);
 			if (gas.air[idx]) fill[idx]++;
 		}
-		const face = gas.face;
 		const cost = gas.cost;
 		const open = gas.open;
 		for (let n = 0; n < gas.count; n++) {
@@ -256,10 +262,14 @@ const ValveGas = (() => {
 		}
 	}
 
-	// Pressure, then the porous velocity it implies.
-	function update(sim, gas) {
+	// Pressure, then the porous velocity it implies. `snap` writes Darcy
+	// straight into the velocity state (new mask, new pins); otherwise the
+	// interior relaxes toward it so grain impulses can persist.
+	function update(sim, gas, snap) {
 		measureCost(sim, gas);
 		if (!gas.pins) {
+			gas.gx.fill(0);
+			gas.gy.fill(0);
 			gas.mean = 0;
 			gas.flow = 0;
 			gas.updates++;
@@ -280,6 +290,7 @@ const ValveGas = (() => {
 		const cost = gas.cost;
 		const gx = gas.gx;
 		const gy = gas.gy;
+		const pin = gas.pin;
 		let flow = 0;
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
@@ -298,19 +309,22 @@ const ValveGas = (() => {
 				const s = GAS_MAX / speed;
 				vx *= s;
 				vy *= s;
-				flow += GAS_MAX;
-			} else {
-				flow += speed;
 			}
-			gx[k] = vx;
-			gy[k] = vy;
+			if (snap || pin[k]) {
+				gx[k] = vx;
+				gy[k] = vy;
+			} else {
+				gx[k] += (vx - gx[k]) * RELAX;
+				gy[k] += (vy - gy[k]) * RELAX;
+			}
+			flow += Math.sqrt(gx[k] * gx[k] + gy[k] * gy[k]);
 		}
 		gas.mean = gas.count ? sum / gas.count : 0;
 		gas.flow = gas.count ? flow / gas.count : 0;
 		gas.updates++;
 	}
 
-	function maybeRebuild(sim, gas) {
+	function maybeSolve(sim, gas) {
 		if (gas.clock - gas.maskClock < MASK_DT) return;
 		const valves = sim.layout.valves;
 		let moved = false;
@@ -320,10 +334,11 @@ const ValveGas = (() => {
 				break;
 			}
 		}
-		if (!moved) return;
-		rebuild(sim, gas);
-		applyPins(sim, gas);
-		update(sim, gas);
+		if (moved) {
+			rebuild(sim, gas);
+			applyPins(sim, gas);
+		}
+		update(sim, gas, moved);
 		gas.maskClock = gas.clock;
 	}
 
@@ -355,9 +370,10 @@ const ValveGas = (() => {
 	}
 
 	// Two couplings: drag toward the local gas velocity, and the pressure force
-	// itself, which lifts a still grain wherever the field points up. Air is left
-	// out of the reservoir bands: a grain waiting in a pour slot is not yet in the
-	// machine, and holding it there would stop the field from being fed.
+	// itself, which lifts a still grain wherever the field points up. The cell
+	// pays that impulse unless it is a pinned mouth. Air is left out of the
+	// reservoir bands: a grain waiting in a pour slot is not yet in the machine,
+	// and holding it there would stop the field from being fed.
 	// integrate() keeps the result inside the grain speed ceiling.
 	function drag(sim, gas, h) {
 		if (!gas.count) return;
@@ -365,16 +381,33 @@ const ValveGas = (() => {
 		if (force <= 0) return;
 		const drag = DRAG * force;
 		const lift = LIFT * force;
+		const invMass = 1 / CELL_MASS;
+		const gx = gas.gx;
+		const gy = gas.gy;
+		const pin = gas.pin;
 		for (let k = 0; k < sim.count; k++) {
 			const y = sim.y[k];
 			if (y < 0 || y > G.SIZE) continue;
 			const idx = sampleCell(gas, sim.x[k], y);
 			if (idx < 0) continue;
-			const gvx = gas.gx[idx];
-			const gvy = gas.gy[idx];
+			const gvx = gx[idx];
+			const gvy = gy[idx];
 			if (gvx === 0 && gvy === 0) continue;
-			sim.vx[k] += (drag * (gvx - sim.vx[k]) + lift * gvx) * h;
-			sim.vy[k] += (drag * (gvy - sim.vy[k]) + lift * gvy) * h;
+			const jx = (drag * (gvx - sim.vx[k]) + lift * gvx) * h;
+			const jy = (drag * (gvy - sim.vy[k]) + lift * gvy) * h;
+			sim.vx[k] += jx;
+			sim.vy[k] += jy;
+			if (!pin[idx]) {
+				gx[idx] -= jx * invMass;
+				gy[idx] -= jy * invMass;
+				const sp = Math.sqrt(gx[idx] * gx[idx] + gy[idx] * gy[idx]);
+				if (sp > GAS_MAX) {
+					const s = GAS_MAX / sp;
+					gx[idx] *= s;
+					gy[idx] *= s;
+				}
+			}
+			gas.gain += (jx < 0 ? -jx : jx) + (jy < 0 ? -jy : jy);
 			gas.drags++;
 		}
 	}
@@ -385,21 +418,21 @@ const ValveGas = (() => {
 		const gas = sim.pressure;
 		rebuild(sim, gas);
 		applyPins(sim, gas);
-		update(sim, gas);
+		update(sim, gas, true);
 		gas.maskClock = gas.clock;
 	}
 
 	function step(sim, h) {
 		const gas = sim.pressure;
 		gas.clock += h;
-		maybeRebuild(sim, gas);
+		maybeSolve(sim, gas);
 		if (gas.inletVersion !== sim.inlets.version) {
 			applyPins(sim, gas);
-			update(sim, gas);
+			update(sim, gas, true);
 		}
 		drag(sim, gas, h);
 	}
 
-	return { create, step, refresh, index, sampleCell, CELL, NX, NY, AIR_MIN, DRAG, LIFT, SPEED_SCALE, GAS_MAX };
+	return { create, step, refresh, index, sampleCell, CELL, NX, NY, AIR_MIN, DRAG, LIFT, SPEED_SCALE, GAS_MAX, RELAX, CELL_MASS };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveGas;
