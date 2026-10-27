@@ -124,3 +124,28 @@ The one-way coupling made a pile levitate in an updraft that never noticed it. T
 ## Next step
 
 Calibrate rather than add: measure the momentum flux the field delivers to walls and grains so the ramp can carry a physical unit, and validate compression/equalization against analytical seams at two grid resolutions before considering a GPU backend. Until then the field is a normalized relative potential and the legend stays relative.
+
+# Reference-calibrated air ramp
+
+## Review
+
+The grid's distance ratio is a dimensionless potential, not a pressure measurement: the distance sweep passes through costly metal, and it has no mass-conserving compression or equalization. The previous face mask sampled only endpoints and a midpoint; an offset closed rim could fall between those samples and leave an open velocity face. Also, sealing every mouth left stale colors visible despite the absent boundary reference.
+
+## Changes
+
+- Added one-second kinetic wall-impulse windows, excluding recovery nudges and speed-cap impulse. A grain interception no longer produces a phantom wall reflection, and separating overlaps no longer pin air particles to grains.
+- Calibrated an editable equivalent-gauge-Pa ramp from a reproducible, sealed kinetic reference chamber. The display explicitly remains a scaled relative potential; editing the span changes no simulated force. A visible, accessible text range accompanies the canvas legend, which draws above grains. With no open mouth, the unanchored grid and legend are hidden.
+- Checked centre-to-centre gas links at geometry-sweep spacing, with an adaptive clearance shortcut. This blocks the missed shut-rim face without claiming that the distance-ratio potential respects closed walls.
+- Added `water-plan.md`: top water inlet, volume/level, distinct grain densities and buoyancy in phase 1; falling-water particles are deferred. No water simulation was implemented.
+
+## Validation
+
+- `node experiments/calibration-fixtures.cjs`: 16,055 actual wall hits over 20 s give 0.7125 Pa against 0.7187 Pa circular-chamber theory under the documented reference units. Impulse, windows, SI scaling, speed-squared, population scaling, recovery and intercepted-wall cases pass. The 1-D serial-seam maximum potential errors are 0.0174 / 0.0101 at 6 / 3 px; rim-aligned aperture errors total 11.27 / 5.14 px. Geometry sweeps verify 16,965 actual rotated-grid faces and a previously missed shut rim. The independent sealed-wall diagnostic reports 0.111 potential error, so the ramp remains equivalent, not physical pressure everywhere.
+- An additional 50 rotated seeds checked 210,339 open grid faces against geometry sweeps with no blocked links.
+- `geometry-check`, `geometry-fixtures`, `simulation-fixtures`, `gas-fixtures`, `air-fixtures`, `render-smoke` and `behavior-probe` pass. One run of `gas-fixtures` measured 0.623 ms/grid step vs 0.240 ms/off at 120 Hz on Node v22.22.3; this is not a browser performance guarantee.
+- `node --expose-gc experiments/simulation-bench.cjs` on the same Xeon 2.60 GHz sandbox: turning grid/off at 120 grains 1.65/0.78 ms per 60 Hz frame and at 1,000 grains 7.33/5.92 ms; seeded grid 1.44 ms/60 Hz. The dry retained-heap probe showed no growth.
+- Headless Chromium opened the page via `file://` with no browser errors. Checked span editing/invalid input/reference reset, sealing and reopening all mouths, mode switching, pause/step, and desktop, 375 px mobile and 800 × 400 landscape layouts. The numeric range stays readable outside the scaled canvas.
+
+## Next step
+
+Implement the planned water-level and density/buoyancy phase first, preserving water volume across closed seams; leave falling-water animation for the deferred stage. Actual local gas pressure and simultaneous air/water coupling require a validated conservative, time-dependent model.

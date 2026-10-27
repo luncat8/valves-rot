@@ -13,6 +13,7 @@ const ValveAir = (() => {
 	const MASS = 3;
 	const SPEED = 180;
 	const LIMIT = 450;
+	const WALL_WINDOW = 1;
 	const BIN = 8;
 	// Particles recycled per second per open source/vent pair, and how deep into a
 	// band a particle has to reach before a vent takes it.
@@ -32,6 +33,8 @@ const ValveAir = (() => {
 			kind: "particles",
 			count: 0, capacity, collisions: 0, recoveries: 0, cycles: 0,
 			exchange: 0, cursor: 0,
+			wallImpulse: 0, wallHits: 0, wallTime: 0,
+			lastWallImpulse: 0, lastWallHits: 0, lastWallTime: 0, wallWindows: 0,
 			random: G.rng((sim.layout.seed | 0) ^ 0x2f1d5),
 			x: new Float64Array(capacity), y: new Float64Array(capacity),
 			vx: new Float64Array(capacity), vy: new Float64Array(capacity),
@@ -66,15 +69,19 @@ const ValveAir = (() => {
 		p.vy[k] *= LIMIT / speed;
 	}
 
-	function reflect(p, k, nx, ny, wx, wy) {
+	function reflect(p, k, nx, ny, wx, wy, measure) {
 		const incoming = (p.vx[k] - wx) * nx + (p.vy[k] - wy) * ny;
 		if (incoming >= 0) return;
+		if (measure) {
+			p.wallImpulse -= 2 * incoming * MASS;
+			p.wallHits++;
+		}
 		p.vx[k] -= 2 * incoming * nx;
 		p.vy[k] -= 2 * incoming * ny;
 		cap(p, k);
 	}
 
-	function wall(sim, p, k, dx, dy) {
+	function wall(sim, p, k, dx, dy, measure) {
 		const x = p.x[k];
 		const y = p.y[k];
 		const e = 0.3;
@@ -91,7 +98,7 @@ const ValveAir = (() => {
 		const distance = Math.hypot(rx, ry);
 		const rotor = distance < G.RV || (distance < G.RV + RADIUS + 0.8 && nx * rx + ny * ry > 0.7 * distance);
 		const omega = rotor ? sim.omega[vi] : 0;
-		reflect(p, k, nx, ny, -omega * ry, omega * rx);
+		reflect(p, k, nx, ny, -omega * ry, omega * rx, measure);
 	}
 
 	function contact(sim, p, k, x, y) {
@@ -109,17 +116,16 @@ const ValveAir = (() => {
 					const nx = d > 1e-9 ? dx / d : 1;
 					const ny = d > 1e-9 ? dy / d : 0;
 					const incoming = (p.vx[k] - sim.vx[j]) * nx + (p.vy[k] - sim.vy[j]) * ny;
-					if (incoming < 0) {
-						const mass = sim.r[j] * sim.r[j];
-						const impulse = (-2 * incoming / (1 / MASS + 1 / mass)) * sim.airForce;
-						p.vx[k] += impulse * nx / MASS;
-						p.vy[k] += impulse * ny / MASS;
-						sim.vx[j] -= impulse * nx / mass;
-						sim.vy[j] -= impulse * ny / mass;
-						// Safety ceiling dissipates only extreme driven-wall energy.
-						cap(p, k);
-						p.collisions++;
-					}
+					if (incoming >= 0) continue;
+					const mass = sim.r[j] * sim.r[j];
+					const impulse = (-2 * incoming / (1 / MASS + 1 / mass)) * sim.airForce;
+					p.vx[k] += impulse * nx / MASS;
+					p.vy[k] += impulse * ny / MASS;
+					sim.vx[j] -= impulse * nx / mass;
+					sim.vy[j] -= impulse * ny / mass;
+					// Safety ceiling dissipates only extreme driven-wall energy.
+					cap(p, k);
+					p.collisions++;
 					return true;
 				}
 			}
@@ -197,7 +203,7 @@ const ValveAir = (() => {
 				const dy = p.nearest.y - p.y[k];
 				p.x[k] = p.nearest.x;
 				p.y[k] = p.nearest.y;
-				wall(sim, p, k, -dx, -dy);
+				wall(sim, p, k, -dx, -dy, false);
 				p.recoveries++;
 			}
 			cap(p, k);
@@ -209,16 +215,25 @@ const ValveAir = (() => {
 				const dy = p.vy[k] * dt;
 				G.sweep(sim.layout, p.x[k], p.y[k], p.x[k] + dx, p.y[k] + dy, RADIUS, p.sweep);
 				const hit = p.sweep.hit;
-				if (!contact(sim, p, k, p.sweep.x, p.sweep.y)) {
-					p.x[k] = p.sweep.x;
-					p.y[k] = p.sweep.y;
-				}
-				if (hit) wall(sim, p, k, dx, dy);
+				if (contact(sim, p, k, p.sweep.x, p.sweep.y)) continue;
+				p.x[k] = p.sweep.x;
+				p.y[k] = p.sweep.y;
+				if (hit) wall(sim, p, k, dx, dy, true);
 			}
 		}
 		exchange(sim, p, h);
+		p.wallTime += h;
+		if (p.wallTime + 1e-9 >= WALL_WINDOW) {
+			p.lastWallImpulse = p.wallImpulse;
+			p.lastWallHits = p.wallHits;
+			p.lastWallTime = p.wallTime;
+			p.wallImpulse = 0;
+			p.wallHits = 0;
+			p.wallTime = 0;
+			p.wallWindows++;
+		}
 	}
 
-	return { create, step, RADIUS, MASS, LIMIT, CYCLE_RATE };
+	return { create, step, RADIUS, MASS, SPEED, LIMIT, CYCLE_RATE, WALL_WINDOW };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveAir;

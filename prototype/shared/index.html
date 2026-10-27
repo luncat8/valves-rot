@@ -10,7 +10,7 @@
 	<header>
 	<a href="../../index.html">All prototypes</a>
 	<h1>Combined / Rotary Valve Field</h1>
-	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Double-click to replace a valve (clears its grains); Ctrl-click to fill with one random color. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor. The mouths in the pour and drain bands are pressure inlets: bottom rows are constant high pressure, top rows constant low pressure. Click a mouth to seal or open it, Shift-click to swap its high/low polarity. <strong>Air force</strong> scales how hard the pressure pushes grains; at 0 the grains fall as if pressure were off.</p>
+	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Double-click to replace a valve (clears its grains); Ctrl-click to fill with one random color. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor. The mouths in the pour and drain bands are air inlets: bottom rows are high, top rows low. Click a mouth to seal or open it, Shift-click to swap its polarity. <strong>Air force</strong> scales the push on grains; at 0 they fall as if pressure were off.</p>
 	</header>
 	<div class="controls">
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
@@ -31,14 +31,23 @@
 			<label><input id="pressure-grid" name="pressure" type="radio" value="grid" checked> Grid gas</label>
 		</fieldset>
 		<label>Air force <input id="force" type="range" min="0" max="2" step="0.05" value="1"><output id="force-value">1</output></label>
-		<label><input id="pressure-draw" type="checkbox" checked> Draw pressure as air color</label>
+		<label><input id="pressure-draw" type="checkbox" checked> Draw air field</label>
+		<label>Ramp span (Pa equivalent) <input id="pressure-span" type="number" min="0" step="any" aria-describedby="calibration-note" aria-errormessage="pressure-error"></label>
+		<small id="pressure-error" role="status" hidden>Enter a positive span in Pa.</small>
+		<button id="pressure-reference" type="button">Use reference span</button>
 	</div>
+	<details id="calibration-note">
+		<summary>Grid colors: relative potential <span id="legend-range" aria-live="polite"></span> (calibration details)</summary>
+		<p>The grid remains a relative potential, not a measured pressure. The legend maps 0–1 to 0–the reference span in gauge-equivalent pascals; changing the span only relabels the ramp and does not change forces. With no open air mouth the field is unanchored and hidden.</p>
+		<p>The default span is measured from normal particle-wall impulse in a sealed reference chamber: 100 markers at 180 px/s, radius 15 px, over 20 simulation seconds. Its illustrative scales are 1 mm/px, 1 simulation second = 1 s, 1 mg per mass unit (3 mg per marker), and 10 mm depth. It is not an atmospheric pressure or a validation of pressure everywhere in the machine. Enter a known source-to-vent gauge difference to use another reference.</p>
+	</details>
 	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve. Click an inlet mouth in the bands to toggle it."></canvas>
 	<p id="stats" aria-live="off"></p>
 	<script src="geometry.js"></script>
 	<script src="inlets.js"></script>
 	<script src="air.js"></script>
 	<script src="gas.js"></script>
+	<script src="calibration.js"></script>
 	<script src="render.js"></script>
 	<script src="simulation.js"></script>
 	<script src="app.js"></script>

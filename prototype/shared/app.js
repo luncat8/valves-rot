@@ -5,11 +5,13 @@
 	const R = ValveRender;
 	const S = ValveSimulation;
 	const I = ValveInlets;
+	const C = ValveCalibration;
 	const $ = id => document.getElementById(id);
 
 	const HEIGHT = G.SIZE + G.POUR * 2;
 	const canvas = $("c");
 	const ctx = canvas.getContext("2d");
+	const legendRange = $("legend-range");
 	const airMap = R.makeAirMap(4);
 	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
@@ -23,10 +25,15 @@
 	let selected = -1;
 	let hoverInlet = -1;
 	let fieldMap = null;
+	let pressureSpan = Number(C.DEFAULT_SPAN.toPrecision(6));
+	let pressureSpanLabel = C.format(pressureSpan);
+	let legendState = -1;
+	let legendLabel = "";
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
 
+	$("pressure-span").value = String(pressureSpan);
 	S.seed(sim);
 	S.setAirForce(sim, +$("force").value);
 	S.setPressure(sim, readMode());
@@ -148,6 +155,24 @@
 	$("pressure-particles").onchange = pressureChanged;
 	$("pressure-grid").onchange = pressureChanged;
 	$("pressure-draw").onchange = () => { if (paused) drawFrame(false); };
+	$("pressure-span").oninput = () => {
+		const input = $("pressure-span");
+		const value = Number(input.value);
+		if (!Number.isFinite(value) || value <= 0) {
+			input.setAttribute("aria-invalid", "true");
+			$("pressure-error").hidden = false;
+			return;
+		}
+		input.removeAttribute("aria-invalid");
+		$("pressure-error").hidden = true;
+		pressureSpan = value;
+		pressureSpanLabel = C.format(C.equivalentPressure(1, pressureSpan));
+		if (paused) drawFrame(false);
+	};
+	$("pressure-reference").onclick = () => {
+		$("pressure-span").value = String(Number(C.DEFAULT_SPAN.toPrecision(6)));
+		$("pressure-span").oninput();
+	};
 
 	function setHover(inlet) {
 		if (hoverInlet === inlet) return;
@@ -240,9 +265,10 @@
 		ctx.restore();
 	}
 
-	// Scalar field, drawn as one smoothed texel per gas cell plus the legend.
+	// Without a boundary there is no reference for the potential or its ramp.
 	function drawPressureGrid() {
 		const gas = sim.pressure;
+		if (!gas.pins) return;
 		if (!fieldMap || fieldMap.nx !== gas.nx || fieldMap.ny !== gas.ny) fieldMap = R.makeFieldMap(gas.nx, gas.ny);
 		R.renderField(fieldMap, gas);
 		ctx.save();
@@ -250,29 +276,47 @@
 		ctx.imageSmoothingEnabled = true;
 		ctx.drawImage(fieldMap.canvas, 0, -G.POUR, gas.nx * gas.cell, gas.ny * gas.cell);
 		ctx.restore();
-		R.renderPressureLegend(ctx);
+	}
+
+	function syncLegend() {
+		const gas = sim.pressure;
+		const state = !$("pressure-draw").checked || !gas || gas.kind !== "grid" ? 0 : gas.pins ? 2 : 1;
+		if (state === legendState && (state !== 2 || legendLabel === pressureSpanLabel)) return;
+		legendState = state;
+		legendLabel = pressureSpanLabel;
+		legendRange.hidden = state === 0;
+		legendRange.textContent = state === 1 ? "· unanchored" : state === 2 ? "· 0–" + pressureSpanLabel + " Pa equivalent" : "";
 	}
 
 	function drawFrame(forceOverlay) {
+		syncLegend();
 		ctx.save();
 		// Shift world [-POUR, SIZE + POUR] down into canvas [0, SIZE + 2 * POUR].
 		ctx.translate(0, G.POUR);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
-		if ($("pressure-draw").checked && sim.pressure) {
-			if (sim.pressure.kind === "grid") drawPressureGrid();
-			else R.renderPressure(ctx, sim.pressure);
+		const pressure = sim.pressure;
+		const drawPressure = $("pressure-draw").checked && pressure;
+		if (drawPressure) {
+			if (pressure.kind === "grid") drawPressureGrid();
+			else R.renderPressure(ctx, pressure);
 		}
 		// Mouths sit under the grain piles that share the bands.
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
 		R.renderGrains(ctx, sim, scene);
 		R.renderSelection(ctx, layout, selected);
+		if (drawPressure && pressure.kind === "grid" && pressure.pins) {
+			R.renderPressureLegend(ctx, pressureSpanLabel);
+		}
 		ctx.restore();
 	}
 
 	function formatStats(fps) {
 		const purged = sim.purged > 0 ? " · purged " + sim.purged : "";
-		const gas = sim.pressure && sim.pressure.kind === "grid" ? " · gas p " + sim.pressure.mean.toFixed(2) + " · flow " + sim.pressure.flow.toFixed(0) : "";
+		let gas = "";
+		if (sim.pressure && sim.pressure.kind === "grid") {
+			gas = sim.pressure.pins ? " · potential " + sim.pressure.mean.toFixed(2) + " · flow " + sim.pressure.flow.toFixed(0) + " px/s" : " · potential unanchored";
+		}
 		return (
 			fps.toFixed(0).padStart(3) +
 			" fps · seed " +

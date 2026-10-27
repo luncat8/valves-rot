@@ -31,7 +31,7 @@ const ValveRender = (() => {
 	const LEGEND_Y = 22;
 	const LEGEND_STEPS = 16;
 
-	// Scalar pressure ramp, low to high: deep blue through cyan and amber to red.
+	// Relative potential ramp, low to high; the legend applies a reference span.
 	// Both the texel lookup and the legend swatches are precomputed once.
 	const PRESS_STOPS = [
 		[0, 30, 88, 176],
@@ -457,8 +457,8 @@ const ValveRender = (() => {
 		ctx.fill();
 	}
 
-	// Scalar pressure overlay: one texel per gas cell, tinted by the ramp and
-	// transparent over metal. The caller scales it up with smoothing on.
+	// Potential overlay: one texel per gas cell. A linear Pa-equivalent span
+	// changes the legend, not the normalized colors or the simulation.
 	function makeFieldMap(nx, ny) {
 		const c = document.createElement("canvas");
 		c.width = nx;
@@ -474,7 +474,7 @@ const ValveRender = (() => {
 		const p = gas.p;
 		const n = air.length;
 		for (let k = 0, o = 0; k < n; k++, o += 4) {
-			if (!air[k]) {
+			if (!gas.pins || !air[k]) {
 				data[o + 3] = 0;
 				continue;
 			}
@@ -488,24 +488,25 @@ const ValveRender = (() => {
 		map.ctx.putImageData(map.img, 0, 0);
 	}
 
-	function renderPressureLegend(ctx) {
+	function renderPressureLegend(ctx, spanLabel) {
 		const x = LEGEND_X;
 		const y = LEGEND_Y;
 		ctx.save();
-		roundRect(ctx, x - 16, y - 12, LEGEND_W + 26, LEGEND_H + 24, 4);
-		ctx.fillStyle = "rgba(10,14,20,0.55)";
+		roundRect(ctx, x - 46, y - 16, LEGEND_W + 51, LEGEND_H + 30, 4);
+		ctx.fillStyle = "rgba(10,14,20,0.72)";
 		ctx.fill();
 		const step = LEGEND_H / LEGEND_STEPS;
 		for (let i = 0; i < LEGEND_STEPS; i++) {
 			ctx.fillStyle = PRESS_CSS[i];
 			ctx.fillRect(x, y + i * step, LEGEND_W, step + 0.7);
 		}
-		ctx.fillStyle = "rgba(226,236,245,0.86)";
-		ctx.font = "7px system-ui, sans-serif";
+		ctx.fillStyle = "rgba(226,236,245,0.95)";
+		ctx.font = "10px system-ui, sans-serif";
 		ctx.textAlign = "right";
 		ctx.textBaseline = "middle";
-		ctx.fillText("low", x - 2.5, y + 4);
-		ctx.fillText("high", x - 2.5, y + LEGEND_H - 4);
+		ctx.fillText("eq. Pa", x + LEGEND_W, y - 9);
+		ctx.fillText("0", x - 3, y + 4);
+		ctx.fillText(spanLabel, x - 3, y + LEGEND_H - 4);
 		ctx.restore();
 	}
 

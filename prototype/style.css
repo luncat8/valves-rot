@@ -70,7 +70,7 @@ select {
 	body.combined {
 		display: grid;
 		grid-template-columns: minmax(180px, 1fr) auto;
-		grid-template-rows: auto 1fr auto;
+		grid-template-rows: auto minmax(0, 1fr) auto auto;
 		gap: 8px 16px;
 		padding: 8px;
 		height: 100dvh;
@@ -88,14 +88,22 @@ select {
 		min-height: 0;
 	}
 	.combined button { padding: 5px 8px; }
+	.combined #calibration-note { grid-column: 1; grid-row: 3; margin: 0; max-height: 20vh; overflow-y: auto; font-size: 11px; }
 	.combined #c {
 		grid-column: 2;
-		grid-row: 1 / 4;
+		grid-row: 1 / 5;
 		width: min(calc((100dvh - 16px) * 720 / 780), 58vw);
 		align-self: center;
 	}
-	.combined #stats { grid-column: 1; font-size: 11px; margin: 0; }
+	.combined #stats { grid-column: 1; grid-row: 4; font-size: 11px; margin: 0; }
 }
+
+#pressure-span { width: 7em; }
+#pressure-span[aria-invalid="true"] { outline: 2px solid #ff776c; }
+#pressure-error { color: #ff9d94; }
+#calibration-note { margin: -8px 0 16px; color: #aeb9c5; }
+#calibration-note summary { cursor: pointer; }
+#calibration-note p { max-width: 78ch; }
 
 .pressure-controls {
 	display: flex;

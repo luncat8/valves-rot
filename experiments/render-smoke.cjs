@@ -10,6 +10,7 @@ const root = path.join(__dirname, "..", "prototype", "shared");
 const calls = { total: 0, stroke: 0, fill: 0, drawImage: 0, putImageData: 0, arc: 0, fillRect: 0, canvases: 0 };
 const mainTranslates = [];
 const mainDrawImages = [];
+const mainTexts = [];
 const gradient = { addColorStop() {} };
 
 function recordingContext(isMain) {
@@ -52,6 +53,12 @@ function recordingContext(isMain) {
 					calls.total++;
 				};
 			}
+			if (prop === "fillText") {
+				return text => {
+					if (isMain) mainTexts.push(text);
+					calls.total++;
+				};
+			}
 			if (drawOps.indexOf(prop) >= 0) {
 				return () => {
 					if (prop === "stroke") calls.stroke++;
@@ -75,11 +82,15 @@ function element(id) {
 	const el = {
 		id,
 		value: id === "seed" ? "7" : id === "speed" || id === "force" ? "1" : "",
-		checked: false,
+		checked: id === "pressure-grid" || id === "pressure-draw",
 		textContent: "",
 		width: 0,
 		height: 0,
 		style: {},
+		attributes: {},
+		setAttribute(name, value) { this.attributes[name] = value; },
+		removeAttribute(name) { delete this.attributes[name]; },
+		getAttribute(name) { return this.attributes[name] ?? null; },
 		addEventListener() {},
 		getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 780 }),
 	};
@@ -115,7 +126,7 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "render.js", "simulation.js", "app.js"]) {
+for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "simulation.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
@@ -173,13 +184,74 @@ element("model").onchange();
 for (let i = 0; i < 3; i++) {
 	mainDrawImages.length = 0;
 	frames.shift()((now += 16.7));
-	assert.equal(mainDrawImages.length, 102, "bg + 100 rotors + steady air overlay every frame");
+	assert.equal(mainDrawImages.length, 103, "bg + 100 rotors + steady air and gas overlays every frame");
 	assert.deepEqual(mainDrawImages[0], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 	assert.deepEqual(mainDrawImages[101], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
+	assert.deepEqual(mainDrawImages[102], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 }
 
-// Pointer and keyboard valve selection + rotation.
+// The calibrated legend is visible, editable while paused, and disappears when
+// every reference mouth is sealed. Invalid input keeps the last valid span.
+const CAL = vm.runInThisContext("ValveCalibration");
+assert.ok(Math.abs(Number(element("pressure-span").value) - CAL.DEFAULT_SPAN) < 1e-6);
+element("pause").onclick();
+mainTexts.length = 0;
+element("pressure-span").value = "2.5";
+element("pressure-span").oninput();
+assert.ok(mainTexts.includes("eq. Pa") && mainTexts.includes("2.5") && mainTexts.includes("0"));
+assert.equal(element("legend-range").textContent, "· 0–2.5 Pa equivalent", "the scale is available outside the canvas");
+element("pressure-span").value = "-1";
+element("pressure-span").oninput();
+assert.equal(element("pressure-span").getAttribute("aria-invalid"), "true");
+assert.equal(element("pressure-error").hidden, false);
+mainTexts.length = 0;
+element("pressure-draw").onchange();
+assert.ok(mainTexts.includes("2.5"), "invalid input does not replace the last valid scale");
+element("pressure-reference").onclick();
+assert.equal(element("pressure-span").getAttribute("aria-invalid"), null);
+assert.equal(element("pressure-error").hidden, true);
+assert.ok(Math.abs(Number(element("pressure-span").value) - CAL.DEFAULT_SPAN) < 1e-6, "reference span can be restored");
+element("pressure-span").value = "1.25";
+element("pressure-span").oninput();
+assert.equal(element("pressure-span").getAttribute("aria-invalid"), null);
+
 const c = element("c");
+function clickMouth(side, column) {
+	c.onclick({ clientX: (column + 0.5) * G.S, clientY: side === 0 ? 2 : G.SIZE + G.POUR * 2 - 2, shiftKey: false, detail: 1 });
+}
+for (let side = 0; side < 2; side++) {
+	for (let column = 0; column < G.N; column++) {
+		if (side === 1 && column === G.N - 1) {
+			mainTexts.length = 0;
+			mainDrawImages.length = 0;
+		}
+		clickMouth(side, column);
+	}
+}
+assert.ok(!mainTexts.includes("eq. Pa"), "no legend without a boundary reference");
+assert.equal(element("legend-range").textContent, "· unanchored");
+assert.equal(mainDrawImages.length, 102, "an unanchored grid is not drawn");
+mainTexts.length = 0;
+clickMouth(0, 0);
+assert.ok(mainTexts.includes("eq. Pa") && mainTexts.includes("1.25"), "reopening a mouth restores the selected scale");
+for (let side = 0; side < 2; side++) {
+	for (let column = 0; column < G.N; column++) {
+		if (side === 0 && column === 0) continue;
+		clickMouth(side, column);
+	}
+}
+element("pause").onclick();
+
+const fieldMap = R.makeFieldMap(2, 1);
+const field = { air: new Uint8Array([1, 0]), p: new Float32Array([0.5, 1]), pins: 1 };
+R.renderField(fieldMap, field);
+assert.equal(fieldMap.img.data[3], 255);
+assert.equal(fieldMap.img.data[7], 0, "metal remains transparent");
+field.pins = 0;
+R.renderField(fieldMap, field);
+assert.equal(fieldMap.img.data[3], 0, "unanchored values cannot leave stale colors");
+
+// Pointer and keyboard valve selection + rotation.
 c.onpointermove({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S });
 const strokesPreSelect = calls.stroke;
 frames.shift()((now += 16.7));
@@ -201,8 +273,10 @@ element("force").value = "1.5";
 element("force").oninput();
 assert.equal(element("force-value").value, "1.5", "air force slider is wired");
 element("pause").onclick();
+element("pressure-grid").checked = false;
 element("pressure-particles").checked = true;
 element("pressure-particles").onchange();
+assert.equal(element("legend-range").hidden, true, "particle mode does not claim a grid scale");
 element("pressure-draw").checked = true;
 element("pressure-draw").onchange();
 element("step").onclick();

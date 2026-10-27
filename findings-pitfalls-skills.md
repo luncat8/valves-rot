@@ -35,6 +35,8 @@
 - Distance-ratio pressure with Darcy `v = ∇p / cost` is almost invariant to a *local* fill cost: both the gradient and the divisor scale with cost, so occupancy warps the overlay without slowing the gas. A uniform fill does throttle. Sitting grains have to charge cell momentum (and pinned mouths restore it) rather than relying on FILL_COST.
 - Re-solve occupancy on a clock even when rotors are still. Measuring fill only at mask rebuilds leaves cost stuck on the cells grains have left, so a pile never becomes a plug.
 - A falling grain keeps meeting fresh cells, so it still feels the lift; a sitting pile drains the same cells. That difference is the reciprocity, not a stronger one-way force.
+- Air-cell endpoints plus a midpoint do not prove an open face: a thin shut rotor rim can lie between samples. Check the full link against clearance and compare runtime faces with `G.sweep` on rotated valves.
+- A wall impulse is not a pressure without a known wall area, elapsed time and physical units. An independently scaled relative potential is only an equivalent-pressure visualization; distance paths through metal and instantaneous solves cannot establish sealed-wall or transient gas physics.
 
 # Skin fidelity pitfalls
 - A skin named after a prototype page must copy its exact colour lists and band structure, including the bands the page does NOT draw (the gpt page has no light material band and no screws); an "inspired by" palette reads as a different product. Rasterise both headlessly and compare crops before calling a skin done.
