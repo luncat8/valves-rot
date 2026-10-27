@@ -149,3 +149,48 @@ The grid's distance ratio is a dimensionless potential, not a pressure measureme
 ## Next step
 
 Implement the planned water-level and density/buoyancy phase first, preserving water volume across closed seams; leave falling-water animation for the deferred stage. Actual local gas pressure and simultaneous air/water coupling require a validated conservative, time-dependent model.
+
+# Grid gas: a field with a reference, and a readable change
+
+## Review
+
+The solver produced a plausible ramp, but three parts of the user-facing behaviour were wrong, and one of them was a real physics bug.
+
+- A sealed band produced a constant. With every top mouth shut the distance ratio degenerates to `d_low / (d_high + d_low)` with `d_high` infinite, which is exactly `1`; with every bottom mouth shut it is `0`. So "close all vents" flooded the overlay to a single colour, and it arrived on the next solve. The fixture even asserted this as intended (`sealed vents hold source pressure`).
+- The distance pass ignored the face mask. The potential could step from one air cell to the next across a shut rotor rim, while the Darcy stencil refuses the same link. The overlay therefore showed gradients the gas could not follow, and a turned rotor barely moved the field (10 turned valves moved the mean potential by 0.011).
+- A solved field replaced the shown field on the same tick. Every mouth click and rotor turn was a repaint, so nothing in the overlay read as a consequence of an action.
+- `renderField` keyed on `pins` rather than on the existence of a difference, and the app kept its own legend state in step with the same wrong predicate.
+
+## Changes
+
+- `gas.js` reports `anchored = sources > 0 && vents > 0`, along with the two counts. Without a difference the field carries no flow and the overlay is hidden; `pins` stays for compatibility. The legend names the missing side.
+- The distance sweep only crosses an air-to-air link when `face` has it, so the potential and the velocity agree about what is open. Metal stays traversable at a raised cost (`METAL` 6 -> 12), which localizes the field: 10 turned valves now move the mean potential by 0.034 instead of 0.011, and the overlay reads as cells reacting to the valve over them rather than as a global top-to-bottom gradient.
+- `SWEEPS` 2 -> 3 for the heavier metal cost: against a 12-sweep reference the mean error is 0.3% and the maximum local error 0.10, where two sweeps leave 0.21.
+- The shown potential eases toward the solution: pinned mouth cells snap, the rest close 30% of the gap per 1/30 s tick, so a change takes about a third of a second. The velocity state follows the shown potential, so the push and the colours stay consistent.
+- The overlay alpha eases out when the field loses its reference instead of cutting, and `renderField` reads `anchored`.
+- Skipping work: `measureCost` reports whether any cell's occupancy changed, and the sweeps are skipped when the mask, the mouths and the occupancy all stand still. Metal cost is written once per rebuild. An idle machine now costs only the velocity blend.
+- `simulation.js` exposes `settlePressure` and the page frame loop calls it while paused, so a paused overlay still answers mouth clicks and rotor turns.
+- `game.js` treats `anchored` as the pressure-quest precondition, and the mouth bots (below) were rewritten around it.
+- `gas.js` `probeMouths` solves a hypothetical mouth set into the target buffer; `game.js` uses it at signing to fit a pressure quest to what its cell can actually reach.
+- Fixtures: the gas fixture's "sealed vents hold source pressure" became "one polarity leaves the field unanchored", plus reopening a source and a vent, a rotor turn moving at least 20 cells, and an idle machine skipping the sweeps. Calibration builds its 1-D fields with explicit `air`/`face` masks. The game fixture gained a fitted-threshold quest, and now asserts that a sealed field never satisfies one. Render smoke asserts the fade and the new legend text.
+
+## The mouth policy that follows
+
+`anchored` changes what a pressure quest is. The old bot shut every mouth of the opposing band, which now removes the reference, so the target potential becomes literally undefined. The new policy keeps the field defined and moves the drop instead:
+
+- Keep the farthest mouth of the opposing band open as the reference.
+- Open the favourable band near the goal.
+- Shut the opposing mouths nearest the goal first, one per action.
+
+Measured over one second per action, that recipe lifts a central cell from 0.48 to 0.77 (sealing the whole top band gives 0.81 but no field at all) and drops it to 0.39. Across the central rows the reachable range is roughly 0.08-0.54 below the baseline and 0.54-0.92 above it, so a fixed `> 0.72` threshold was frequently unreachable in a given cell. `fitPressureQuest` now solves both best mouth sets, keeps the polarity with more headroom, and puts the threshold 60% of the way from the current potential to that extreme; an unfitable quest falls back to the baseline, so it is never trivially satisfied.
+
+## Validation
+
+- `node experiments/gas-fixtures.cjs`: standing 0.94/0.11, sealed and flipped inlets, unanchored with one polarity, re-anchored by one source plus one vent, a rotor turn moving 100+ cells, idle machine skipping the sweeps, pile Δp 0.057 vs 0.021, flow 109 vs 156, a 30 px fall 0.32 s dry / 0.51 s at force 1 with 9.6 px drift / hovering at force 2 / 1.29 s with particles; 0.28 ms off vs 1.03 ms grid per 120 Hz step on Node v22.22.3 with every rotor turning.
+- `node experiments/game-fixtures.cjs`: quest generator, hold/blank seal, an unfitable `> 0.95` quest refitted and completed by the bot recipe, bots completing 3 quests (85 pts) over two seeds.
+- `node experiments/calibration-fixtures.cjs`, `air-fixtures`, `simulation-fixtures`, `geometry-fixtures`, `geometry-check`, `behavior-probe` and `render-smoke` pass. The 1-D serial-seam and aperture errors are unchanged; the closed-wall potential error remains 0.111, which is the heuristic's documented limit.
+- Not verified in a real browser (none in this sandbox). Overlay pixels were checked by rasterising the same mask, potential and ramp to PPM and comparing the four states: default, all vents sealed, one mouth toggled and a turned valve. `experiments/logs/grid-gas-fix-0.2.webp` is that comparison at half scale: the old field top (standing gradient, then one flat red after the vents closed), the new field bottom (standing gradient, then no field at all).
+
+## Next step
+
+The field is now localized enough that a quest could ask for a *gradient* rather than a level (a drop across two neighbouring bottles), which is what the model actually measures well. Before that, give the legend a second reference for a fully sealed machine: the current "no through-flow" state is honest but gives a player nothing to aim at.

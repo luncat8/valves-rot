@@ -491,9 +491,10 @@ const ValveGame = (() => {
 		return findGravityTopSpout(sim, targetCell, false) >= 0;
 	}
 
-	function sampleChamberPotential(sim, index) {
+	// Mean potential of the air cells in the bottle's chamber; `field` is `p`, or
+	// the target buffer of a hypothetical mouth set.
+	function sampleChamber(sim, index, field) {
 		const gas = sim.pressure;
-		if (!gas || gas.kind !== "grid" || !gas.pins) return 0.5;
 		const v = sim.layout.valves[index];
 		const r2 = (Math.max(v.chamberR, 8) + 2) ** 2;
 		const c0 = GAS.index(v.cx, v.cy);
@@ -510,11 +511,40 @@ const ValveGame = (() => {
 				const wx = (ox + 0.5) * gas.cell;
 				const wy = (oy + 0.5) * gas.cell - G.POUR;
 				if ((wx - v.cx) ** 2 + (wy - v.cy) ** 2 > r2) continue;
-				sum += gas.p[k];
+				sum += field[k];
 				n++;
 			}
 		}
-		return n > 0 ? sum / n : gas.air[c0] ? gas.p[c0] : 0.5;
+		return n > 0 ? sum / n : gas.air[c0] ? field[c0] : 0.5;
+	}
+
+	function sampleChamberPotential(sim, index) {
+		const gas = sim.pressure;
+		if (!gas || gas.kind !== "grid" || !gas.anchored) return 0.5;
+		return sampleChamber(sim, index, gas.p);
+	}
+
+	// Keep a pressure quest inside what the mouths can actually do here: solve the
+	// best mouth set for each polarity, and aim the threshold at the reachable
+	// side instead of a fixed number the cell may never hit.
+	function fitPressureQuest(sim, quest, index) {
+		const gas = sim.pressure;
+		if (!gas || gas.kind !== "grid" || !gas.anchored) return;
+		const col = index % N;
+		const base = sampleChamberPotential(sim, index);
+		const high = GAS.probeMouths(sim, true, col) ? sampleChamber(sim, index, gas.pTarget) : base;
+		const low = GAS.probeMouths(sim, false, col) ? sampleChamber(sim, index, gas.pTarget) : base;
+		GAS.refresh(sim, true);
+		const up = high - base;
+		const down = base - low;
+		if (quest.op === ">" ? up < down : down < up) quest.op = quest.op === ">" ? "<" : ">";
+		const reach = quest.op === ">" ? high : low;
+		// Aim part of the way to what the best mouth set reaches, so the target sits
+		// inside the field this cell can actually produce.
+		const aim = base + (reach - base) * 0.6;
+		quest.threshold = Number(Math.min(0.98, Math.max(0.02, aim)).toFixed(2));
+		quest.swatch = quest.op === ">" ? "#ff8a5c" : "#5cc8ff";
+		quest.title = formatQuestTitle(quest);
 	}
 
 	function columnHasGoal(sim, col, chosen) {
@@ -552,7 +582,7 @@ const ValveGame = (() => {
 						if (chosen.length && Math.abs((chosen[0] % N) - i) < 2 && pass < 2) continue;
 						if (pass === 0 && !reachableFromTop(sim, above)) continue;
 						if (pass < 2 && sim.layout.valves[above].ports.length < 2) continue;
-						if (quest.kind === "pressure" && pass < 2 && sim.pressure && sim.pressure.kind === "grid" && sim.pressure.pins) {
+						if (quest.kind === "pressure" && pass < 2 && sim.pressure && sim.pressure.kind === "grid" && sim.pressure.anchored) {
 							const p0 = sim.pressure.p[GAS.index((i + 0.5) * G.S, (j + 0.5) * G.S)];
 							const already = quest.op === ">" ? p0 > quest.threshold - 0.05 : p0 < quest.threshold + 0.05;
 							if (already) continue;
@@ -621,16 +651,9 @@ const ValveGame = (() => {
 			}
 		}
 
-		// Ensure a newly spawned pressure quest is not trivially satisfied on frame 0.
-		if (quest.kind === "pressure" && sim.pressure && sim.pressure.kind === "grid" && sim.pressure.pins) {
-			const p0 = sampleChamberPotential(sim, cells[0]);
-			if (quest.op === ">" ? p0 > quest.threshold - 0.02 : p0 < quest.threshold + 0.02) {
-				quest.op = quest.op === ">" ? "<" : ">";
-				quest.threshold = Number((1 - quest.threshold).toFixed(2));
-				quest.swatch = quest.op === ">" ? "#ff8a5c" : "#5cc8ff";
-				quest.title = formatQuestTitle(quest);
-			}
-		}
+		// Fit a pressure quest to the reachable range of its cell, which also keeps
+		// it from being trivially satisfied on frame 0.
+		if (quest.kind === "pressure") fitPressureQuest(sim, quest, cells[0]);
 
 		game.dirtyCases = true;
 		evaluateQuest(game, quest);
@@ -643,7 +666,7 @@ const ValveGame = (() => {
 	function evaluateCell(sim, cellIndex, quest) {
 		if (quest.kind === "pressure") {
 			const gas = sim.pressure;
-			const anchored = !!gas && gas.kind === "grid" && gas.pins > 0;
+			const anchored = !!gas && gas.kind === "grid" && gas.anchored;
 			const p = anchored ? sampleChamberPotential(sim, cellIndex) : 0.5;
 			evalOut.potential = p;
 			evalOut.ok = anchored && (quest.op === ">" ? p > quest.threshold : p < quest.threshold);
@@ -981,6 +1004,59 @@ const ValveGame = (() => {
 
 	const COL_SWEEP = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9];
 
+	// Open mouths of one band, ordered by distance from a goal column: the nearest
+	// and the farthest are the two the mouth policy cares about.
+	const mouthSpan = { count: 0, nearest: -1, farthest: -1 };
+
+	function scanMouths(sim, side, col) {
+		mouthSpan.count = 0;
+		mouthSpan.nearest = -1;
+		mouthSpan.farthest = -1;
+		for (let m = 0; m < COL_SWEEP.length; m++) {
+			const c = col + COL_SWEEP[m];
+			if (c < 0 || c >= N) continue;
+			const idx = side * N + c;
+			if (!sim.inlets.open[idx]) continue;
+			if (mouthSpan.nearest < 0) mouthSpan.nearest = idx;
+			mouthSpan.farthest = idx;
+			mouthSpan.count++;
+		}
+		return mouthSpan;
+	}
+
+	// The field is anchored by a source and a vent, so one mouth of the opposing
+	// polarity must stay open; keep the farthest one, where its pull is weakest.
+	function botHoldAnchor(sim, col, wantHigh) {
+		const side = wantHigh ? I.TOP : I.BOTTOM;
+		const level = wantHigh ? I.LOW : I.HIGH;
+		const span = scanMouths(sim, side, col);
+		if (!span.count) return S.toggleInlet(sim, side * N + (col > N / 2 ? 0 : N - 1), false);
+		return sim.inlets.level[span.farthest] !== level ? S.toggleInlet(sim, span.farthest, true) : false;
+	}
+
+	// Open the mouths that feed the quest polarity near the goal. One action.
+	function botFeedGoal(sim, col, wantHigh) {
+		const side = wantHigh ? I.BOTTOM : I.TOP;
+		const level = wantHigh ? I.HIGH : I.LOW;
+		for (let m = 0; m < COL_SWEEP.length; m++) {
+			const c = col + COL_SWEEP[m];
+			if (c < 0 || c >= N || Math.abs(c - col) > 3) continue;
+			const idx = side * N + c;
+			if (!sim.inlets.open[idx]) return S.toggleInlet(sim, idx, false);
+			if (sim.inlets.level[idx] !== level) return S.toggleInlet(sim, idx, true);
+		}
+		return false;
+	}
+
+	// Shut the opposing mouths nearest the goal first and leave the farthest one
+	// open: that is what lifts (or drops) the potential over the bottle.
+	function botChokeGoal(sim, col, wantHigh) {
+		const side = wantHigh ? I.TOP : I.BOTTOM;
+		const span = scanMouths(sim, side, col);
+		if (span.count > 1 && span.nearest >= 0) return S.toggleInlet(sim, span.nearest, false);
+		return false;
+	}
+
 	function botStepPressureQuest(game, quest) {
 		const sim = game.sim;
 		if (sim.pressureMode === "off") S.setPressure(sim, "grid");
@@ -1002,25 +1078,13 @@ const ValveGame = (() => {
 			return S.turn(sim, goalIdx, delta);
 		}
 
-		// 1. Ensure mouths across the grid push interior potential in the desired direction.
-		for (let m = 0; m < COL_SWEEP.length; m++) {
-			const c = col + COL_SWEEP[m];
-			if (c < 0 || c >= N) continue;
-			const near = Math.abs(c - col) <= 3;
-			const topIdx = I.TOP * N + c;
-			const botIdx = I.BOTTOM * N + c;
-			if (wantHigh) {
-				if (near && !sim.inlets.open[botIdx]) return S.toggleInlet(sim, botIdx, false);
-				if (near && sim.inlets.level[botIdx] !== I.HIGH) return S.toggleInlet(sim, botIdx, true);
-				if (sim.inlets.open[topIdx] && sim.inlets.level[topIdx] === I.LOW) return S.toggleInlet(sim, topIdx, false);
-			} else {
-				if (near && !sim.inlets.open[topIdx]) return S.toggleInlet(sim, topIdx, false);
-				if (near && sim.inlets.level[topIdx] !== I.LOW) return S.toggleInlet(sim, topIdx, true);
-				if (sim.inlets.open[botIdx] && sim.inlets.level[botIdx] === I.HIGH) return S.toggleInlet(sim, botIdx, false);
-			}
-		}
+		// 1. A source and a vent must stay open or the potential is undefined.
+		if (botHoldAnchor(sim, col, wantHigh)) return true;
+		// 2. Feed the goal, then choke its opposite until only the far mouth is left.
+		if (botFeedGoal(sim, col, wantHigh)) return true;
+		if (botChokeGoal(sim, col, wantHigh)) return true;
 
-		// 2. Align vertical shaft between goal and the favourable boundary.
+		// 3. Align vertical shaft between goal and the favourable boundary.
 		const startR = wantHigh ? row + 1 : 0;
 		const endR = wantHigh ? N - 1 : row - 1;
 		for (let r = startR; r <= endR; r++) {

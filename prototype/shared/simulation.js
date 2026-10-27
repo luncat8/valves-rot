@@ -1122,6 +1122,12 @@ const ValveSimulation = (() => {
 		return changed;
 	}
 
+	// A paused page still lets the air field settle, so a mouth click or a rotor
+	// turn stays readable without advancing grains.
+	function settlePressure(sim, dt) {
+		if (sim.pressureMode === "grid") GAS.settle(sim, dt);
+	}
+
 	function active(sim) {
 		return sim.count;
 	}
@@ -1154,6 +1160,7 @@ const ValveSimulation = (() => {
 		setAirForce,
 		setPressure,
 		toggleInlet,
+		settlePressure,
 		placeValve,
 		replaceValve,
 		fillValve,

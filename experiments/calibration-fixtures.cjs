@@ -144,10 +144,13 @@ near(denser.pa / ref.pa, 2, 0.08, "wall flux scales with population");
 // resolutions; this is not a general 2-D pressure or transient validation.
 function serialSeam(cell, aperture) {
 	const nx = 120 / cell + 1;
+	// One open row: every cell is air and every neighbour pair is a face, so the
+	// kernel sees the same fully connected stencil a passage does.
 	const field = {
 		nx, ny: 1, count: nx,
 		p: new Float32Array(nx), cost: new Float32Array(nx),
 		pin: new Uint8Array(nx), list: new Int32Array(nx),
+		air: new Uint8Array(nx).fill(1), face: new Uint8Array(nx).fill(15),
 		fromHigh: new Float32Array(nx), fromLow: new Float32Array(nx),
 	};
 	for (let k = 0; k < nx; k++) {
@@ -184,6 +187,7 @@ const separated = {
 	nx: 5, ny: 1, count: 4,
 	p: new Float32Array(5), cost: new Float32Array([1, 1, 6, 1, 1]),
 	pin: new Uint8Array([2, 0, 0, 0, 1]), list: new Int32Array([0, 1, 3, 4]),
+	air: new Uint8Array([1, 1, 0, 1, 1]), face: new Uint8Array([15, 15, 0, 15, 15]),
 	fromHigh: new Float32Array(5), fromLow: new Float32Array(5),
 };
 GAS.solvePotential(separated);

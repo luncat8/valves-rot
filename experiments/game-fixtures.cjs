@@ -299,16 +299,65 @@ function testPressureQuest() {
 	const cell = pq.cells[0];
 	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "spawned pressure quest requires player action");
 
-	// Satisfy whichever polarity the quest resolved to by sealing opposing mouths.
+	// A sealed field has no potential at all: the cap must be avoided, not the flow.
 	const wantHigh = pq.op === ">";
+	const opposite = wantHigh ? I.TOP : I.BOTTOM;
 	for (let c = 0; c < G.N; c++) {
-		const idx = (wantHigh ? I.TOP : I.BOTTOM) * G.N + c;
+		const idx = opposite * G.N + c;
 		if (sim.inlets.open[idx]) S.toggleInlet(sim, idx, false);
 	}
 	GAS.refresh(sim);
-	runGame(sim, game, 1.2);
+	runGame(sim, game, 0.3);
+	assert.equal(sim.pressure.anchored, false, "one polarity cannot anchor the field");
+	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a sealed field never satisfies a pressure quest");
+
+	// Choke the mouths near the bottle but keep one of the opposite polarity open
+	// far away, so the field stays defined and the drop happens elsewhere.
+	const col = cell % G.N;
+	let keep = 0;
+	for (let c = 0; c < G.N; c++) if (Math.abs(c - col) > Math.abs(keep - col)) keep = c;
+	S.toggleInlet(sim, opposite * G.N + keep, false);
+	runGame(sim, game, 1.4);
+	assert.equal(sim.pressure.anchored, true, "a distant mouth anchors the field again");
 	assert.equal(game.players[0].completed, 1, "pressure quest completes once potential holds");
 	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "pressure bottle seals to solid blank");
+}
+
+// 6b. A pressure quest is fitted to what the cell can reach, so an impossible
+// request is refitted and the standard mouth recipe completes it.
+function testPressureReach() {
+	const layout = G.createLayout(11);
+	const sim = S.create(layout, { turning: false });
+	S.setPressure(sim, "grid");
+	const game = Game.create(sim, { mode: "game", botControl: false });
+	const q = game.quests[0];
+	q.kind = "pressure";
+	q.op = ">";
+	q.threshold = 0.95;
+	q.bottles = 1;
+	q.timeLimit = 0;
+	q.holdNeed = Game.HOLD_EXACT;
+	q.title = "High air > 0.95";
+	assert.equal(Game.signQuest(game, q.id, 0), true, "an over-tight pressure request still signs");
+	const cell = q.cells[0];
+	assert.ok(q.threshold < 0.95, `the threshold is refitted to the reachable range (${q.threshold})`);
+	const wantHigh = q.op === ">";
+	assert.equal(Game.evaluateCell(sim, cell, q).ok, false, "the fitted target starts uncommitted");
+
+	// The recipe the bots use: open the favourable band, keep one far mouth of the
+	// other band as the reference and shut the rest.
+	const col = cell % G.N;
+	const far = col <= G.N / 2 ? G.N - 1 : 0;
+	const side = wantHigh ? I.TOP : I.BOTTOM;
+	for (let c = 0; c < G.N; c++) {
+		const idx = side * G.N + c;
+		if (c !== far && sim.inlets.open[idx]) S.toggleInlet(sim, idx, false);
+	}
+	runGame(sim, game, 2.4);
+	assert.equal(sim.pressure.anchored, true, "the reference mouth keeps the field anchored");
+	assert.equal(game.players[0].completed, 1, `the fitted pressure quest completes (${q.threshold})`);
+	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "the fitted bottle seals to solid blank");
+	conserved(sim, "fitted pressure quest");
 }
 
 // 7. Bot competitors: inactive when botControl is off, autonomous completion when on.
@@ -349,6 +398,7 @@ const gen = testQuestGenerator();
 testHueMatching();
 testQuestLifecycle();
 testPressureQuest();
+testPressureReach();
 const bots = testBots();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 

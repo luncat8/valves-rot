@@ -75,18 +75,54 @@ const standing = ends(gas());
 assert.ok(standing.bottom > 0.8, `bottom band holds high pressure (${standing.bottom.toFixed(2)})`);
 assert.ok(standing.top < 0.2, `top band holds low pressure (${standing.top.toFixed(2)})`);
 
-// Sealing every vent leaves only sources: the whole field rises.
+// Sealing every vent leaves only sources: no difference to measure, so the field
+// is unanchored and reports nothing instead of one flat colour.
 setOpen(sim, I.TOP, false);
 run(sim, 0.2);
-assert.ok(ends(gas()).top > 0.85, `sealed vents hold source pressure (${ends(gas()).top.toFixed(2)})`);
 assert.equal(pinnedBands(gas()).top, 0, "sealed vents pin nothing");
 assert.ok(pinnedBands(gas()).bottom > 0, "sources stay pinned");
+assert.equal(gas().anchored, false, "one polarity cannot anchor the field");
+assert.equal(gas().sources, 100);
+assert.equal(gas().vents, 0);
+assert.equal(gas().flow, 0, "an unanchored field carries no flow");
 
 // Sealing every source too leaves nothing to hold the field.
 setOpen(sim, I.BOTTOM, false);
 run(sim, 0.2);
 assert.equal(gas().pins, 0, "no open mouth pins the field");
+assert.equal(gas().anchored, false);
 assert.ok(Number.isFinite(gas().mean) && Number.isFinite(gas().flow), "a sealed field stays finite");
+
+// Reopening one vent and one source anchors it again at once.
+S.toggleInlet(sim, I.TOP * G.N + 1, false);
+S.toggleInlet(sim, I.BOTTOM * G.N + 8, false);
+run(sim, 0.1);
+assert.equal(gas().anchored, true, "a source and a vent anchor the field");
+assert.ok(gas().flow > 0, "the field flows again");
+S.reset(sim);
+run(sim, 0.2);
+
+// A turned rotor moves the field: the shown potential eases toward the new
+// solution instead of jumping, and the model reacts where the cell is.
+const valve = sim.layout.valves[7];
+const beforeTurn = Float32Array.from(gas().p);
+G.setAngle(valve, valve.angle + Math.PI / 2);
+run(sim, 0.25);
+let moved = 0;
+for (let n = 0; n < gas().count; n++) {
+	const k = gas().list[n];
+	const d = Math.abs(gas().p[k] - beforeTurn[k]);
+	if (d > 0.02) moved++;
+}
+assert.ok(moved > 20, `a rotor turn moves the field (${moved} cells)`);
+
+// An idle machine is not re-swept every mask tick.
+const idle = S.create(G.createLayout(7), { turning: false });
+S.setPressure(idle, "grid");
+const idleSolves = idle.pressure.solves;
+for (let k = 0; k < 24; k++) S.settlePressure(idle, 1 / 120);
+assert.equal(idle.pressure.solves, idleSolves, "a settled machine skips the distance sweeps");
+assert.equal(idle.pressure.updates > 0, true, "but the field still relaxes on its clock");
 
 // Flipping every mouth inverts the gradient.
 S.reset(sim);
@@ -235,7 +271,10 @@ function bench(mode, steps) {
 }
 const offMs = bench(null, 400);
 const gridMs = bench("grid", 400);
-assert.ok(gridMs < offMs * 3, `grid gas stays within budget (${gridMs.toFixed(3)} vs ${offMs.toFixed(3)} ms)`);
+// A mask rebuild (1.6 ms) and a three-sweep solve (1.6 ms) share one 30 Hz clock,
+// so a machine with every rotor turning costs about 0.8 ms on top of each
+// pressure-off step; an idle machine skips the sweeps entirely.
+assert.ok(gridMs < offMs * 4.5, `grid gas stays within budget (${gridMs.toFixed(3)} vs ${offMs.toFixed(3)} ms)`);
 console.log(
 	`OK gas: standing ${standing.bottom.toFixed(2)}/${standing.top.toFixed(2)} gradient, sealed and flipped inlets, bounded field, rotor mask; pile Δp ${piledDrop.toFixed(3)} vs empty ${vacantDrop.toFixed(3)}, flow ${piledMid.toFixed(0)} vs ${vacantMid.toFixed(0)}; 30 px fall ${show(dry)} dry, ${show(wet)} at force 1, ${show(hard)} at force 2, ${show(particle)} with particles, drift ${wet.drift.toFixed(1)} px; off ${offMs.toFixed(3)} ms vs grid ${gridMs.toFixed(3)} ms per 120 Hz step (${process.version})`,
 );

@@ -575,14 +575,17 @@ const ValveRender = (() => {
 		return { canvas: c, ctx, img: ctx.createImageData(nx, ny), nx, ny };
 	}
 
+	// One texel per gas cell. The potential is only defined between a source and a
+	// vent, so an unanchored field is not drawn at all.
 	function renderField(map, gas) {
 		const data = map.img.data;
 		const lut = PRESS_LUT;
 		const air = gas.air;
 		const p = gas.p;
 		const n = air.length;
+		const anchored = gas.anchored;
 		for (let k = 0, o = 0; k < n; k++, o += 4) {
-			if (!gas.pins || !air[k]) {
+			if (!anchored || !air[k]) {
 				data[o + 3] = 0;
 				continue;
 			}
