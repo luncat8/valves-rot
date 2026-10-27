@@ -54,6 +54,18 @@ p {
 	color: #aeb9c5;
 }
 
+/* Combined page: back link and title share one compact line. */
+.combined header {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 4px 14px;
+}
+.combined h1 {
+	font-size: 18px;
+	margin: 0;
+}
+
 /* A short landscape screen uses a control rail, leaving the full field visible. */
 .combined #c {
 	max-width: 100%;
@@ -77,7 +89,7 @@ select {
 		box-sizing: border-box;
 	}
 	.combined header { grid-column: 1; }
-	.combined h1 { font-size: 16px; margin: 4px 0; }
+	.combined h1 { font-size: 16px; margin: 0; }
 	.combined .controls {
 		grid-column: 1;
 		align-content: start;

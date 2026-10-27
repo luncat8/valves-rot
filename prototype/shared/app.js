@@ -32,9 +32,9 @@
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
-	// Valve brush placed by double-click: type id / "random" / null (not
-	// change), direction quarter / "random" / null (not change). The default
-	// keeps the old double-click behaviour: a random different type.
+	// Valve brush placed by double-click: type id / "random" / null, direction
+	// quarter / "random" / null; null is "unselected", meaning not change. The
+	// default keeps the old double-click behaviour: a random different type.
 	const brush = { type: "random", dir: null };
 	const DIR_ARROWS = ["→", "↓", "←", "↑"];
 	let openDrawerId = null;
@@ -235,10 +235,9 @@
 
 	function syncBrush() {
 		for (const b of document.querySelectorAll("[data-type]")) {
-			const active = b.dataset.type === brush.type || (b.dataset.type === "keep" && brush.type === null);
-			b.setAttribute("aria-pressed", active ? "true" : "false");
+			b.setAttribute("aria-pressed", b.dataset.type === brush.type ? "true" : "false");
 		}
-		const dir = brush.dir === null ? "keep" : String(brush.dir);
+		const dir = brush.dir === null ? "" : String(brush.dir);
 		for (const b of document.querySelectorAll("[data-dir]")) {
 			b.setAttribute("aria-pressed", b.dataset.dir === dir ? "true" : "false");
 		}
@@ -264,7 +263,6 @@
 
 	function buildValveTypes() {
 		let html = typeRow("random", '<span class="type-badge">?</span>', "? Random type", "any different type", "");
-		html += typeRow("keep", '<span class="type-badge">=</span>', "= Not change", "keep this valve's type", "");
 		let kind = "";
 		for (const type of G.TYPES) {
 			if (type.kind !== kind) {
@@ -284,13 +282,15 @@
 		}
 		const pick = event.target.closest("[data-type]");
 		if (!pick) return;
-		brush.type = pick.dataset.type === "keep" ? null : pick.dataset.type;
+		// A second click on the selected button unselects it (not change).
+		brush.type = pick.dataset.type === brush.type ? null : pick.dataset.type;
 		syncBrush();
 	};
 	$("dir-picker").onclick = event => {
 		const pick = event.target.closest("[data-dir]");
 		if (!pick) return;
-		brush.dir = pick.dataset.dir === "keep" ? null : pick.dataset.dir === "random" ? "random" : Number(pick.dataset.dir);
+		const dir = pick.dataset.dir === "random" ? "random" : Number(pick.dataset.dir);
+		brush.dir = dir === brush.dir ? null : dir;
 		syncBrush();
 	};
 

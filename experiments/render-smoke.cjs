@@ -156,7 +156,11 @@ for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "va
 }
 assert.ok(html.indexOf("Shortcuts") > html.indexOf('id="help-drawer"'), "shortcuts are inside the Help drawer");
 assert.ok(html.indexOf('id="calibration-note"') > html.indexOf('id="help-drawer"'), "calibration note moved into Help");
+assert.ok(!html.includes('data-dir="keep"'), "no 'not change' direction button: re-click unselects instead");
+const styleCss = fs.readFileSync(path.join(root, "..", "style.css"), "utf8");
+assert.ok(styleCss.includes(".combined header") && styleCss.includes("font-size: 18px"), "compact one-line header styles present");
 const typeList = element("valve-types").innerHTML;
+assert.ok(!typeList.includes('data-type="keep"'), "no 'not change' type button: re-click unselects instead");
 for (const type of G.TYPES) assert.ok(typeList.includes('data-type="' + type.id + '"') && typeList.includes(type.name), "picker lists " + type.id);
 assert.equal(typeList.split("data-copy-name").length - 1, G.TYPES.length, "one copy-name button per type");
 assert.ok(element("brush-summary").textContent.includes("random valve type"), "default brush keeps double-click random");
@@ -309,6 +313,8 @@ function pickType(type) {
 function pickDir(dir) {
 	element("dir-picker").onclick({ target: { closest: () => ({ dataset: { dir } }) } });
 }
+pickType("random");
+assert.ok(element("brush-summary").textContent.includes("keep valve type (not change)"), "re-clicking the selected ? unselects the type");
 pickType("solid-elbow");
 pickDir("1");
 assert.ok(element("brush-summary").textContent.includes("solid elbow (ports E,S)"), "brush summary names type, ports and direction");
@@ -332,15 +338,17 @@ assert.ok(element("brush-summary").textContent.includes("solid elbow"), "copy-to
 element("copy-selected").onclick();
 assert.ok(copiedTexts.some(text => text.includes("cell (5,3)") && text.includes("solid elbow")), "field valve copied as text");
 
-// With type and direction both "not change", a double-click gesture must
-// leave the valve exactly as it was: the first click's turn is undone.
-pickType("keep");
-pickDir("keep");
+// Re-clicking the selected type and direction unselects both (unselected =
+// not change); a double-click gesture must then leave the valve exactly as
+// it was: the first click's turn is undone.
+pickType("solid-elbow");
+assert.ok(element("brush-summary").textContent.includes("keep valve type (not change)"), "re-click unselects the type");
+pickDir("1");
 assert.ok(element("brush-detail").textContent.includes("changes nothing"));
 c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
 c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
 frames.shift()((now += 16.7));
-assert.equal(element("selected-valve").textContent, placedText, "not change / not change double-click is a no-op");
+assert.equal(element("selected-valve").textContent, placedText, "unselected type/direction double-click is a no-op");
 c.onkeydown({ key: "p", preventDefault() {} });
 
 
