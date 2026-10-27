@@ -135,7 +135,7 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "simulation.js", "app.js"]) {
+for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "simulation.js", "game.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
@@ -354,7 +354,49 @@ frames.shift()((now += 16.7));
 assert.equal(element("selected-valve").textContent, placedText, "unselected type/direction double-click is a no-op");
 element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-type]" ? { dataset: { copyType: "hollow-tee" } } : null) } });
 assert.ok(copiedTexts.includes("hollow tee"), "with no direction selected, a type row copies just its name");
+assert.ok(typeList.includes("<path d="), "solid-elbow icon uses a rounded arc path");
 c.onkeydown({ key: "p", preventDefault() {} });
+
+// Press-drag rotation: dragging around a valve center turns it by 90° and
+// suppresses the trailing click event so release does not turn a second time.
+c.onpointerdown({ clientX: cellX, clientY: cellY - 22, button: 0, pointerId: 1 });
+c.onpointermove({ clientX: cellX + 22, clientY: cellY, pointerId: 1 });
+c.onpointerup({ pointerId: 1 });
+c.onclick({ clientX: cellX + 22, clientY: cellY, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+const draggedText = element("selected-valve").textContent;
+assert.ok(draggedText.includes("ports S,W"), "orbital press-drag stepped +90° once without extra click turn, got: " + draggedText);
+
+// Case tint brush in Lab mode repaints the background without allocating canvases.
+const canvasesPreTint = calls.canvases;
+element("tint-picker").onclick({ target: { closest: () => ({ dataset: { tint: "0" } }) } });
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
+frames.shift()((now += 16.7));
+assert.equal(calls.canvases, canvasesPreTint, "case tint brush allocates zero extra canvases");
+assert.ok(element("selected-valve").textContent.includes("You case"), "case tint shown in valve readout");
+element("tint-picker").onclick({ target: { closest: () => ({ dataset: { tint: "0" } }) } });
+
+// Lab mode defaults auto-rotate to 90%; switching to Game mode sets 20%,
+// shows the game panel, lets the user sign a goal, and returns to 90% in Lab.
+assert.equal(element("auto-rotate").value, "90", "Lab mode auto-rotate default is 90%");
+element("mode-lab").checked = false;
+element("mode-game").checked = true;
+element("mode-game").onchange();
+assert.equal(element("auto-rotate").value, "20", "Game mode auto-rotate default is 20%");
+assert.equal(element("game-panel").hidden, false, "Game panel opens in Game mode");
+assert.ok(element("player-list").innerHTML.includes("You") && element("player-list").innerHTML.includes("Ada"), "Competitors list rendered");
+const signMatch = element("quest-list").innerHTML.match(/data-sign="(\d+)"/);
+assert.ok(signMatch, "Unsigned quest offers a Sign button");
+element("quest-list").onclick({ target: { closest: sel => (sel === "[data-sign]" ? { dataset: { sign: signMatch[1] } } : null) } });
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("hollow single") && element("selected-valve").textContent.includes("ports N"), "Signing spawns upright hollow single ↑ N");
+element("quest-list").onclick({ target: { closest: sel => (sel === "[data-drop]" ? { dataset: { drop: signMatch[1] } } : null) } });
+element("mode-game").checked = false;
+element("mode-lab").checked = true;
+element("mode-lab").onchange();
+assert.equal(element("auto-rotate").value, "90", "Returning to Lab mode restores 90% auto-rotate");
+assert.equal(element("game-panel").hidden, true);
 
 
 element("force").value = "1.5";

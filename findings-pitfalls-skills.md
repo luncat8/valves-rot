@@ -41,3 +41,14 @@
 # Skin fidelity pitfalls
 - A skin named after a prototype page must copy its exact colour lists and band structure, including the bands the page does NOT draw (the gpt page has no light material band and no screws); an "inspired by" palette reads as a different product. Rasterise both headlessly and compare crops before calling a skin done.
 - A hub bolt at a rotor centre only reads as machining where channels leave the centre solid; on a blank plug it looks like a foreign axis object. Gate decorative centre details on the passage actually existing.
+
+# Game mode, press-drag, and goal-bottle pitfalls
+- Assigning each cell a seeded permutation rank `autoRank[i] ∈ [0..99]` (`autoRank[i] < round(autoRotate * 100)`) makes sliding **Auto-rotate** from `0%` to `100%` monotonic and flicker-free; re-rolling booleans on slider input scrambles which valves move on every pixel of drag.
+- Pointer release after a press-drag rotation fires a native `click` on the canvas at the same cell. Track whether pointer travel crossed the drag deadzone (`6 px`) and suppress the trailing `click`, or every drag release adds an unintended extra quarter-turn.
+- Never call `R.buildScene` (`101` new offscreen `<canvas>` allocations) on single-cell valve placement, case retinting, or quest lifecycle events. Repaint `scene.bg` in place via `rebuildBackground` and re-bake only the touched cell's rotor sprite via `rebuildRotor`.
+- Replacing a small random hollow cell (`chamberR ≈ 0.30..0.42 RV`) with a quest goal bottle via `installValve` must pass an explicit `GOAL_CHAMBER` radius (`0.53 RV`) rather than inheriting the old `chamberR`, or `8+` grain quests physically overflow the bottle before reaching target count.
+- Never spawn a `hollow-single` (`↑ N`) goal bottle directly above an existing goal bottle (`idx + N`) or stack multiple bottles in the same column when free columns exist: a 1-port bottle has no South outlet, so placing it at `(col, row - 1)` corks `(col, row)` shut.
+- Under pure gravity, lateral `N -> E/W` deflection works reliably through curved `elbow` ramps (`solid-elbow` / `hollow-elbow`), whereas a `tee` or `cross` oriented with South closed traps single grains on its flat floor; both spout-reachability checks and bot BFS must distinguish curved deflectors from flat-floor junctions.
+- Circular-mean average-hue matching (`atan2(Σ sin θ, Σ cos θ)`) requires a resultant vector-length floor (`R = hypot(Σ cos θ, Σ sin θ) / n >= 0.42`); without a coherence check, near-cancelling rainbow mixtures produce an arbitrary residual angle that spuriously satisfies narrow `6`-band quests.
+- Prevent bots from simultaneously signing opposite-polarity pressure quests (`> x` vs `< x`): otherwise two bots toggle the same top/bottom boundary vents in an endless tug-of-war.
+

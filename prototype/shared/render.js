@@ -25,6 +25,13 @@ const ValveRender = (() => {
 	const SELECT_C = "#efc179";
 	const RIM_BAND = 1.1;
 	const SPR = Math.ceil(2 * RV + 6);
+
+	const PLAYERS = [
+		{ id: 0, name: "You", bot: false, hex: "#2ebd85", accent: "#6bf0ba", tileHi: "hsl(156,46%,42%)", tileLo: "hsl(156,50%,29%)", gptTile: "#387861" },
+		{ id: 1, name: "Ada", bot: true, hex: "#e05a4f", accent: "#ff8d82", tileHi: "hsl(6,50%,45%)", tileLo: "hsl(6,52%,31%)", gptTile: "#844844" },
+		{ id: 2, name: "Bolt", bot: true, hex: "#4a8af4", accent: "#85b4ff", tileHi: "hsl(216,54%,46%)", tileLo: "hsl(216,56%,32%)", gptTile: "#426394" },
+		{ id: 3, name: "Lyra", bot: true, hex: "#b266e8", accent: "#d79eff", tileHi: "hsl(278,45%,45%)", tileLo: "hsl(278,48%,31%)", gptTile: "#6d4887" },
+	];
 	const LEGEND_W = 7;
 	const LEGEND_H = 104;
 	const LEGEND_X = SIZE - 30;
@@ -159,11 +166,12 @@ const ValveRender = (() => {
 		}
 	}
 
-	function paintBackground(layout, colors, air, dpr, skin) {
-		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2, dpr);
+	function paintBackgroundInto(sheet, layout, colors, air, dpr, skin, caseTint) {
 		const ctx = sheet.ctx;
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.fillStyle = skin === "gpt" ? GPT_GROUT : GROUT;
 		ctx.fillRect(0, 0, SIZE, SIZE + G.POUR * 2);
+		ctx.save();
 		// Shift down once so world coordinates [-POUR, SIZE + POUR] fill the sheet.
 		ctx.translate(0, G.POUR);
 		const inset = 1.6;
@@ -172,34 +180,42 @@ const ValveRender = (() => {
 			const v = layout.valves[k];
 			const x = v.cx - S / 2 + inset;
 			const y = v.cy - S / 2 + inset;
-			const g = ctx.createLinearGradient(x, y, x, y + tile);
-			g.addColorStop(0, colors[k].tileHi);
-			g.addColorStop(1, colors[k].tileLo);
+			const tintId = caseTint ? caseTint[k] : -1;
+			const player = tintId >= 0 && tintId < PLAYERS.length ? PLAYERS[tintId] : null;
 			roundRect(ctx, x, y, tile, tile, skin === "gpt" ? 0 : 5);
-			ctx.fillStyle = g;
+			if (skin === "gpt" && player) {
+				ctx.fillStyle = player.gptTile;
+			} else {
+				const g = ctx.createLinearGradient(x, y, x, y + tile);
+				g.addColorStop(0, player ? player.tileHi : colors[k].tileHi);
+				g.addColorStop(1, player ? player.tileLo : colors[k].tileLo);
+				ctx.fillStyle = g;
+			}
 			ctx.fill();
-			ctx.lineWidth = 1;
-			ctx.strokeStyle = skin === "gpt" ? "rgba(25,37,38,0.47)" : "rgba(12,15,19,0.55)";
+			ctx.lineWidth = player ? 1.6 : 1;
+			ctx.strokeStyle = player ? player.accent : skin === "gpt" ? "rgba(25,37,38,0.47)" : "rgba(12,15,19,0.55)";
 			ctx.stroke();
 			ctx.beginPath();
 			ctx.moveTo(x + 5, y + 1);
 			ctx.lineTo(x + tile - 5, y + 1);
 			ctx.strokeStyle = skin === "gpt" ? "rgba(255,255,255,0.115)" : "rgba(255,255,255,0.16)";
+			ctx.lineWidth = 1;
 			ctx.stroke();
 			if (skin === "gpt") {
 				ctx.fillStyle = "rgba(23,32,33,0.11)";
 				ctx.fillRect(x + tile - 1, y + 1, 1, tile - 2);
 			}
 		}
-		if (skin !== "gpt") {
-			for (let k = 0; k < layout.valves.length; k++) {
-				const v = layout.valves[k];
-				ctx.beginPath();
-				ctx.arc(v.cx, v.cy, RV + 1.1, 0, TAU);
-				ctx.lineWidth = 2.6;
-				ctx.strokeStyle = "rgba(14,17,22,0.5)";
-				ctx.stroke();
-			}
+		for (let k = 0; k < layout.valves.length; k++) {
+			const v = layout.valves[k];
+			const tintId = caseTint ? caseTint[k] : -1;
+			const player = tintId >= 0 && tintId < PLAYERS.length ? PLAYERS[tintId] : null;
+			if (skin === "gpt" && !player) continue;
+			ctx.beginPath();
+			ctx.arc(v.cx, v.cy, RV + (player ? 2 : 1.1), 0, TAU);
+			ctx.lineWidth = player ? 2.4 : 2.6;
+			ctx.strokeStyle = player ? player.accent : "rgba(14,17,22,0.5)";
+			ctx.stroke();
 		}
 		paintStrips(ctx, layout, air, skin);
 		for (let k = 0; k < layout.valves.length; k++) {
@@ -229,14 +245,23 @@ const ValveRender = (() => {
 				}
 			}
 		}
+		ctx.restore();
 		return sheet.c;
+	}
+
+	function paintBackground(layout, colors, air, dpr, skin, caseTint) {
+		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2, dpr);
+		paintBackgroundInto(sheet, layout, colors, air, dpr, skin, caseTint);
+		return sheet;
 	}
 
 	// Rotor sprite: silhouette and body, then the clipped passages stroked from
 	// the exact collision primitives.
-	function paintRotor(v, colors, air, dpr, skin) {
-		const sheet = makeCanvas(SPR, SPR, dpr);
+	function paintRotorInto(sheet, v, colors, air, dpr, skin) {
 		const ctx = sheet.ctx;
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		ctx.clearRect(0, 0, SPR, SPR);
+		ctx.save();
 		ctx.translate(SPR / 2, SPR / 2);
 		const g = ctx.createRadialGradient(-RV * 0.34, -RV * 0.4, RV * 0.08, 0, 0, RV * 1.05);
 		g.addColorStop(0, colors.bodyHi);
@@ -250,7 +275,6 @@ const ValveRender = (() => {
 		ctx.lineWidth = RIM_BAND * 2;
 		ctx.strokeStyle = skin === "gpt" ? GPT_RIM : EDGE_C;
 		ctx.stroke();
-		ctx.beginPath();
 		ctx.beginPath();
 		ctx.arc(0, 0, RV - 2.9, 0, TAU);
 		ctx.lineWidth = skin === "gpt" ? 0.8 : 1;
@@ -305,7 +329,14 @@ const ValveRender = (() => {
 		ctx.lineWidth = HALF * 2;
 		ctx.stroke(v.path);
 		ctx.restore();
+		ctx.restore();
 		return sheet.c;
+	}
+
+	function paintRotor(v, colors, air, dpr, skin) {
+		const sheet = makeCanvas(SPR, SPR, dpr);
+		paintRotorInto(sheet, v, colors, air, dpr, skin);
+		return sheet;
 	}
 
 	const PALETTES = {
@@ -323,18 +354,33 @@ const ValveRender = (() => {
 		gpt: { shadow: "rgba(14,24,25,0.42)", grow: 0.65, ox: 0.8, oy: 1.1, rim: "rgba(20,32,33,0.48)", rimW: 0.75, hl: 0, hlMin: 0.7, hlFill: "rgba(255,255,255,0.85)" },
 	};
 
-	function buildScene(layout, air, dpr, skin = "glm") {
+	function buildScene(layout, air, dpr, skin = "glm", caseTint = null) {
 		const rnd = G.rng(layout.seed * 2654435761);
 		const colors = layout.valves.map(() => paintFor(rnd, skin));
-		const sprites = layout.valves.map((v, k) => paintRotor(v, colors[k], air, dpr, skin));
+		const rotorSheets = layout.valves.map((v, k) => paintRotor(v, colors[k], air, dpr, skin));
+		const bgSheet = paintBackground(layout, colors, air, dpr, skin, caseTint);
 		return {
-			bg: paintBackground(layout, colors, air, dpr, skin),
-			sprites,
+			bg: bgSheet.c,
+			bgSheet,
+			sprites: rotorSheets.map(sheet => sheet.c),
+			rotorSheets,
+			colors,
+			air,
+			skin,
 			palette: PALETTES[skin],
 			grain: GRAIN_STYLE[skin],
 			sprite: SPR,
 			dpr,
 		};
+	}
+
+	function rebuildBackground(scene, layout, caseTint) {
+		paintBackgroundInto(scene.bgSheet, layout, scene.colors, scene.air, scene.dpr, scene.skin, caseTint);
+	}
+
+	function rebuildRotor(scene, layout, index) {
+		if (index < 0 || index >= layout.valves.length) return;
+		paintRotorInto(scene.rotorSheets[index], layout.valves[index], scene.colors[index], scene.air, scene.dpr, scene.skin);
 	}
 
 	function renderScene(ctx, layout, scene) {
@@ -363,6 +409,68 @@ const ValveRender = (() => {
 		ctx.strokeStyle = SELECT_C;
 		ctx.lineWidth = 1.8;
 		ctx.stroke();
+	}
+
+	function renderDrag(ctx, layout, sim, drag) {
+		if (!drag || !drag.active || drag.cell < 0 || drag.cell >= layout.valves.length) return;
+		const v = layout.valves[drag.cell];
+		const target = sim.target[drag.cell];
+		ctx.save();
+		ctx.beginPath();
+		ctx.arc(v.cx, v.cy, RV + 3.2, 0, TAU);
+		ctx.strokeStyle = "rgba(239,193,121,0.55)";
+		ctx.lineWidth = 1.4;
+		ctx.stroke();
+		const ux = Math.cos(target - Math.PI / 2);
+		const uy = Math.sin(target - Math.PI / 2);
+		ctx.beginPath();
+		ctx.moveTo(v.cx + ux * (RV - 3), v.cy + uy * (RV - 3));
+		ctx.lineTo(v.cx + ux * (RV + 5.5), v.cy + uy * (RV + 5.5));
+		ctx.strokeStyle = SELECT_C;
+		ctx.lineWidth = 2.4;
+		ctx.stroke();
+		ctx.restore();
+	}
+
+	// Goal bottles carry a hold-completion arc and a cached status tag so players
+	// can watch progress directly on the field with zero per-frame allocations.
+	function renderGoals(ctx, layout, game) {
+		if (!game || game.mode !== "game") return;
+		const quests = game.quests;
+		ctx.save();
+		ctx.font = "bold 8px system-ui, sans-serif";
+		ctx.textBaseline = "middle";
+		ctx.textAlign = "left";
+		for (let q = 0; q < quests.length; q++) {
+			const quest = quests[q];
+			if (quest.owner < 0) continue;
+			const player = PLAYERS[quest.owner];
+			for (let s = 0; s < quest.cellCount; s++) {
+				const idx = quest.cells[s];
+				const v = layout.valves[idx];
+				if (quest.holdRatio > 0) {
+					ctx.beginPath();
+					ctx.arc(v.cx, v.cy, RV + 3.4, -Math.PI / 2, -Math.PI / 2 + TAU * quest.holdRatio);
+					ctx.strokeStyle = player.accent;
+					ctx.lineWidth = 2.8;
+					ctx.stroke();
+				}
+				const tag = quest.cellTags[s];
+				if (!tag) continue;
+				const w = tag.length * 4.5 + 7;
+				const tx = v.cx - S / 2 + 3.5;
+				const ty = v.cy + S / 2 - 14.5;
+				roundRect(ctx, tx, ty, w, 11, 3);
+				ctx.fillStyle = "rgba(10,14,20,0.82)";
+				ctx.fill();
+				ctx.strokeStyle = player.accent;
+				ctx.lineWidth = 0.9;
+				ctx.stroke();
+				ctx.fillStyle = player.accent;
+				ctx.fillText(tag, tx + 3.5, ty + 5.6);
+			}
+		}
+		ctx.restore();
 	}
 
 	function renderAirMap(map, layout) {
@@ -576,9 +684,15 @@ const ValveRender = (() => {
 
 	return {
 		SPR,
+		PLAYERS,
+		PALETTES,
 		buildScene,
+		rebuildBackground,
+		rebuildRotor,
 		renderScene,
 		renderSelection,
+		renderDrag,
+		renderGoals,
 		makeAirMap,
 		renderAirMap,
 		renderGrains,

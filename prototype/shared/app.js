@@ -6,6 +6,7 @@
 	const S = ValveSimulation;
 	const I = ValveInlets;
 	const C = ValveCalibration;
+	const Game = ValveGame;
 	const $ = id => document.getElementById(id);
 
 	const HEIGHT = G.SIZE + G.POUR * 2;
@@ -17,9 +18,23 @@
 	const stats = { frames: 0, clock: 0 };
 	const point = { x: 0, y: 0 };
 	const at = { inlet: -1, cell: -1 };
+	const drag = {
+		pointerId: -1,
+		cell: -1,
+		downX: 0,
+		downY: 0,
+		lastX: 0,
+		lastY: 0,
+		r0: 0,
+		baseTarget: 0,
+		orbitAcc: 0,
+		active: false,
+		suppressClick: false,
+	};
 
 	let layout = G.createLayout(readSeed());
 	let sim = S.create(layout);
+	let game = Game.create(sim, { mode: "lab", botControl: true });
 	let scene = null;
 	let paused = false;
 	let selected = -1;
@@ -33,17 +48,19 @@
 	let overlayTick = 0;
 	let overlayDirty = true;
 	// Valve brush placed by double-click: type id / "random" / null, direction
-	// quarter / "random" / null; null is "unselected", meaning not change. The
-	// default keeps the old double-click behaviour: a random different type.
-	const brush = { type: "random", dir: null };
+	// quarter / "random" / null, case tint -1..3 / null; null means keep current.
+	const brush = { type: "random", dir: null, tint: null };
 	const DIR_ARROWS = ["→", "↓", "←", "↑"];
 	let openDrawerId = null;
 	let shownValve = null;
 	let shownIndex = -2;
 	let shownQuarter = -1;
+	let shownGameVersion = -1;
 
 	$("pressure-span").value = String(pressureSpan);
+	if ($("auto-rotate").value === "") $("auto-rotate").value = "90";
 	S.seed(sim);
+	S.setAutoRotate(sim, readAutoPercent() / 100);
 	S.setAirForce(sim, +$("force").value);
 	S.setPressure(sim, readMode());
 
@@ -52,13 +69,27 @@
 		return Number.isFinite(value) ? value : 1;
 	}
 
+	function readAutoPercent() {
+		const raw = $("auto-rotate").value;
+		const v = raw === "" ? 90 : Number(raw);
+		return Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 90;
+	}
+
+	function setAutoSlider(percent) {
+		const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+		$("auto-rotate").value = String(clamped);
+		$("auto-rotate-value").value = clamped + "%";
+		$("auto-rotate-value").textContent = clamped + "%";
+		S.setAutoRotate(sim, clamped / 100);
+	}
+
 	function rebuild(force) {
 		const dpr = Math.min(window.devicePixelRatio || 1, 2);
 		if (!force && scene && scene.dpr === dpr) return;
 		canvas.width = Math.round(G.SIZE * dpr);
 		canvas.height = Math.round(HEIGHT * dpr);
 		ctx.setTransform(canvas.width / G.SIZE, 0, 0, canvas.height / HEIGHT, 0, 0);
-		scene = R.buildScene(layout, paint.air, dpr, paint.skin);
+		scene = R.buildScene(layout, paint.air, dpr, paint.skin, sim.caseTint);
 		overlayDirty = true;
 	}
 
@@ -66,19 +97,31 @@
 		layout = G.createLayout(readSeed());
 		sim = S.create(layout);
 		S.setSpeed(sim, +$("speed").value);
+		S.setAutoRotate(sim, readAutoPercent() / 100);
 		S.setAirForce(sim, +$("force").value);
 		S.seed(sim);
 		S.setPressure(sim, readMode());
+		Game.resetMatch(game, sim);
+		if (game.mode === "game") setAutoSlider(Math.round(Game.GAME_AUTO * 100));
 		rebuild(true);
+		shownIndex = -2;
+		shownGameVersion = -1;
 		if (paused) drawFrame(true);
 	}
 
 	function resetSim() {
 		S.reset(sim);
 		S.setSpeed(sim, +$("speed").value);
+		S.setAutoRotate(sim, readAutoPercent() / 100);
 		S.setAirForce(sim, +$("force").value);
 		S.seed(sim);
-		overlayDirty = true;
+		if (game.mode === "game") {
+			Game.resetMatch(game, sim);
+			setAutoSlider(Math.round(Game.GAME_AUTO * 100));
+		}
+		rebuild(true);
+		shownIndex = -2;
+		shownGameVersion = -1;
 		if (paused) drawFrame(true);
 	}
 
@@ -86,6 +129,12 @@
 		if ($("pressure-grid").checked) return "grid";
 		if ($("pressure-particles").checked) return "particles";
 		return "off";
+	}
+
+	function syncPressureRadios() {
+		$("pressure-off").checked = sim.pressureMode === "off";
+		$("pressure-particles").checked = sim.pressureMode === "particles";
+		$("pressure-grid").checked = sim.pressureMode === "grid";
 	}
 
 	// Pointer in world coordinates: [-POUR, SIZE + POUR] vertically.
@@ -102,13 +151,150 @@
 		return ((wy / G.S) | 0) * G.N + ((wx / G.S) | 0);
 	}
 
+	function canPlayerTurn(index) {
+		if (index < 0) return false;
+		return game.mode !== "game" || sim.goalOwner[index] <= 0;
+	}
+
 	function turnSelected(quarters) {
-		if (selected < 0) return;
+		if (!canPlayerTurn(selected)) return;
 		S.turn(sim, selected, quarters);
 		overlayDirty = true;
 		if (paused) drawFrame(true);
 	}
 
+	// ---- Lab / Game mode ----------------------------------------------------
+	function applyPlayMode(mode) {
+		const isGame = mode === "game";
+		Game.setMode(game, mode);
+		$("mode-lab").checked = !isGame;
+		$("mode-game").checked = isGame;
+		$("game-panel").hidden = !isGame;
+		$("drain").disabled = isGame;
+		$("open-valves").disabled = isGame;
+		$("brush-summary").hidden = isGame;
+		if (isGame && openDrawerId === "valve-drawer") setDrawer(null);
+		setAutoSlider(Math.round((isGame ? Game.GAME_AUTO : Game.LAB_AUTO) * 100));
+		Game.consumeDirty(game, scene);
+		if (!isGame && scene) R.rebuildBackground(scene, layout, sim.caseTint);
+		overlayDirty = true;
+		shownIndex = -2;
+		shownGameVersion = -1;
+		syncGameUI();
+		if (paused) drawFrame(true);
+	}
+
+	$("mode-lab").onchange = () => { if ($("mode-lab").checked) applyPlayMode("lab"); };
+	$("mode-game").onchange = () => { if ($("mode-game").checked) applyPlayMode("game"); };
+	$("bot-enable").onchange = () => {
+		Game.setBotControl(game, $("bot-enable").checked);
+		syncGameUI();
+	};
+	$("new-match").onclick = resetSim;
+
+	function syncGameUI() {
+		if (game.mode !== "game" || game.version === shownGameVersion) return;
+		shownGameVersion = game.version;
+		syncPressureRadios();
+		$("game-status").textContent = game.lastEvent;
+
+		let pHtml = "";
+		for (let p = 0; p < game.players.length; p++) {
+			const pl = game.players[p];
+			let task = "idle";
+			if (pl.questId >= 0) {
+				for (let q = 0; q < game.quests.length; q++) {
+					if (game.quests[q].id === pl.questId) {
+						task = game.quests[q].title;
+						break;
+					}
+				}
+			}
+			const role = pl.bot ? (game.botControl ? " [bot]" : " [paused]") : "";
+			pHtml +=
+				'<div class="player-row">' +
+				'<span class="player-swatch" style="background:' + pl.hex + '"></span>' +
+				"<strong>" + pl.name + role + "</strong>" +
+				'<span class="player-task">' + task + "</span>" +
+				'<span class="player-score">' + pl.score + " pts (" + pl.completed + ")</span>" +
+				"</div>";
+		}
+		$("player-list").innerHTML = pHtml;
+
+		const userBusy = game.players[0].questId >= 0;
+		let qHtml = "";
+		for (let k = 0; k < game.quests.length; k++) {
+			const q = game.quests[k];
+			const owner = q.owner >= 0 ? game.players[q.owner] : null;
+			const mine = q.owner === 0;
+			const timer = q.timeLimit > 0 ? " · ⏱ " + Math.max(0, Math.ceil(q.remaining)) + "s" : "";
+			const swatch = q.swatch ? '<span class="quest-swatch" style="background:' + q.swatch + '"></span>' : "";
+			let btns = "";
+			if (!owner) {
+				btns = '<button type="button" data-sign="' + q.id + '"' + (userBusy ? " disabled" : "") + ">Sign</button>";
+			} else if (mine) {
+				btns =
+					'<button type="button" data-locate="' + q.id + '">Locate</button>' +
+					'<button type="button" data-drop="' + q.id + '">Drop</button>';
+			} else {
+				btns = '<span style="color:' + owner.accent + ';font-weight:600">' + owner.name + "</span>";
+			}
+			qHtml +=
+				'<div class="quest-card' + (mine ? " mine" : "") + '">' +
+				'<div class="quest-top">' +
+				'<div class="quest-badges"><span class="tier-pill tier-' + q.tier + '">' + q.tier + "</span><span>+" + q.points + " pts" + timer + "</span></div>" +
+				'<div class="quest-btns">' + btns + "</div>" +
+				"</div>" +
+				'<div class="quest-title">' + swatch + "<span>" + q.title + "</span></div>" +
+				'<div class="quest-foot"><span>' + (owner ? q.progressText : "Spawns " + q.bottles + "× hollow single ↑ N") + "</span></div>" +
+				"</div>";
+		}
+		$("quest-list").innerHTML = qHtml;
+	}
+
+	$("quest-list").onclick = event => {
+		const signBtn = event.target.closest("[data-sign]");
+		if (signBtn) {
+			const id = Number(signBtn.dataset.sign);
+			if (Game.signQuest(game, id, 0)) {
+				Game.consumeDirty(game, scene);
+				syncPressureRadios();
+				for (let k = 0; k < game.quests.length; k++) {
+					if (game.quests[k].id === id && game.quests[k].cellCount > 0) selected = game.quests[k].cells[0];
+				}
+				overlayDirty = true;
+				shownIndex = -2;
+				syncGameUI();
+				if (paused) drawFrame(true);
+			}
+			return;
+		}
+		const locateBtn = event.target.closest("[data-locate]");
+		if (locateBtn) {
+			const id = Number(locateBtn.dataset.locate);
+			for (let k = 0; k < game.quests.length; k++) {
+				if (game.quests[k].id === id && game.quests[k].cellCount > 0) {
+					selected = game.quests[k].cells[0];
+					canvas.focus();
+					if (paused) drawFrame(false);
+					break;
+				}
+			}
+			return;
+		}
+		const dropBtn = event.target.closest("[data-drop]");
+		if (dropBtn) {
+			if (Game.dropQuest(game, 0)) {
+				Game.consumeDirty(game, scene);
+				overlayDirty = true;
+				shownIndex = -2;
+				syncGameUI();
+				if (paused) drawFrame(true);
+			}
+		}
+	};
+
+	// ---- core controls ------------------------------------------------------
 	$("seed").onchange = newLayout;
 	$("shuffle").onclick = () => {
 		$("seed").value = String((Math.random() * 99999) | 0);
@@ -120,6 +306,7 @@
 		if (paused) drawFrame(false);
 	};
 	$("drain").onclick = () => {
+		if (game.mode === "game") return;
 		S.drain(sim);
 		if (paused) drawFrame(false);
 	};
@@ -130,11 +317,19 @@
 	$("step").onclick = () => {
 		if (!paused) return;
 		S.step(sim, S.STEP);
+		if (game.mode === "game") {
+			Game.step(game, S.STEP);
+			Game.consumeDirty(game, scene);
+			syncGameUI();
+		}
 		drawFrame(true);
 	};
 	$("speed").oninput = () => {
 		S.setSpeed(sim, +$("speed").value);
 		$("speed-value").value = $("speed").value;
+	};
+	$("auto-rotate").oninput = () => {
+		setAutoSlider(readAutoPercent());
 	};
 	$("force").oninput = () => {
 		S.setAirForce(sim, +$("force").value);
@@ -186,6 +381,7 @@
 	// ---- drawers ----------------------------------------------------------
 	// One drawer at a time, non-modal so the field beside it stays clickable.
 	function setDrawer(id) {
+		if (id === "valve-drawer" && game.mode === "game") return;
 		openDrawerId = id;
 		$("help-drawer").hidden = id !== "help-drawer";
 		$("valve-drawer").hidden = id !== "valve-drawer";
@@ -212,7 +408,8 @@
 		if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
 		if (event.key === "Escape" && openDrawerId) closeDrawers();
 		else if (event.key === "?" || event.key === "h" || event.key === "H") toggleDrawer("help-drawer");
-		else if (event.key === "v" || event.key === "V") toggleDrawer("valve-drawer");
+		else if ((event.key === "v" || event.key === "V") && game.mode !== "game") toggleDrawer("valve-drawer");
+		else if (event.key === "g" || event.key === "G") applyPlayMode(game.mode === "game" ? "lab" : "game");
 	});
 
 	// ---- valve brush --------------------------------------------------------
@@ -228,6 +425,13 @@
 		return brush.dir === "random" ? "random direction" : brush.dir === null ? "keep current direction" : "direction " + dirLabel(brush.dir);
 	}
 
+	function tintText() {
+		if (brush.tint === null) return "";
+		if (brush.tint < 0) return " · grey case";
+		const pl = R.PLAYERS[brush.tint];
+		return pl ? " · " + pl.name + " case" : "";
+	}
+
 	// Chat-ready name of a type, with the selected direction (and the ports
 	// it will face) appended whenever a direction is selected.
 	function typeText(type) {
@@ -240,7 +444,7 @@
 		const type = brushType();
 		let text = brush.type === "random" ? "random valve type" : type ? type.name : "keep current type";
 		if (type && typeof brush.dir === "number") text += " (ports " + G.portsText(G.rotatePorts(type.ports, brush.dir)) + ")";
-		return text + " · " + dirText();
+		return text + " · " + dirText() + tintText();
 	}
 
 	function syncBrush() {
@@ -251,18 +455,26 @@
 		for (const b of document.querySelectorAll("[data-dir]")) {
 			b.setAttribute("aria-pressed", b.dataset.dir === dir ? "true" : "false");
 		}
+		const tint = brush.tint === null ? "" : String(brush.tint);
+		for (const b of document.querySelectorAll("[data-tint]")) {
+			b.setAttribute("aria-pressed", b.dataset.tint === tint ? "true" : "false");
+		}
 		$("brush-summary").textContent = "Double-click places: " + brushText();
-		const nothing = brush.type === null && brush.dir === null;
+		const nothing = brush.type === null && brush.dir === null && brush.tint === null;
 		$("brush-detail").textContent = brushText() + (nothing ? " — pick a type or a direction, this changes nothing." : "");
 	}
 
 	function typeIcon(type) {
-		let lines = "";
-		for (const p of type.ports) {
-			lines += '<line x1="16" y1="16" x2="' + (16 + G.DX[p] * 13) + '" y2="' + (16 + G.DY[p] * 13) + '"/>';
+		let passage = "";
+		if (type.id === "solid-elbow") {
+			passage = '<path d="M 29 16 A 13 13 0 0 1 16 3"/>';
+		} else {
+			for (const p of type.ports) {
+				passage += '<line x1="16" y1="16" x2="' + (16 + G.DX[p] * 13) + '" y2="' + (16 + G.DY[p] * 13) + '"/>';
+			}
 		}
 		const chamber = type.kind === "hollow" ? '<circle class="chamber" cx="16" cy="16" r="6"/>' : "";
-		return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + lines + chamber + "</svg>";
+		return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + passage + chamber + "</svg>";
 	}
 
 	function typeRow(value, badge, name, note, copyId) {
@@ -282,6 +494,12 @@
 			html += typeRow(type.id, typeIcon(type), type.name, "ports " + G.portsText(type.ports) + " at 0°", type.id);
 		}
 		$("valve-types").innerHTML = html;
+
+		let tHtml = '<button type="button" data-tint="-1" aria-pressed="false">Default grey</button>';
+		for (const pl of R.PLAYERS) {
+			tHtml += '<button type="button" data-tint="' + pl.id + '" aria-pressed="false"><span class="tint-dot" style="background:' + pl.hex + '"></span> ' + pl.name + "</button>";
+		}
+		$("tint-picker").innerHTML = tHtml;
 	}
 
 	$("valve-types").onclick = event => {
@@ -304,8 +522,16 @@
 		brush.dir = dir === brush.dir ? null : dir;
 		syncBrush();
 	};
+	$("tint-picker").onclick = event => {
+		const pick = event.target.closest("[data-tint]");
+		if (!pick) return;
+		const tint = Number(pick.dataset.tint);
+		brush.tint = tint === brush.tint ? null : tint;
+		syncBrush();
+	};
 
 	function placeBrushAt(index) {
+		if (game.mode === "game") return false;
 		if (index < 0) {
 			$("copy-status").textContent = "Select a valve on the field first.";
 			return false;
@@ -317,7 +543,13 @@
 		}
 		if (done === "replace") {
 			hoverInlet = -1;
-			rebuild(true);
+			if (scene) {
+				R.rebuildRotor(scene, layout, index);
+				if (brush.tint !== null) R.rebuildBackground(scene, layout, sim.caseTint);
+			}
+			overlayDirty = true;
+		} else if (done === "tint") {
+			if (scene) R.rebuildBackground(scene, layout, sim.caseTint);
 		} else overlayDirty = true;
 		shownIndex = -2;
 		if (paused) drawFrame(true);
@@ -364,7 +596,9 @@
 		if (!type) return "";
 		const quarter = G.quarterOf(sim.target[index]);
 		const dir = type.turns === 1 ? "direction –" : "direction " + dirLabel(G.orientationOf(v, quarter));
-		return "cell (" + (v.i + 1) + "," + (v.j + 1) + ") · " + type.name + " · ports " + G.portsText(G.worldPorts(v, quarter)) + " · " + dir;
+		const tintId = sim.caseTint[index];
+		const tint = tintId >= 0 && R.PLAYERS[tintId] ? " · " + R.PLAYERS[tintId].name + " case" : "";
+		return "cell (" + (v.i + 1) + "," + (v.j + 1) + ") · " + type.name + " · ports " + G.portsText(G.worldPorts(v, quarter)) + " · " + dir + tint;
 	}
 
 	// Refreshed from drawFrame only when the selection, valve or its target
@@ -420,24 +654,100 @@
 		return at;
 	}
 
+	// ---- press-drag rotation + pointer gestures ------------------------------
+	canvas.onpointerdown = event => {
+		if (event.button && event.button !== 0) return;
+		if (event.ctrlKey) return;
+		pointerState(event);
+		if (at.inlet >= 0 || !canPlayerTurn(at.cell)) return;
+		selected = at.cell;
+		const v = layout.valves[at.cell];
+		drag.pointerId = event.pointerId === undefined ? 1 : event.pointerId;
+		drag.cell = at.cell;
+		drag.downX = drag.lastX = point.x;
+		drag.downY = drag.lastY = point.y;
+		drag.r0 = Math.hypot(point.x - v.cx, point.y - v.cy);
+		drag.baseTarget = Math.round(sim.target[at.cell] / G.HALF_PI) * G.HALF_PI;
+		drag.orbitAcc = 0;
+		drag.active = false;
+	};
+
 	canvas.onpointermove = event => {
+		if (drag.cell >= 0) {
+			const w = worldFromPointer(event);
+			if (!w) return;
+			const moved = Math.hypot(w.x - drag.downX, w.y - drag.downY);
+			if (!drag.active && moved >= 6) {
+				drag.active = true;
+				if (canvas.setPointerCapture && event.pointerId !== undefined) canvas.setPointerCapture(event.pointerId);
+			}
+			if (drag.active) {
+				const v = layout.valves[drag.cell];
+				const rMid = Math.hypot((drag.lastX + w.x) * 0.5 - v.cx, (drag.lastY + w.y) * 0.5 - v.cy);
+				if (rMid > 5) {
+					let da = Math.atan2(w.y - v.cy, w.x - v.cx) - Math.atan2(drag.lastY - v.cy, drag.lastX - v.cx);
+					if (da > Math.PI) da -= G.TAU;
+					else if (da < -Math.PI) da += G.TAU;
+					drag.orbitAcc += da;
+				}
+				const quarters =
+					drag.r0 < 10 && Math.abs(drag.orbitAcc) < 0.45
+						? Math.round((w.x - drag.downX) / 26)
+						: Math.trunc(drag.orbitAcc / G.HALF_PI + Math.sign(drag.orbitAcc) * 0.42);
+				if (S.setTarget(sim, drag.cell, drag.baseTarget + quarters * G.HALF_PI)) {
+					overlayDirty = true;
+					shownIndex = -2;
+				}
+			}
+			drag.lastX = w.x;
+			drag.lastY = w.y;
+			if (paused) drawFrame(true);
+			return;
+		}
 		pointerState(event);
 		setHover(at.inlet);
 		selected = at.inlet >= 0 ? -1 : at.cell;
 		if (paused) drawFrame(false);
 	};
+
+	function endDrag(event) {
+		if (drag.cell < 0) return;
+		if (drag.active) {
+			drag.suppressClick = true;
+			if (canvas.releasePointerCapture && event && event.pointerId !== undefined) {
+				try {
+					canvas.releasePointerCapture(event.pointerId);
+				} catch {}
+			}
+		}
+		drag.cell = -1;
+		drag.active = false;
+		drag.pointerId = -1;
+		if (paused) drawFrame(false);
+	}
+
+	canvas.onpointerup = endDrag;
+	canvas.onpointercancel = endDrag;
 	canvas.onpointerleave = () => {
+		if (drag.active) return;
+		drag.cell = -1;
 		if (document.activeElement === canvas) return;
 		selected = -1;
 		setHover(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onblur = () => {
+		drag.cell = -1;
+		drag.active = false;
 		selected = -1;
 		setHover(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onclick = event => {
+		if (drag.suppressClick) {
+			drag.suppressClick = false;
+			return;
+		}
 		pointerState(event);
 		if (at.inlet >= 0) {
 			S.toggleInlet(sim, at.inlet, event.shiftKey);
@@ -446,11 +756,13 @@
 		}
 		selected = at.cell;
 		if (selected < 0 || event.detail > 1) return;
-		if (event.ctrlKey) S.fillValve(sim, selected);
-		else turnSelected(event.shiftKey ? -1 : 1);
+		if (event.ctrlKey) {
+			if (game.mode !== "game") S.fillValve(sim, selected);
+		} else turnSelected(event.shiftKey ? -1 : 1);
 		if (paused) drawFrame(true);
 	};
 	canvas.ondblclick = event => {
+		if (game.mode === "game") return;
 		event.preventDefault();
 		const w = worldFromPointer(event);
 		if (!w) return;
@@ -464,6 +776,7 @@
 	};
 	canvas.onkeydown = event => {
 		if (event.key === "p" || event.key === "P") {
+			if (game.mode === "game") return;
 			event.preventDefault();
 			if (selected < 0) selected = 44;
 			placeBrushAt(selected);
@@ -546,7 +859,9 @@
 		// Mouths sit under the grain piles that share the bands.
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
 		R.renderGrains(ctx, sim, scene);
+		R.renderGoals(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
+		R.renderDrag(ctx, layout, sim, drag);
 		if (drawPressure && pressure.kind === "grid" && pressure.pins) {
 			R.renderPressureLegend(ctx, pressureSpanLabel);
 		}
@@ -563,7 +878,9 @@
 			fps.toFixed(0).padStart(3) +
 			" fps · seed " +
 			layout.seed +
-			" · active " +
+			" · auto " +
+			Math.round(sim.autoRotate * 100) +
+			"% · active " +
 			sim.count +
 			" · injected " +
 			sim.injected +
@@ -581,7 +898,14 @@
 	function frame(now) {
 		const dt = Math.min(0.25, (now - previous) / 1000);
 		previous = now;
-		if (!paused) S.advance(sim, dt);
+		if (!paused) {
+			const steps = S.advance(sim, dt);
+			if (steps > 0 && game.mode === "game") {
+				Game.step(game, steps * S.STEP);
+				Game.consumeDirty(game, scene);
+				syncGameUI();
+			}
+		}
 		drawFrame(false);
 		stats.frames++;
 		stats.clock += dt;

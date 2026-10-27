@@ -134,6 +134,7 @@ const ValveSimulation = (() => {
 			airForce: 1,
 			inlets: INL.create(),
 			turning: o.turning !== false,
+			autoRotate: o.autoRotate === undefined ? 1 : clamp(o.autoRotate, 0, 1),
 			speed: o.speed === undefined ? 1 : o.speed,
 			capacity,
 			count: 0,
@@ -150,7 +151,11 @@ const ValveSimulation = (() => {
 			spoutMask: buildSpoutMask(layout, reach),
 			binCount: new Int32Array(BIN_COUNT),
 			binStart: new Int32Array(BIN_COUNT + 1),
-			// wall schedule
+			// wall schedule and goal ownership
+			autoRank: new Uint8Array(slots),
+			autoLocked: new Uint8Array(slots),
+			goalOwner: new Int8Array(slots),
+			caseTint: new Int8Array(slots),
 			prevAngle: new Float64Array(slots),
 			cos0: new Float64Array(slots),
 			sin0: new Float64Array(slots),
@@ -180,15 +185,26 @@ const ValveSimulation = (() => {
 			maxPen: 0,
 		};
 		sim.stalledList.fill(-1);
+		sim.goalOwner.fill(-1);
+		sim.caseTint.fill(-1);
 		initSchedule(sim);
 		return sim;
 	}
 
 	// Per-valve quarter-turn schedule. Angles live on the layout, which remains
-	// the single owner of geometry state.
+	// the single owner of geometry state. `autoRank` is a seeded permutation of
+	// cell indices so an X% auto-rotate setting turns an exact X% subset.
 	function initSchedule(sim) {
 		const seed = sim.layout.seed | 0;
 		const valves = sim.layout.valves;
+		const rankRnd = G.rng((seed ^ 0x6a09e667) | 0);
+		for (let k = 0; k < valves.length; k++) sim.autoRank[k] = k;
+		for (let k = valves.length - 1; k > 0; k--) {
+			const m = (rankRnd() * (k + 1)) | 0;
+			const tmp = sim.autoRank[k];
+			sim.autoRank[k] = sim.autoRank[m];
+			sim.autoRank[m] = tmp;
+		}
 		for (let k = 0; k < valves.length; k++) {
 			const v = valves[k];
 			const angle = sim.turning ? ((G.hashUnit(seed, k, 1) * 4) | 0) * HALF_PI : v.angle;
@@ -204,6 +220,11 @@ const ValveSimulation = (() => {
 		}
 	}
 
+	function canAutoRotate(sim, k) {
+		if (!sim.turning || sim.autoLocked[k]) return false;
+		return sim.autoRank[k] < Math.round(sim.autoRotate * sim.autoRank.length);
+	}
+
 	function updateTurns(sim, h) {
 		const seed = sim.layout.seed | 0;
 		const valves = sim.layout.valves;
@@ -215,7 +236,7 @@ const ValveSimulation = (() => {
 			sim.cos0[k] = v.cos;
 			sim.sin0[k] = v.sin;
 			let goal = sim.target[k];
-			if (sim.turning && before === goal) {
+			if (before === goal && canAutoRotate(sim, k)) {
 				sim.dwell[k] -= h;
 				if (sim.dwell[k] <= 0) {
 					goal = sim.target[k] = before + sim.dir[k] * HALF_PI;
@@ -927,6 +948,9 @@ const ValveSimulation = (() => {
 		sim.stalledList.fill(-1);
 		sim.stallTime.fill(0);
 		sim.pushFlag.fill(0);
+		sim.autoLocked.fill(0);
+		sim.goalOwner.fill(-1);
+		sim.caseTint.fill(-1);
 		initSchedule(sim);
 		INL.reset(sim.inlets);
 		sim.pressure = pressureFor(sim, sim.pressureMode);
@@ -941,6 +965,29 @@ const ValveSimulation = (() => {
 		sim.dwell[index] = TURN_DWELL_MIN + 1;
 		sim.stallTime[index] = 0;
 		if (sim.pressureMode === "grid") GAS.refresh(sim);
+		return true;
+	}
+
+	function setTarget(sim, index, angle) {
+		if (index < 0 || index >= sim.layout.valves.length) return false;
+		const snapped = Math.round(angle / HALF_PI) * HALF_PI;
+		if (sim.target[index] === snapped) return false;
+		sim.target[index] = snapped;
+		sim.dwell[index] = TURN_DWELL_MIN + 1.5;
+		sim.stallTime[index] = 0;
+		if (sim.pressureMode === "grid") GAS.refresh(sim);
+		return true;
+	}
+
+	function setAutoRotate(sim, fraction) {
+		sim.autoRotate = Number.isFinite(fraction) ? clamp(fraction, 0, 1) : 0;
+	}
+
+	function setCaseTint(sim, index, tint) {
+		if (index < 0 || index >= sim.caseTint.length) return false;
+		const next = tint === null || tint === undefined || tint < 0 ? -1 : tint | 0;
+		if (sim.caseTint[index] === next) return false;
+		sim.caseTint[index] = next;
 		return true;
 	}
 
@@ -959,11 +1006,14 @@ const ValveSimulation = (() => {
 
 	// Rebuilds the valve in a cell as a catalogue type facing direction
 	// `quarter`. Only a type change rebuilds (and clears that cell's grains);
-	// a hollow replacement keeps the old chamber size when there is one.
-	function installValve(sim, index, type, quarter) {
+	// a hollow replacement keeps the old chamber size unless `chamberR` is given.
+	function installValve(sim, index, type, quarter, chamberR) {
 		const old = sim.layout.valves[index];
 		clearValve(sim, index);
-		const chamber = type.kind === "hollow" && !(old.kind === "hollow" && old.chamberR > 0) ? G.RV * 0.53 : old.chamberR;
+		let chamber = 0;
+		if (type.kind === "hollow") {
+			chamber = chamberR !== undefined ? chamberR : old.kind === "hollow" && old.chamberR > 0 ? old.chamberR : G.RV * 0.53;
+		}
 		const v = G.makeValve(old.i, old.j, type.kind, type.ports, 0, chamber);
 		G.setAngle(v, quarter * HALF_PI);
 		sim.layout.valves[index] = v;
@@ -975,7 +1025,8 @@ const ValveSimulation = (() => {
 		sim.dwell[index] = 1;
 		sim.reach = G.drainReach(sim.layout);
 		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
-		sim.pressure = pressureFor(sim, sim.pressureMode);
+		if (sim.pressureMode === "grid" && sim.pressure) GAS.refresh(sim);
+		else sim.pressure = pressureFor(sim, sim.pressureMode);
 	}
 
 	function randomType(oldType, rnd) {
@@ -984,10 +1035,9 @@ const ValveSimulation = (() => {
 	}
 
 	// Places a brush on a cell: type is a G.TYPES id, "random" or null (not
-	// change); dir is a quarter 0-3, "random" or null (not change). Type and
-	// direction resolve independently, so the user can change either or both.
-	// A direction-only change turns the rotor and keeps its grains. Returns
-	// "replace", "turn", or false when nothing would change.
+	// change); dir is a quarter 0-3, "random" or null (not change); optional
+	// tint is -1 (default grey), 0..3 (player color), or null/undefined.
+	// Active quest goal cells reject type replacement.
 	function placeValve(sim, index, brush, random) {
 		const old = sim.layout.valves[index];
 		if (!old || !brush) return false;
@@ -1000,6 +1050,7 @@ const ValveSimulation = (() => {
 			type = G.typeById(brush.type);
 			if (!type) return false;
 		}
+		if (sim.goalOwner[index] >= 0 && type !== oldType) return false;
 		const oldDir = G.orientationOf(old, G.quarterOf(sim.target[index]));
 		let dir = oldDir;
 		if (brush.dir === "random") dir = (rnd() * 4) | 0;
@@ -1008,14 +1059,17 @@ const ValveSimulation = (() => {
 			dir = ((brush.dir % 4) + 4) % 4;
 		}
 		dir %= type.turns;
+		const tinted = brush.tint !== null && brush.tint !== undefined ? setCaseTint(sim, index, brush.tint) : false;
 		if (type !== oldType) {
 			installValve(sim, index, type, dir);
 			return "replace";
 		}
-		if (dir === oldDir) return false;
-		let delta = (dir - oldDir) & 3;
-		if (delta === 3) delta = -1;
-		return turn(sim, index, delta) ? "turn" : false;
+		if (dir !== oldDir) {
+			let delta = (dir - oldDir) & 3;
+			if (delta === 3) delta = -1;
+			if (turn(sim, index, delta)) return tinted ? "replace" : "turn";
+		}
+		return tinted ? "tint" : false;
 	}
 
 	function replaceValve(sim, index, random) {
@@ -1091,6 +1145,11 @@ const ValveSimulation = (() => {
 		advance,
 		resume,
 		turn,
+		setTarget,
+		setAutoRotate,
+		canAutoRotate,
+		setCaseTint,
+		installValve,
 		setSpeed,
 		setAirForce,
 		setPressure,
