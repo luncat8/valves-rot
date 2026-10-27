@@ -621,7 +621,39 @@ function fixtureSeamClosure(layout) {
 	return closures;
 }
 
+// Valve catalogue: every layout valve resolves to a type, rotating that
+// type by its direction reproduces the ports it faces the world with, and
+// pre-rotated port sets still name the same shape.
+function fixtureTypes() {
+	assert.equal(G.TYPES.length, 12);
+	assert.equal(new Set(G.TYPES.map(type => type.id)).size, 12, "type ids are unique");
+	assert.equal(new Set(G.TYPES.map(type => type.name)).size, 12, "type names are unique");
+	for (const type of G.TYPES) assert.equal(G.typeById(type.id), type);
+	assert.equal(G.typeById("no-such-type"), null);
+	let checked = 0;
+	for (const seed of [7, 11, 1234]) {
+		for (const v of G.createLayout(seed).valves) {
+			const type = G.typeOf(v);
+			assert.ok(type, `valve ${v.kind} [${v.ports}] must have a type`);
+			for (let quarter = 0; quarter < 4; quarter++) {
+				const dir = G.orientationOf(v, quarter);
+				assert.ok(dir < type.turns, "direction is normalised for symmetric types");
+				assert.deepEqual(G.worldPorts(v, quarter), G.rotatePorts(type.ports, dir));
+			}
+			for (let q = 0; q < 4; q++) {
+				const turned = G.makeValve(v.i, v.j, v.kind, G.rotatePorts(v.ports, q), 0, v.chamberR);
+				assert.equal(G.typeOf(turned), type, "rotation never changes the type");
+			}
+			checked++;
+		}
+	}
+	assert.equal(G.portsText([0, 3]), "E,N");
+	assert.equal(G.portsText([]), "none");
+	return checked;
+}
+
 const t0 = process.hrtime.bigint();
+const typed = fixtureTypes();
 const base = fixtureLayouts();
 const layouts = [base.layout, G.createLayout(11), G.createLayout(1234)];
 let elbowCount = 0;
@@ -658,7 +690,7 @@ assert.ok(stats.throats > 0 && stats.closedThroats > 0);
 assert.ok(seams > 0 && passageSamples > 0 && sweepTotal > 0);
 console.log(
 	[
-		`OK  layouts ${layouts.length} (seeds 7, 11, 1234) valves ${layouts.length * N * N}`,
+		`OK  layouts ${layouts.length} (seeds 7, 11, 1234) valves ${layouts.length * N * N} typed ${typed}`,
 		`hollow ${hollow} blanks ${blanks} elbows ${elbowCount}`,
 		`seams ${seams} throats ${stats.throats} shut ${stats.closedThroats}`,
 		`housing ${housingSteps} passages ${passageSamples} seamRings ${stats.rimRings}`,

@@ -30,6 +30,30 @@ const ValveGeometry = (() => {
 	];
 	const HOLLOW_SHAPES = [[0], [0, 2], [0, 3], [0, 1, 2], [0, 1, 2, 3]];
 
+	// Port directions in index order, clockwise on screen (y grows downward).
+	const DIR_NAMES = ["E", "S", "W", "N"];
+	const SHAPE_NAMES = { "0,2": "straight", "0,3": "elbow", "0,1,2": "tee", "0,1,2,3": "cross", "0": "single", "": "blank" };
+
+	function portMask(ports) {
+		let mask = 0;
+		for (let k = 0; k < ports.length; k++) mask |= 1 << ports[k];
+		return mask;
+	}
+
+	// Canonical valve types at direction 0. `turns` is how many quarter turns
+	// give a different port set, so blank/cross have one and straights two.
+	function makeType(kind, ports) {
+		const shape = SHAPE_NAMES[ports.join(",")];
+		const turns = ports.length === 0 || ports.length === 4 ? 1 : shape === "straight" ? 2 : 4;
+		return { id: kind + "-" + shape, kind, ports, shape, name: kind + " " + shape, turns, mask: portMask(ports) };
+	}
+
+	const TYPES = [
+		...SOLID_SHAPES.map(ports => makeType("solid", ports)),
+		...HOLLOW_SHAPES.map(ports => makeType("hollow", ports)),
+		makeType("hollow", []),
+	];
+
 	function hash(seed, i, j) {
 		let h = (seed | 0) ^ Math.imul(i + 1, 0x9e3779b1) ^ Math.imul(j + 1, 0x85ebca6b);
 		h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
@@ -723,6 +747,57 @@ const ValveGeometry = (() => {
 		return out;
 	}
 
+	function rotateMask(mask, quarter) {
+		const q = ((quarter % 4) + 4) % 4;
+		return q === 0 ? mask : ((mask << q) | (mask >> (4 - q))) & 15;
+	}
+
+	function quarterOf(angle) {
+		return ((Math.round(angle / HALF_PI) % 4) + 4) % 4;
+	}
+
+	function rotatePorts(ports, quarter) {
+		const mask = rotateMask(portMask(ports), quarter);
+		const out = [];
+		for (let d = 0; d < 4; d++) if (mask & (1 << d)) out.push(d);
+		return out;
+	}
+
+	// A layout valve may carry its ports pre-rotated by a base quarter, so its
+	// type is the catalogue entry whose ports match under some rotation.
+	function typeOf(v) {
+		const mask = portMask(v.ports);
+		for (const type of TYPES) {
+			if (type.kind !== v.kind) continue;
+			for (let q = 0; q < 4; q++) if (rotateMask(type.mask, q) === mask) return type;
+		}
+		return null;
+	}
+
+	function typeById(id) {
+		for (const type of TYPES) if (type.id === id) return type;
+		return null;
+	}
+
+	// Direction of a valve: the smallest quarter that rotates its type's
+	// canonical ports onto the ports it faces the world with at `quarter`
+	// (its snapped angle quarter unless given, e.g. its turn target).
+	function orientationOf(v, quarter) {
+		const type = typeOf(v);
+		if (!type) return 0;
+		const world = rotateMask(portMask(v.ports), quarter === undefined ? quarterOf(v.angle) : quarter);
+		for (let q = 0; q < 4; q++) if (rotateMask(type.mask, q) === world) return q;
+		return 0;
+	}
+
+	function worldPorts(v, quarter) {
+		return rotatePorts(v.ports, quarter === undefined ? quarterOf(v.angle) : quarter);
+	}
+
+	function portsText(ports) {
+		return ports.length ? ports.map(p => DIR_NAMES[p]).join(",") : "none";
+	}
+
 	function describe(v) {
 		return {
 			kind: v.kind,
@@ -752,6 +827,15 @@ const ValveGeometry = (() => {
 		T_DISK,
 		SOLID_SHAPES,
 		HOLLOW_SHAPES,
+		DIR_NAMES,
+		TYPES,
+		quarterOf,
+		rotatePorts,
+		typeOf,
+		typeById,
+		orientationOf,
+		worldPorts,
+		portsText,
 		hashUnit,
 		rng,
 		createLayout,

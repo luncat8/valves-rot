@@ -32,6 +32,15 @@
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
+	// Valve brush placed by double-click: type id / "random" / null (not
+	// change), direction quarter / "random" / null (not change). The default
+	// keeps the old double-click behaviour: a random different type.
+	const brush = { type: "random", dir: null };
+	const DIR_ARROWS = ["→", "↓", "←", "↑"];
+	let openDrawerId = null;
+	let shownValve = null;
+	let shownIndex = -2;
+	let shownQuarter = -1;
 
 	$("pressure-span").value = String(pressureSpan);
 	S.seed(sim);
@@ -174,6 +183,219 @@
 		$("pressure-span").oninput();
 	};
 
+	// ---- drawers ----------------------------------------------------------
+	// One drawer at a time, non-modal so the field beside it stays clickable.
+	function setDrawer(id) {
+		openDrawerId = id;
+		$("help-drawer").hidden = id !== "help-drawer";
+		$("valve-drawer").hidden = id !== "valve-drawer";
+		$("open-help").setAttribute("aria-expanded", id === "help-drawer" ? "true" : "false");
+		$("open-valves").setAttribute("aria-expanded", id === "valve-drawer" ? "true" : "false");
+		if (id) $(id === "help-drawer" ? "close-help" : "close-valves").focus();
+	}
+
+	function toggleDrawer(id) {
+		setDrawer(openDrawerId === id ? null : id);
+	}
+
+	function closeDrawers() {
+		setDrawer(null);
+		canvas.focus();
+	}
+
+	$("open-help").onclick = () => toggleDrawer("help-drawer");
+	$("open-valves").onclick = () => toggleDrawer("valve-drawer");
+	$("close-help").onclick = closeDrawers;
+	$("close-valves").onclick = closeDrawers;
+	document.addEventListener("keydown", event => {
+		const tag = event.target && event.target.tagName;
+		if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+		if (event.key === "Escape" && openDrawerId) closeDrawers();
+		else if (event.key === "?" || event.key === "h" || event.key === "H") toggleDrawer("help-drawer");
+		else if (event.key === "v" || event.key === "V") toggleDrawer("valve-drawer");
+	});
+
+	// ---- valve brush --------------------------------------------------------
+	function dirLabel(quarter) {
+		return DIR_ARROWS[quarter] + " " + G.DIR_NAMES[quarter] + " · " + quarter * 90 + "°";
+	}
+
+	function brushType() {
+		return brush.type && brush.type !== "random" ? G.typeById(brush.type) : null;
+	}
+
+	// Chat-ready name of the brush, with the ports it will face when the
+	// direction is fixed.
+	function brushText() {
+		const type = brushType();
+		let text = brush.type === "random" ? "random valve type" : type ? type.name : "keep valve type (not change)";
+		if (type && typeof brush.dir === "number") text += " (ports " + G.portsText(G.rotatePorts(type.ports, brush.dir)) + ")";
+		return text + " · " + (brush.dir === "random" ? "random direction" : brush.dir === null ? "direction not change" : "direction " + dirLabel(brush.dir));
+	}
+
+	function syncBrush() {
+		for (const b of document.querySelectorAll("[data-type]")) {
+			const active = b.dataset.type === brush.type || (b.dataset.type === "keep" && brush.type === null);
+			b.setAttribute("aria-pressed", active ? "true" : "false");
+		}
+		const dir = brush.dir === null ? "keep" : String(brush.dir);
+		for (const b of document.querySelectorAll("[data-dir]")) {
+			b.setAttribute("aria-pressed", b.dataset.dir === dir ? "true" : "false");
+		}
+		$("brush-summary").textContent = "Double-click places: " + brushText();
+		const nothing = brush.type === null && brush.dir === null;
+		$("brush-detail").textContent = brushText() + (nothing ? " — pick a type or a direction, this changes nothing." : "");
+	}
+
+	function typeIcon(type) {
+		let lines = "";
+		for (const p of type.ports) {
+			lines += '<line x1="16" y1="16" x2="' + (16 + G.DX[p] * 13) + '" y2="' + (16 + G.DY[p] * 13) + '"/>';
+		}
+		const chamber = type.kind === "hollow" ? '<circle class="chamber" cx="16" cy="16" r="6"/>' : "";
+		return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + lines + chamber + "</svg>";
+	}
+
+	function typeRow(value, badge, name, note, copyName) {
+		let row = '<div class="type-row"><button type="button" class="type-pick" data-type="' + value + '" aria-pressed="false">' + badge + "<span>" + name + "<small>" + note + "</small></span></button>";
+		if (copyName) row += '<button type="button" class="copy-name" data-copy-name="' + copyName + '" title="Copy “' + copyName + '” to the clipboard" aria-label="Copy name ' + copyName + '">⧉</button>';
+		return row + "</div>";
+	}
+
+	function buildValveTypes() {
+		let html = typeRow("random", '<span class="type-badge">?</span>', "? Random type", "any different type", "");
+		html += typeRow("keep", '<span class="type-badge">=</span>', "= Not change", "keep this valve's type", "");
+		let kind = "";
+		for (const type of G.TYPES) {
+			if (type.kind !== kind) {
+				kind = type.kind;
+				html += "<h4>" + kind + "</h4>";
+			}
+			html += typeRow(type.id, typeIcon(type), type.name, "ports " + G.portsText(type.ports) + " at 0°", type.name);
+		}
+		$("valve-types").innerHTML = html;
+	}
+
+	$("valve-types").onclick = event => {
+		const copy = event.target.closest("[data-copy-name]");
+		if (copy) {
+			copyText(copy.dataset.copyName);
+			return;
+		}
+		const pick = event.target.closest("[data-type]");
+		if (!pick) return;
+		brush.type = pick.dataset.type === "keep" ? null : pick.dataset.type;
+		syncBrush();
+	};
+	$("dir-picker").onclick = event => {
+		const pick = event.target.closest("[data-dir]");
+		if (!pick) return;
+		brush.dir = pick.dataset.dir === "keep" ? null : pick.dataset.dir === "random" ? "random" : Number(pick.dataset.dir);
+		syncBrush();
+	};
+
+	function placeBrushAt(index) {
+		if (index < 0) {
+			$("copy-status").textContent = "Select a valve on the field first.";
+			return false;
+		}
+		const done = S.placeValve(sim, index, brush);
+		if (!done) {
+			$("copy-status").textContent = "Nothing to change for that valve: " + brushText();
+			return false;
+		}
+		if (done === "replace") {
+			hoverInlet = -1;
+			rebuild(true);
+		} else overlayDirty = true;
+		shownIndex = -2;
+		if (paused) drawFrame(true);
+		return true;
+	}
+
+	$("apply-brush").onclick = () => placeBrushAt(selected);
+	$("copy-brush").onclick = () => copyText(brushText());
+
+	// ---- clipboard ----------------------------------------------------------
+	// file:// pages may not get the async Clipboard API, so keep a fallback.
+	function fallbackCopy(text) {
+		try {
+			const box = document.createElement("textarea");
+			box.value = text;
+			box.setAttribute("readonly", "");
+			box.style.position = "fixed";
+			box.style.opacity = "0";
+			document.body.appendChild(box);
+			box.select();
+			const ok = document.execCommand("copy");
+			box.remove();
+			return ok;
+		} catch {
+			return false;
+		}
+	}
+
+	function copyText(text) {
+		const show = ok => {
+			$("copy-status").textContent = ok ? "Copied: " + text : "Could not copy automatically — copy this: " + text;
+		};
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(() => show(true), () => show(fallbackCopy(text)));
+			return;
+		}
+		show(fallbackCopy(text));
+	}
+
+	// ---- valve on the field --------------------------------------------------
+	function valveText(index) {
+		const v = sim.layout.valves[index];
+		const type = G.typeOf(v);
+		if (!type) return "";
+		const quarter = G.quarterOf(sim.target[index]);
+		const dir = type.turns === 1 ? "direction –" : "direction " + dirLabel(G.orientationOf(v, quarter));
+		return "cell (" + (v.i + 1) + "," + (v.j + 1) + ") · " + type.name + " · ports " + G.portsText(G.worldPorts(v, quarter)) + " · " + dir;
+	}
+
+	// Refreshed from drawFrame only when the selection, valve or its target
+	// detent changed, so the frame loop keeps building no strings.
+	function syncSelectedValve() {
+		if (selected < 0) {
+			if (shownIndex === -1) return;
+			shownIndex = -1;
+			shownValve = null;
+			$("selected-valve").textContent = "Hover or select a valve on the field.";
+			return;
+		}
+		const v = sim.layout.valves[selected];
+		const quarter = G.quarterOf(sim.target[selected]);
+		if (shownIndex === selected && shownValve === v && shownQuarter === quarter) return;
+		shownIndex = selected;
+		shownValve = v;
+		shownQuarter = quarter;
+		$("selected-valve").textContent = valveText(selected);
+	}
+
+	$("use-selected").onclick = () => {
+		if (selected < 0) {
+			$("copy-status").textContent = "Select a valve on the field first.";
+			return;
+		}
+		const v = sim.layout.valves[selected];
+		const type = G.typeOf(v);
+		if (!type) return;
+		brush.type = type.id;
+		brush.dir = G.orientationOf(v, G.quarterOf(sim.target[selected]));
+		syncBrush();
+		$("copy-status").textContent = "Brush: " + brushText();
+	};
+	$("copy-selected").onclick = () => {
+		if (selected >= 0) copyText(valveText(selected));
+	};
+
+	buildValveTypes();
+	setDrawer(null);
+	syncBrush();
+
 	function setHover(inlet) {
 		if (hoverInlet === inlet) return;
 		hoverInlet = inlet;
@@ -222,12 +444,20 @@
 		const w = worldFromPointer(event);
 		if (!w) return;
 		selected = cellFromPointer(w.x, w.y);
-		if (selected < 0 || event.ctrlKey || !S.replaceValve(sim, selected)) return;
-		hoverInlet = -1;
-		rebuild(true);
-		if (paused) drawFrame(true);
+		if (selected < 0 || event.ctrlKey) return;
+		// The first click of the gesture already turned this valve; undo that
+		// turn so the brush (notably direction "not change") is measured from
+		// before the double-click.
+		S.turn(sim, selected, event.shiftKey ? 1 : -1);
+		placeBrushAt(selected);
 	};
 	canvas.onkeydown = event => {
+		if (event.key === "p" || event.key === "P") {
+			event.preventDefault();
+			if (selected < 0) selected = 44;
+			placeBrushAt(selected);
+			return;
+		}
 		if (event.key === "Enter" || event.key === " ") {
 			event.preventDefault();
 			if (selected < 0) selected = 44;
@@ -290,6 +520,7 @@
 
 	function drawFrame(forceOverlay) {
 		syncLegend();
+		syncSelectedValve();
 		ctx.save();
 		// Shift world [-POUR, SIZE + POUR] down into canvas [0, SIZE + 2 * POUR].
 		ctx.translate(0, G.POUR);

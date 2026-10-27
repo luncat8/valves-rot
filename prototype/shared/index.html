@@ -10,7 +10,6 @@
 	<header>
 	<a href="../../index.html">All prototypes</a>
 	<h1>Combined / Rotary Valve Field</h1>
-	<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Double-click to replace a valve (clears its grains); Ctrl-click to fill with one random color. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor. The mouths in the pour and drain bands are air inlets: bottom rows are high, top rows low. Click a mouth to seal or open it, Shift-click to swap its polarity. <strong>Air force</strong> scales the push on grains; at 0 they fall as if pressure were off.</p>
 	</header>
 	<div class="controls">
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
@@ -35,14 +34,77 @@
 		<label>Ramp span (Pa equivalent) <input id="pressure-span" type="number" min="0" step="any" aria-describedby="calibration-note" aria-errormessage="pressure-error"></label>
 		<small id="pressure-error" role="status" hidden>Enter a positive span in Pa.</small>
 		<button id="pressure-reference" type="button">Use reference span</button>
+		<button id="open-valves" type="button" aria-expanded="false" aria-controls="valve-drawer">Place valve…</button>
+		<button id="open-help" type="button" aria-expanded="false" aria-controls="help-drawer">Help</button>
+		<span id="brush-summary">Double-click places: ? random type · direction not change</span>
 	</div>
-	<details id="calibration-note">
-		<summary>Grid colors: relative potential <span id="legend-range" aria-live="polite"></span> (calibration details)</summary>
-		<p>The grid remains a relative potential, not a measured pressure. The legend maps 0–1 to 0–the reference span in gauge-equivalent pascals; changing the span only relabels the ramp and does not change forces. With no open air mouth the field is unanchored and hidden.</p>
-		<p>The default span is measured from normal particle-wall impulse in a sealed reference chamber: 100 markers at 180 px/s, radius 15 px, over 20 simulation seconds. Its illustrative scales are 1 mm/px, 1 simulation second = 1 s, 1 mg per mass unit (3 mg per marker), and 10 mm depth. It is not an atmospheric pressure or a validation of pressure everywhere in the machine. Enter a known source-to-vent gauge difference to use another reference.</p>
-	</details>
-	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve. Click an inlet mouth in the bands to toggle it."></canvas>
+	<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click a valve, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it."></canvas>
 	<p id="stats" aria-live="off"></p>
+	<aside id="valve-drawer" class="drawer" hidden aria-labelledby="valve-drawer-title">
+		<div class="drawer-head">
+			<h2 id="valve-drawer-title">Place valve</h2>
+			<button id="close-valves" type="button">Close ×</button>
+		</div>
+		<p>Pick a type and/or a direction, then <strong>double-click</strong> a valve on the field to place it — or select a valve and press <kbd>P</kbd> or Apply. Type and direction apply together; either can be <strong>?</strong> random or <strong>not change</strong>. Changing the type clears grains in that cell; changing only the direction turns the rotor and keeps its grains.</p>
+		<div class="brush-box">
+			<h3>Double-click will place</h3>
+			<p id="brush-detail"></p>
+			<button id="apply-brush" type="button">Apply to selected valve</button>
+			<button id="copy-brush" type="button">Copy name</button>
+			<p id="copy-status" role="status" aria-live="polite"></p>
+		</div>
+		<h3>Type</h3>
+		<div id="valve-types"></div>
+		<h3>Direction</h3>
+		<p class="hint">Direction turns the type's 0° ports clockwise: → E is 0°, ↓ S is 90°, ← W is 180°, ↑ N is 270°.</p>
+		<div id="dir-picker" class="dir-picker">
+			<button type="button" data-dir="0" aria-pressed="false">→ E · 0°</button>
+			<button type="button" data-dir="1" aria-pressed="false">↓ S · 90°</button>
+			<button type="button" data-dir="2" aria-pressed="false">← W · 180°</button>
+			<button type="button" data-dir="3" aria-pressed="false">↑ N · 270°</button>
+			<button type="button" data-dir="random" aria-pressed="false">? Random</button>
+			<button type="button" data-dir="keep" aria-pressed="true">= Not change</button>
+		</div>
+		<h3>Valve on the field</h3>
+		<p id="selected-valve">Hover or select a valve on the field.</p>
+		<button id="use-selected" type="button">Copy to brush (type + direction)</button>
+		<button id="copy-selected" type="button">Copy its name</button>
+		<p class="hint"><strong>Copy to brush</strong> loads that valve above, so you can place copies of it with double-click. The ⧉ and Copy name buttons put the valve type name on the clipboard as text, ready to paste into chat.</p>
+	</aside>
+	<aside id="help-drawer" class="drawer" hidden aria-labelledby="help-drawer-title">
+		<div class="drawer-head">
+			<h2 id="help-drawer-title">Help</h2>
+			<button id="close-help" type="button">Close ×</button>
+		</div>
+		<h3>Playing</h3>
+		<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click a valve or focus the field and use arrow keys plus Enter/Space to turn a rotor. Double-click to place the valve brush chosen in the <strong>Place valve</strong> drawer (a random different type until you pick one); Ctrl-click to fill a valve with one random color.</p>
+		<p>The mouths in the pour and drain bands are air inlets: bottom rows are high, top rows low. Click a mouth to seal or open it, Shift-click to swap its polarity.</p>
+		<h3>Shortcuts</h3>
+		<dl class="shortcuts">
+			<dt>Click valve</dt><dd>Turn it +90° (<kbd>Shift</kbd>-click for −90°)</dd>
+			<dt>Double-click valve</dt><dd>Place the valve brush (Place valve drawer)</dd>
+			<dt><kbd>Ctrl</kbd>-click valve</dt><dd>Fill it with one random color</dd>
+			<dt>Click mouth</dt><dd>Seal or open the air inlet</dd>
+			<dt><kbd>Shift</kbd>-click mouth</dt><dd>Swap its polarity (source ⇄ vent)</dd>
+			<dt>Arrow keys</dt><dd>Move the valve selection (field focused)</dd>
+			<dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Turn the selected valve +90° (<kbd>Shift</kbd> for −90°)</dd>
+			<dt><kbd>P</kbd></dt><dd>Place the valve brush on the selected valve</dd>
+			<dt><kbd>V</kbd></dt><dd>Open or close the Place valve drawer</dd>
+			<dt><kbd>?</kbd> or <kbd>H</kbd></dt><dd>Open or close this Help drawer</dd>
+			<dt><kbd>Esc</kbd></dt><dd>Close the open drawer</dd>
+		</dl>
+		<h3>Controls and air</h3>
+		<p><strong>Turn speed</strong> controls valves, not gravity. <strong>Step</strong> advances one step while paused. Switching the pressure mode does not reset grains or valve targets.</p>
+		<p><strong>Grid gas</strong> shows a relative potential as a blue-to-red overlay and uses it to push grains; a packed pile changes the potential and slows the modeled flow. <strong>Air particles</strong> shows a cyan kinetic population that circulates from bottom sources to top vents and knocks grains about. <strong>Off</strong> leaves the grains untouched. <strong>Air force</strong> scales the push on grains from 0 (they fall as if pressure were off) to 2 (updrafts can hold a grain).</p>
+		<section id="calibration-note">
+			<h3>Grid colors: relative potential <span id="legend-range" aria-live="polite"></span></h3>
+			<p>The grid remains a relative potential, not a measured pressure. The legend maps 0–1 to 0–the reference span in gauge-equivalent pascals; changing the span only relabels the ramp and does not change forces. With no open air mouth the field is unanchored and hidden.</p>
+			<p>The default span is measured from normal particle-wall impulse in a sealed reference chamber: 100 markers at 180 px/s, radius 15 px, over 20 simulation seconds. Its illustrative scales are 1 mm/px, 1 simulation second = 1 s, 1 mg per mass unit (3 mg per marker), and 10 mm depth. It is not an atmospheric pressure or a validation of pressure everywhere in the machine. Enter a known source-to-vent gauge difference to use another reference.</p>
+		</section>
+		<h3>Other info</h3>
+		<p>The line under the field reports fps, the seed, active / injected / drained grains, plus solver diagnostics: purged (removed by Drain or by replacing a valve), recovered and pushes (grains nudged out of a turning wall). In grid mode it also shows mean potential and flow.</p>
+		<p>Valve type names (solid / hollow × straight, elbow, tee, cross, single, blank) are listed in the Place valve drawer, where each name can be copied to the clipboard as text.</p>
+	</aside>
 	<script src="geometry.js"></script>
 	<script src="inlets.js"></script>
 	<script src="air.js"></script>

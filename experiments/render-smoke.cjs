@@ -92,6 +92,7 @@ function element(id) {
 		removeAttribute(name) { delete this.attributes[name]; },
 		getAttribute(name) { return this.attributes[name] ?? null; },
 		addEventListener() {},
+		focus() {},
 		getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 780 }),
 	};
 	if (id === "c") el.getContext = () => recordingContext(true);
@@ -107,10 +108,18 @@ global.window = {
 		windowListeners[ev] = fn;
 	},
 };
+const copiedTexts = [];
+Object.defineProperty(global, "navigator", {
+	value: { clipboard: { writeText: text => { copiedTexts.push(text); return Promise.resolve(); } } },
+	configurable: true,
+});
 global.document = {
 	activeElement: null,
 	hidden: false,
 	getElementById: element,
+	// Generated picker buttons exist only as innerHTML in this stub; brush
+	// state is exercised through the delegated handlers below instead.
+	querySelectorAll: () => [],
 	createElement: tag => {
 		if (tag !== "canvas") return {};
 		calls.canvases++;
@@ -138,6 +147,30 @@ const SIM = vm.runInThisContext("ValveSimulation");
 assert.ok(SIM.STEP > 0 && SIM.GRAIN_COLORS.length >= 4);
 assert.equal(G.N, 10);
 assert.ok(calls.total > 0, "startup must draw");
+
+// Static help lives in the Help drawer, and the valve drawer lists every
+// catalogue type with a clipboard copy button for its name.
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "valve-types", "dir-picker", "brush-summary", "selected-valve"]) {
+	assert.ok(html.includes('id="' + id + '"'), "page has #" + id);
+}
+assert.ok(html.indexOf("Shortcuts") > html.indexOf('id="help-drawer"'), "shortcuts are inside the Help drawer");
+assert.ok(html.indexOf('id="calibration-note"') > html.indexOf('id="help-drawer"'), "calibration note moved into Help");
+const typeList = element("valve-types").innerHTML;
+for (const type of G.TYPES) assert.ok(typeList.includes('data-type="' + type.id + '"') && typeList.includes(type.name), "picker lists " + type.id);
+assert.equal(typeList.split("data-copy-name").length - 1, G.TYPES.length, "one copy-name button per type");
+assert.ok(element("brush-summary").textContent.includes("random valve type"), "default brush keeps double-click random");
+
+// Only one drawer opens at a time, with aria-expanded kept in sync.
+element("open-help").onclick();
+assert.equal(element("help-drawer").hidden, false);
+assert.equal(element("open-help").getAttribute("aria-expanded"), "true");
+element("open-valves").onclick();
+assert.equal(element("help-drawer").hidden, true);
+assert.equal(element("valve-drawer").hidden, false);
+element("close-valves").onclick();
+assert.equal(element("valve-drawer").hidden, true);
+assert.equal(element("open-valves").getAttribute("aria-expanded"), "false");
 
 // Resize with unchanged DPR must reuse cached scene canvases.
 const canvasesAfterBoot = calls.canvases;
@@ -267,6 +300,48 @@ for (const skin of ["glm", "combined", "gpt"]) {
 }
 c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, ctrlKey: true, detail: 1 });
 c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault() {} });
+
+// Valve brush picking through the delegated drawer handlers, clipboard copy
+// as text, and placement by a real click + double-click gesture.
+function pickType(type) {
+	element("valve-types").onclick({ target: { closest: sel => (sel === "[data-type]" ? { dataset: { type } } : null) } });
+}
+function pickDir(dir) {
+	element("dir-picker").onclick({ target: { closest: () => ({ dataset: { dir } }) } });
+}
+pickType("solid-elbow");
+pickDir("1");
+assert.ok(element("brush-summary").textContent.includes("solid elbow (ports E,S)"), "brush summary names type, ports and direction");
+assert.ok(element("brush-detail").textContent.includes("direction ↓ S"));
+element("copy-brush").onclick();
+assert.ok(copiedTexts.some(text => text.includes("solid elbow (ports E,S)")), "brush name copied as text");
+element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-name]" ? { dataset: { copyName: "hollow tee" } } : null) } });
+assert.ok(copiedTexts.includes("hollow tee"), "a type row copies just its name for chat");
+
+const cellX = 4.5 * G.S;
+const cellY = G.POUR + 2.5 * G.S;
+c.onpointermove({ clientX: cellX, clientY: cellY });
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
+frames.shift()((now += 16.7));
+const placedText = element("selected-valve").textContent;
+assert.ok(placedText.includes("solid elbow") && placedText.includes("ports E,S"), "double-click placed the picked type and direction, got: " + placedText);
+
+element("use-selected").onclick();
+assert.ok(element("brush-summary").textContent.includes("solid elbow"), "copy-to-brush loads the field valve");
+element("copy-selected").onclick();
+assert.ok(copiedTexts.some(text => text.includes("cell (5,3)") && text.includes("solid elbow")), "field valve copied as text");
+
+// With type and direction both "not change", a double-click gesture must
+// leave the valve exactly as it was: the first click's turn is undone.
+pickType("keep");
+pickDir("keep");
+assert.ok(element("brush-detail").textContent.includes("changes nothing"));
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
+frames.shift()((now += 16.7));
+assert.equal(element("selected-valve").textContent, placedText, "not change / not change double-click is a no-op");
+c.onkeydown({ key: "p", preventDefault() {} });
 
 
 element("force").value = "1.5";

@@ -957,19 +957,15 @@ const ValveSimulation = (() => {
 		sim.count = w;
 	}
 
-	function replaceValve(sim, index, random) {
+	// Rebuilds the valve in a cell as a catalogue type facing direction
+	// `quarter`. Only a type change rebuilds (and clears that cell's grains);
+	// a hollow replacement keeps the old chamber size when there is one.
+	function installValve(sim, index, type, quarter) {
 		const old = sim.layout.valves[index];
-		if (!old) return false;
-		const rnd = random || Math.random;
-		const choices = [];
-		for (const ports of G.SOLID_SHAPES) choices.push(["solid", ports]);
-		for (const ports of G.HOLLOW_SHAPES) choices.push(["hollow", ports]);
-		choices.push(["hollow", []]);
-		const eligible = choices.filter(c => c[0] !== old.kind || c[1].join() !== old.ports.join());
-		const choice = eligible[(rnd() * eligible.length) | 0];
 		clearValve(sim, index);
-		const v = G.makeValve(old.i, old.j, choice[0], choice[1], 0, G.RV * 0.53);
-		G.setAngle(v, Math.round(old.angle / HALF_PI) * HALF_PI);
+		const chamber = type.kind === "hollow" && !(old.kind === "hollow" && old.chamberR > 0) ? G.RV * 0.53 : old.chamberR;
+		const v = G.makeValve(old.i, old.j, type.kind, type.ports, 0, chamber);
+		G.setAngle(v, quarter * HALF_PI);
 		sim.layout.valves[index] = v;
 		sim.prevAngle[index] = sim.target[index] = v.angle;
 		sim.cos0[index] = v.cos;
@@ -980,7 +976,50 @@ const ValveSimulation = (() => {
 		sim.reach = G.drainReach(sim.layout);
 		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
 		sim.pressure = pressureFor(sim, sim.pressureMode);
-		return true;
+	}
+
+	function randomType(oldType, rnd) {
+		const eligible = G.TYPES.filter(type => type !== oldType);
+		return eligible[(rnd() * eligible.length) | 0];
+	}
+
+	// Places a brush on a cell: type is a G.TYPES id, "random" or null (not
+	// change); dir is a quarter 0-3, "random" or null (not change). Type and
+	// direction resolve independently, so the user can change either or both.
+	// A direction-only change turns the rotor and keeps its grains. Returns
+	// "replace", "turn", or false when nothing would change.
+	function placeValve(sim, index, brush, random) {
+		const old = sim.layout.valves[index];
+		if (!old || !brush) return false;
+		const oldType = G.typeOf(old);
+		if (!oldType) return false;
+		const rnd = random || Math.random;
+		let type = oldType;
+		if (brush.type === "random") type = randomType(oldType, rnd);
+		else if (brush.type) {
+			type = G.typeById(brush.type);
+			if (!type) return false;
+		}
+		const oldDir = G.orientationOf(old, G.quarterOf(sim.target[index]));
+		let dir = oldDir;
+		if (brush.dir === "random") dir = (rnd() * 4) | 0;
+		else if (brush.dir !== null && brush.dir !== undefined) {
+			if (!Number.isFinite(brush.dir)) return false;
+			dir = ((brush.dir % 4) + 4) % 4;
+		}
+		dir %= type.turns;
+		if (type !== oldType) {
+			installValve(sim, index, type, dir);
+			return "replace";
+		}
+		if (dir === oldDir) return false;
+		let delta = (dir - oldDir) & 3;
+		if (delta === 3) delta = -1;
+		return turn(sim, index, delta) ? "turn" : false;
+	}
+
+	function replaceValve(sim, index, random) {
+		return placeValve(sim, index, { type: "random", dir: null }, random) === "replace";
 	}
 
 	function fillValve(sim, index, color) {
@@ -1056,6 +1095,7 @@ const ValveSimulation = (() => {
 		setAirForce,
 		setPressure,
 		toggleInlet,
+		placeValve,
 		replaceValve,
 		fillValve,
 		seed,

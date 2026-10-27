@@ -324,6 +324,67 @@ function slopeAndEditing() {
 }
 slopeAndEditing();
 
+// Valve brush placement: type and direction resolve independently, a
+// direction-only change turns in place and keeps grains, and random
+// replacement never re-picks the same shape under a rotated port list.
+function valvePlacement() {
+	const layout = field({ "4,4": ["hollow", [0, 2], 12] });
+	const sim = S.create(layout, { turning: false });
+	const cell = 44;
+	const v0 = valve(layout, 4, 4);
+	assert.ok(S.addGrain(sim, v0.cx, v0.cy, 2.2, 0) >= 0);
+	assert.ok(S.addGrain(sim, 36, -20, 2.2, 1) >= 0);
+
+	assert.equal(S.placeValve(sim, cell, { type: null, dir: null }), false, "not change / not change is a no-op");
+	assert.equal(valve(layout, 4, 4), v0);
+	assert.equal(sim.count, 2);
+
+	assert.equal(S.placeValve(sim, cell, { type: null, dir: 1 }), "turn", "direction-only change turns");
+	assert.equal(valve(layout, 4, 4), v0, "a turn does not rebuild the valve");
+	assert.equal(sim.count, 2, "a turn keeps every grain");
+	assert.equal(G.orientationOf(v0, G.quarterOf(sim.target[cell])), 1);
+
+	assert.equal(S.placeValve(sim, cell, { type: "solid-elbow", dir: 2 }), "replace");
+	const v1 = valve(layout, 4, 4);
+	assert.notEqual(v1, v0);
+	assert.equal(G.typeOf(v1).id, "solid-elbow");
+	assert.equal(G.orientationOf(v1), 2);
+	assert.deepEqual(G.worldPorts(v1), [1, 2], "elbow at 180 degrees faces S,W");
+	assert.equal(sim.count, 1, "a type change clears only its own cell");
+	assert.equal(sim.purged, 1);
+
+	const draws = [0, 0.99];
+	assert.equal(S.placeValve(sim, cell, { type: "random", dir: "random" }, () => draws.shift()), "replace");
+	const v2 = valve(layout, 4, 4);
+	assert.equal(G.typeOf(v2).id, "solid-straight", "first random draw picks the first other type");
+	assert.equal(G.orientationOf(v2), 1, "random direction 270 degrees on a straight is the vertical");
+
+	assert.equal(S.placeValve(sim, cell, { type: "no-such-type", dir: null }), false);
+	assert.equal(S.placeValve(sim, -1, { type: "random", dir: null }), false);
+	assert.equal(S.placeValve(sim, cell, { type: null, dir: NaN }), false);
+	assert.equal(valve(layout, 4, 4), v2, "rejected placements change nothing");
+
+	assert.equal(S.placeValve(sim, cell, { type: "hollow-cross", dir: 0 }), "replace");
+	assert.equal(S.placeValve(sim, cell, { type: null, dir: "random" }, () => 0.5), false, "a cross has no other direction");
+
+	assert.equal(S.placeValve(sim, cell, { type: "hollow-straight", dir: null }), "replace");
+	const chamber = valve(layout, 4, 4).chamberR;
+	assert.ok(chamber > 0);
+	assert.equal(S.placeValve(sim, cell, { type: "hollow-elbow", dir: null }), "replace");
+	assert.equal(valve(layout, 4, 4).chamberR, chamber, "hollow to hollow keeps the chamber size");
+	conserved(sim, "valve placement");
+	runChecked(sim, 0.3, "placed valve");
+
+	const rotated = field({ "4,4": ["hollow", [1, 3], 12] });
+	const sim2 = S.create(rotated, { turning: false });
+	for (const draw of [0, 0.25, 0.5, 0.75, 0.99]) {
+		const before = G.typeOf(valve(rotated, 4, 4)).id;
+		assert.ok(S.replaceValve(sim2, cell, () => draw));
+		assert.notEqual(G.typeOf(valve(rotated, 4, 4)).id, before, "random replacement always changes the shape");
+	}
+}
+valvePlacement();
+
 // A rotating blind pocket: a one-port disc carrying a grain through a quarter
 // turn. The mouth shuts behind the grain, so the only thing that keeps it out of
 // metal is the disc carrying it.
