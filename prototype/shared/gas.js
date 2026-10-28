@@ -63,8 +63,21 @@ const ValveGas = (() => {
 	const GAS_MAX = 460;
 	const DRAG = 1.35;
 	const LIFT = 1.5;
+	// How far past an open port mouth a turning rotor still drags the corridor
+	// air: the wall velocity does not stop at the rim, it carries the slot's air
+	// into the housing.
+	const SWIRL_REACH = CELL * 1.5;
 	const RELAX = 0.2;
 	const CELL_MASS = 1;
+
+	// Gas cell -> valve index, static for the fixed grid. A cell's clearance and
+	// a face's conductance depend only on the valves they touch, so a rebuild can
+	// reuse everything whose valves have not turned.
+	const OWNER = new Int32Array(COUNT);
+	for (let gy = 0; gy < NY; gy++) {
+		const y = gy * CELL + CELL / 2 - G.POUR;
+		for (let gx = 0; gx < NX; gx++) OWNER[gy * NX + gx] = G.cellAt(gx * CELL + CELL / 2, y);
+	}
 
 	function index(x, y) {
 		let gx = (x / CELL) | 0;
@@ -96,6 +109,10 @@ const ValveGas = (() => {
 			fill: new Float32Array(size),
 			fillNow: new Uint16Array(size),
 			cond: new Float32Array(size),
+			// Open width of the right and down face as a fraction of the cell.
+			// A hand-built graph defaults to fully open; rebuild measures them.
+			apR: new Float32Array(size).fill(1),
+			apD: new Float32Array(size).fill(1),
 			gL: new Float32Array(size),
 			gR: new Float32Array(size),
 			gU: new Float32Array(size),
@@ -137,7 +154,8 @@ const ValveGas = (() => {
 	function link(f) {
 		const nx = f.nx;
 		const ny = f.ny;
-		for (let k = 0; k < f.size; k++) {
+		for (let n = 0; n < f.count; n++) {
+			const k = f.list[n];
 			const gx = k % nx;
 			const gy = (k / nx) | 0;
 			const face = f.face[k];
@@ -193,7 +211,9 @@ const ValveGas = (() => {
 	}
 
 	// Harmonic mean of the two cell permeabilities: a narrow seam or a packed
-	// cell is the resistance of the whole link, not of just one side of it.
+	// cell is the resistance of the whole link, not of just one side of it. The
+	// measured aperture of the shared face scales it again, so a port that is
+	// only a third open carries a third of the flow.
 	function conductance(f) {
 		const list = f.list;
 		const cond = f.cond;
@@ -208,10 +228,10 @@ const ValveGas = (() => {
 			const r = f.nR[k];
 			const u = f.nU[k];
 			const d = f.nD[k];
-			const gl = l === k ? 0 : 2 * c * cond[l] / (c + cond[l]);
-			const gr = r === k ? 0 : 2 * c * cond[r] / (c + cond[r]);
-			const gu = u === k ? 0 : 2 * c * cond[u] / (c + cond[u]);
-			const gd = d === k ? 0 : 2 * c * cond[d] / (c + cond[d]);
+			const gl = l === k ? 0 : 2 * c * cond[l] / (c + cond[l]) * f.apR[l];
+			const gr = r === k ? 0 : 2 * c * cond[r] / (c + cond[r]) * f.apR[k];
+			const gu = u === k ? 0 : 2 * c * cond[u] / (c + cond[u]) * f.apD[u];
+			const gd = d === k ? 0 : 2 * c * cond[d] / (c + cond[d]) * f.apD[k];
 			f.gL[k] = gl;
 			f.gR[k] = gr;
 			f.gU[k] = gu;
@@ -448,16 +468,119 @@ const ValveGas = (() => {
 		return delta;
 	}
 
-	// Endpoints must also be air cells. Sampling the whole link catches a thin
-	// rim that lies between the midpoint and either endpoint.
-	function openFace(layout, x, y, dx, dy) {
+	// Smallest clearance sampled along a straight link, i.e. the throat radius of
+	// the passage the link crosses. Clearance is 1-Lipschitz, so a wide middle
+	// bounds the whole link from below in one sample; a narrow link recurses
+	// until the samples are half the AIR_MIN disc, which catches a thin rim
+	// between two samples.
+	function throat(layout, x, y, dx, dy) {
 		const hx = dx * 0.5;
 		const hy = dy * 0.5;
 		const middle = G.airClearance(layout, x + hx, y + hy);
-		if (middle < AIR_MIN) return false;
 		const length = Math.max(Math.abs(dx), Math.abs(dy));
-		if (middle >= AIR_MIN + length * 0.5 || length <= AIR_MIN) return true;
-		return openFace(layout, x, y, hx, hy) && openFace(layout, x + hx, y + hy, hx, hy);
+		if (middle >= AIR_MIN + length * 0.5) return middle - length * 0.5;
+		if (length <= AIR_MIN) return middle;
+		const a = throat(layout, x, y, hx, hy);
+		const b = throat(layout, x + hx, y + hy, hx, hy);
+		return middle < a ? (middle < b ? middle : b) : a < b ? a : b;
+	}
+
+	// A passage narrower than half a cell still carries a proportional share of
+	// the face, so a closing port throttles the flow instead of switching it off.
+	function apertureOf(throatDepth) {
+		const width = (2 * throatDepth) / CELL;
+		return width > 1 ? 1 : width;
+	}
+
+	function openFace(layout, x, y, dx, dy) {
+		return throat(layout, x, y, dx, dy) >= AIR_MIN;
+	}
+
+	// Lateral offsets tried when the centre line is blocked, as fractions of the
+	// shared edge. A turning valve's seam aperture opens off-centre, between the
+	// two cell centres, and a centre-only sample reads that as a shut face.
+	const OFF_EDGE = [-0.44, -0.26, -0.09, 0.09, 0.26, 0.44];
+
+	// Clearance where an off-centre link crosses a rotor rim, or -1 when it does
+	// not cross it inside the link. A blocked link can still carry air only
+	// through a seam slot, and every slot sits on the rim circle, so the two
+	// exact crossings decide it. This is also the one sample a thin shut rim
+	// cannot slip through: the rim barrier is only AIR_MIN wide on each side.
+	function rimCrossing(layout, x, y, dx, dy, valve) {
+		const ax = x - valve.cx;
+		const ay = y - valve.cy;
+		const a = dx * dx + dy * dy;
+		const b = ax * dx + ay * dy;
+		const c = ax * ax + ay * ay - G.RV * G.RV;
+		const disc = b * b - a * c;
+		if (disc <= 0) return -1;
+		const root = Math.sqrt(disc);
+		let best = -1;
+		for (let k = 0; k < 2; k++) {
+			const t = (-b + (k === 0 ? -root : root)) / a;
+			if (t <= 0 || t >= 1) continue;
+			const v = G.airClearance(layout, x + dx * t, y + dy * t);
+			if (v > best) best = v;
+		}
+		return best;
+	}
+
+	// How much of the shared face carries air: 0 for metal or a shut rim, 1 when
+	// the centre line passes. A throttled link near a rim is already covered by
+	// the two cells' own openness, so this only measures what the centre line
+	// cannot see: a slot that opens off-centre. Only those faces pay for probes.
+	function faceAperture(layout, x, y, dx, dy) {
+		if (openFace(layout, x, y, dx, dy)) return 1;
+		const length = Math.max(Math.abs(dx), Math.abs(dy));
+		const horizontal = dx !== 0;
+		const owner = layout.valves[G.cellAt(x, y)];
+		const next = layout.valves[G.cellAt(x + dx, y + dy)];
+		let open = 0;
+		let best = 0;
+		let bestOffset = 0;
+		for (let s = 0; s < OFF_EDGE.length; s++) {
+			const offset = OFF_EDGE[s] * length;
+			const px = horizontal ? x : x + offset;
+			const py = horizontal ? y + offset : y;
+			let t = rimCrossing(layout, px, py, dx, dy, owner);
+			if (next !== owner) {
+				const other = rimCrossing(layout, px, py, dx, dy, next);
+				if (other > t) t = other;
+			}
+			if (t < AIR_MIN) continue;
+			open++;
+			if (t > best) {
+				best = t;
+				bestOffset = offset;
+			}
+		}
+		if (open === 0) return 0;
+		// A crossing sample only sees the rim; the lane also has to reach the slot
+		// through the housing and the cell, which the full link test confirms.
+		const lx = horizontal ? x : x + bestOffset;
+		const ly = horizontal ? y + bestOffset : y;
+		if (throat(layout, lx, ly, dx, dy) < AIR_MIN) return 0;
+		return (open / OFF_EDGE.length) * apertureOf(best);
+	}
+
+	// Aperture of the shared face k -> j, recomputed only when one of its two
+	// valves changed stamp. The cached value survives an unchanged machine, so a
+	// rebuild that only follows one rotor samples one cell block.
+	function faceCache(gas, layout, k, j, horizontal) {
+		const a = horizontal ? gas.stampRA : gas.stampDA;
+		const b = horizontal ? gas.stampRB : gas.stampDB;
+		const sa = gas.valStamp[OWNER[k]];
+		const sb = gas.valStamp[OWNER[j]];
+		if (a[k] === sa && b[k] === sb) return horizontal ? gas.apR[k] : gas.apD[k];
+		a[k] = sa;
+		b[k] = sb;
+		const gx = k % NX;
+		const gy = (k / NX) | 0;
+		const ap = faceAperture(layout, gx * CELL + CELL / 2, gy * CELL + CELL / 2 - G.POUR, horizontal ? CELL : 0, horizontal ? 0 : CELL);
+		// Store a closed face too: the stamp says this answer is current.
+		if (horizontal) gas.apR[k] = ap;
+		else gas.apD[k] = ap;
+		return ap;
 	}
 
 	function create(sim) {
@@ -466,6 +589,20 @@ const ValveGas = (() => {
 		gas.bandSide = new Uint8Array(COUNT);
 		gas.bandColumn = new Uint8Array(COUNT);
 		gas.bandCount = 0;
+		// Geometry cache: per-cell clearance and per-face aperture, each stamped
+		// with the valves it came from.
+		gas.clearAt = new Float64Array(COUNT);
+		gas.clearStamp = new Int32Array(COUNT);
+		gas.stampRA = new Int32Array(COUNT);
+		gas.stampRB = new Int32Array(COUNT);
+		gas.stampDA = new Int32Array(COUNT);
+		gas.stampDB = new Int32Array(COUNT);
+		gas.valAngle = new Float64Array(G.N * G.N);
+		gas.valMask = new Uint16Array(G.N * G.N);
+		gas.valChamber = new Float64Array(G.N * G.N);
+		gas.valStamp = new Int32Array(G.N * G.N);
+		gas.stamp = 0;
+		gas.layoutRef = null;
 		gas.pins = 0;
 		gas.sources = 0;
 		gas.vents = 0;
@@ -492,17 +629,55 @@ const ValveGas = (() => {
 	// not in the list at all: no potential, no velocity, no leak through a wall.
 	function rebuild(sim, gas) {
 		const layout = sim.layout;
+		const valves = layout.valves;
 		const air = gas.air;
 		const face = gas.face;
+		const clearAt = gas.clearAt;
+		const clearStamp = gas.clearStamp;
+		const valStamp = gas.valStamp;
+		// One stamp per valve whose angle or type changed. A cell reuses its
+		// clearance, and a face its aperture, while both of their valves keep the
+		// same stamp; a turned valve costs only its own 12x12 cells and faces.
+		const fresh = gas.layoutRef !== layout;
+		gas.layoutRef = layout;
+		gas.stamp++;
+		let dirty = fresh;
+		for (let k = 0; k < valves.length; k++) {
+			const v = valves[k];
+			// Type signature: a valve object carries its ports, not the type mask.
+			let mask = v.kind === "hollow" ? 0x100 : 0;
+			for (let p = 0; p < v.ports.length; p++) mask |= 1 << v.ports[p];
+			if (!fresh && v.angle === gas.valAngle[k] && mask === gas.valMask[k] && v.chamberR === gas.valChamber[k]) continue;
+			gas.valAngle[k] = v.angle;
+			gas.valMask[k] = mask;
+			gas.valChamber[k] = v.chamberR;
+			valStamp[k] = gas.stamp;
+			dirty = true;
+		}
+		// Nothing turned and nothing was replaced: the graph already describes it.
+		if (!dirty) return;
 		air.fill(0);
 		face.fill(0);
 		gas.count = 0;
 		for (let gy = 0; gy < NY; gy++) {
 			const y = gy * CELL + CELL / 2 - G.POUR;
 			for (let gx = 0; gx < NX; gx++) {
-				const clear = G.airClearance(layout, gx * CELL + CELL / 2, y);
-				if (clear < AIR_MIN) continue;
 				const k = gy * NX + gx;
+				const own = OWNER[k];
+				let clear;
+				if (clearStamp[k] === valStamp[own]) clear = clearAt[k];
+				else {
+					clear = G.airClearance(layout, gx * CELL + CELL / 2, y);
+					clearAt[k] = clear;
+					clearStamp[k] = valStamp[own];
+				}
+				if (clear < AIR_MIN) {
+					// Keep the per-cell arrays meaningful everywhere, not just on
+					// the air list, so an incremental rebuild equals a fresh one.
+					gas.active[k] = 0;
+					gas.open[k] = 0;
+					continue;
+				}
 				air[k] = 1;
 				gas.list[gas.count++] = k;
 				const open = clear / OPEN_CLEAR;
@@ -514,16 +689,18 @@ const ValveGas = (() => {
 			const k = list[n];
 			const gx = k % NX;
 			const gy = (k / NX) | 0;
-			const x = gx * CELL + CELL / 2;
-			const y = gy * CELL + CELL / 2 - G.POUR;
-			if (gx + 1 < NX && air[k + 1] && openFace(layout, x, y, CELL, 0)) {
-				face[k] |= R;
-				face[k + 1] |= L;
-			}
-			if (gy + 1 < NY && air[k + NX] && openFace(layout, x, y, 0, CELL)) {
-				face[k] |= D;
-				face[k + NX] |= U;
-			}
+			if (gx + 1 < NX && air[k + 1]) {
+				if (faceCache(gas, layout, k, k + 1, true) > 0) {
+					face[k] |= R;
+					face[k + 1] |= L;
+				}
+			} else gas.apR[k] = 0;
+			if (gy + 1 < NY && air[k + NX]) {
+				if (faceCache(gas, layout, k, k + NX, false) > 0) {
+					face[k] |= D;
+					face[k + NX] |= U;
+				}
+			} else gas.apD[k] = 0;
 		}
 		// Band cells are the reservoir mouths, outside the 10x10 field. Every air
 		// cell there is pinned by its column's inlet while that inlet is open.
@@ -537,7 +714,6 @@ const ValveGas = (() => {
 		link(gas);
 		components(gas);
 		conductance(gas);
-		const valves = layout.valves;
 		for (let k = 0; k < valves.length; k++) gas.angles[k] = valves[k].angle;
 		gas.settled = false;
 		gas.rebuilds++;
@@ -601,12 +777,23 @@ const ValveGas = (() => {
 		return changed;
 	}
 
+	// A point outside the rim sits in a housing corridor; the rotor reaches it
+	// only through an open seam, and only inside that seam's lateral span.
+	function mouthOpenAt(v, dx, dy) {
+		const horizontal = Math.abs(dx) > Math.abs(dy);
+		const s = horizontal ? (dx < 0 ? 2 : 0) : dy < 0 ? 3 : 1;
+		const gap = v.seam[s] - (horizontal ? Math.abs(dy) : Math.abs(dx));
+		return gap > AIR_MIN;
+	}
+
 	// Cell-centred velocity from the actual face fluxes plus the rigid swirl of
 	// a turning rotor disc: the wall velocity at this point is applied straight
 	// to the gas with no momentum state of its own, so rotation shows up in the
-	// flow without an inertia model and stops on the next mask tick. A sealed
-	// component has no reservoir and therefore no through-flow; its cells carry
-	// only the swirl of a rotor inside them.
+	// flow without an inertia model and stops on the next mask tick. Through an
+	// open port mouth the swirl fades out one cell into the corridor, so a
+	// turning rotor stirs the pipe its port opens onto, not only its chamber. A
+	// sealed component has no reservoir and therefore no through-flow; its cells
+	// carry only the swirl of a rotor inside them.
 	function velocity(sim, gas, snap) {
 		const p = gas.p;
 		const list = gas.list;
@@ -648,11 +835,19 @@ const ValveGas = (() => {
 				const vi = G.cellAt(cx, cy);
 				const om = omega[vi];
 				if (om !== 0) {
-					const dx = cx - valves[vi].cx;
-					const dy = cy - valves[vi].cy;
-					if (dx * dx + dy * dy < G.RV * G.RV) {
-						vx += -om * dy;
-						vy += om * dx;
+					const v = valves[vi];
+					const dx = cx - v.cx;
+					const dy = cy - v.cy;
+					const d2 = dx * dx + dy * dy;
+					let w = 0;
+					if (d2 < G.RV * G.RV) w = 1;
+					else if (mouthOpenAt(v, dx, dy)) {
+						const out = Math.sqrt(d2) - G.RV;
+						if (out < SWIRL_REACH) w = 1 - out / SWIRL_REACH;
+					}
+					if (w > 0) {
+						vx += -om * dy * w;
+						vy += om * dx * w;
 					}
 				}
 			}
@@ -877,6 +1072,7 @@ const ValveGas = (() => {
 		RELAX,
 		DIFFUSE_DT,
 		CELL_MASS,
+		SWIRL_REACH,
 	};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveGas;

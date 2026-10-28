@@ -319,11 +319,63 @@ for (let i = 0; i < turned.pressure.count; i++) {
 }
 assert.ok(moved > 20, `a rotor turn moves the field (${moved} cells)`);
 
+// ---- a turning machine keeps its air graph ------------------------------
+// A seam aperture opens off-centre, between the two cell centres, so the face
+// sampler has to look across the shared edge: a centre-only sample cut the
+// graph into pockets as soon as the rotors left their detents (all 100 valves at
+// 0.12 rad left 40 mouth-connected cells out of 1743).
+const aloft = S.create(G.createLayout(7), { turning: false });
+S.setPressure(aloft, "grid");
+function liveCells(field) {
+	let live = 0;
+	for (let n = 0; n < field.count; n++) {
+		const k = field.list[n];
+		if (field.active[k] && !field.pin[k]) live++;
+	}
+	return live;
+}
+const alignedLive = liveCells(aloft.pressure);
+const alignedComps = aloft.pressure.compCount;
+const recipes = [k => 0.11, k => G.hashUnit(7, k, 77) * 0.12];
+for (let r = 0; r < recipes.length; r++) {
+	for (let k = 0; k < aloft.layout.valves.length; k++) G.setAngle(aloft.layout.valves[k], recipes[r](k));
+	GAS.refresh(aloft, false);
+	const turnedLive = liveCells(aloft.pressure);
+	const turnedComps = aloft.pressure.compCount;
+	assert.ok(turnedLive > alignedLive * 0.9, `a small turn keeps the air graph (${turnedLive} vs ${alignedLive} cells)`);
+	assert.ok(turnedComps <= alignedComps * 1.15, `a small turn keeps the pockets whole (${turnedComps} vs ${alignedComps})`);
+}
+// ... but a rotor turned past its ports is still a wall, not a wider aperture.
+const shutPorts = S.create(G.createLayout(7), { turning: false });
+shutPorts.layout.valves[44] = G.makeValve(4, 4, "hollow", [0, 1, 2, 3], 0, G.RV * 0.8);
+S.setPressure(shutPorts, "grid");
+const shutValve = shutPorts.layout.valves[44];
+G.setAngle(shutValve, 0.35);
+GAS.refresh(shutPorts, false);
+assert.equal(shutValve.seam[0] + shutValve.seam[1] + shutValve.seam[2] + shutValve.seam[3], 0, "the rotor is turned past every port");
+assert.equal(shutPorts.pressure.active[GAS.index(shutValve.cx, shutValve.cy)], 0, "a rotor turned past its ports seals the chamber");
+
 // ---- rotation drives the gas with no inertia state ------------------------
 // A turning rotor drags the air in its disc the way the particle backend's
 // moving walls do, straight from omega: no momentum is stored, so the swirl
 // stops a few mask ticks after the rotor does, and no pressure boundary is
 // needed for it to exist.
+function shellSpeed(field, valve) {
+	let sum = 0;
+	let n = 0;
+	for (let i = 0; i < field.count; i++) {
+		const k = field.list[i];
+		const x = (k % field.nx) * field.cell + field.cell / 2;
+		const y = ((k / field.nx) | 0) * field.cell + field.cell / 2 - G.POUR;
+		const dx = x - valve.cx;
+		const dy = y - valve.cy;
+		const r = Math.hypot(dx, dy);
+		if (r < G.RV || r > G.RV + GAS.SWIRL_REACH || dx < 0) continue;
+		sum += Math.hypot(field.gx[k], field.gy[k]);
+		n++;
+	}
+	return n ? sum / n : 0;
+}
 const swirl = S.create(G.createLayout(7), { turning: false });
 S.setPressure(swirl, "grid");
 S.installValve(swirl, 44, G.typeById("hollow-cross"), 0, G.RV * 0.8);
@@ -363,10 +415,23 @@ swirl.omega[44] = -2.4;
 swirlSettle();
 const ccw = discTangential();
 assert.ok(ccw < -10, `the swirl follows the direction of rotation (${ccw.toFixed(0)} px/s)`);
+const corridor = shellSpeed(spun, swirl.layout.valves[44]);
+assert.ok(corridor > 5, `the swirl reaches the pipe outside an open port (${corridor.toFixed(1)} px/s)`);
 swirl.omega[44] = 0;
 swirlSettle();
 const stopped = discTangential();
 assert.ok(Math.abs(stopped) < Math.abs(cw) * 0.35, `the swirl stops with the rotor: no inertia state (${stopped.toFixed(1)} px/s)`);
+assert.ok(shellSpeed(spun, swirl.layout.valves[44]) < corridor * 0.35, "and the corridor stops with it");
+// A chamber with no ports cannot pass the swirl through its rim.
+const walled = S.create(G.createLayout(7), { turning: false });
+S.setPressure(walled, "grid");
+S.installValve(walled, 44, G.typeById("hollow-blank"), 0, G.RV * 0.8);
+setOpen(walled, I.TOP, false);
+setOpen(walled, I.BOTTOM, false);
+GAS.refresh(walled, true);
+walled.omega[44] = 2.4;
+for (let k = 0; k < 8; k++) S.settlePressure(walled, 1 / 30);
+assert.equal(shellSpeed(walled.pressure, walled.layout.valves[44]), 0, "a sealed chamber has no swirl outside its rim");
 
 // ---- occupancy and reciprocation ----------------------------------------
 const vacant = chamber(false);
@@ -438,8 +503,15 @@ function bench(mode, steps) {
 	for (let k = 0; k < steps; k++) S.step(s);
 	return (performance.now() - t0) / steps;
 }
-const offMs = bench(null, 400);
-const gridMs = bench("grid", 400);
+// Best of three: a scheduling hiccup on a loaded machine should not decide a
+// cost gate whose honest ratio sits at a little over four.
+function best(mode) {
+	let ms = Infinity;
+	for (let r = 0; r < 3; r++) ms = Math.min(ms, bench(mode, 400));
+	return ms;
+}
+const offMs = best(null);
+const gridMs = best("grid");
 assert.ok(gridMs < offMs * 6, `grid gas stays within budget (${gridMs.toFixed(3)} vs ${offMs.toFixed(3)} ms)`);
 console.log(
 	`OK gas: constant-pressure mouths (${gas().pins} cells), 1 connected component with a linear 0–1 gradient, ` +

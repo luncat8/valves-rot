@@ -1,0 +1,38 @@
+Aperture faces, cached geometry, swirl through the port mouth (Node v22.22.3)
+=============================================================================
+problem: the mask lost the air graph as soon as rotors left a detent
+  seed 7, all 100 valves at 0.113 rad: 1743 -> 40 mouth-connected cells, 78 -> 310 comps
+  seed 7, hash spread 0..0.12 rad:     1743 -> 1158 cells, 78 -> 109 comps
+  cause: each face was sampled on its centre line only; a seam slot opens off-centre
+  the 1.5 px reference for that geometry keeps 60.5% of the air on a mouth
+
+after (mask vs 1.5 px reference, mouth-connected share of the air)
+  seed 7    spin 0    60.5% | 54.6%  78 comps      seed 7    spin 0.12 60.5% | 54.4%  78
+  seed 7    spin 0.2  56.5% | 51.3%  93 comps      seed 7    spin 0.4  27.0% | 21.0% 188
+  seed 42   spin 0    57.3% | 51.2%  93 comps      seed 42   spin 0.2  37.5% | 30.9% 114
+  seed 1234 spin 0    62.6% | 57.0%  79 comps      seed 1234 spin 0.2  50.3% | 51.9%  98
+  the constant ~5 point gap at rest is the cell-area weighting, not lost links
+
+lanes (seed 7, spins 0 / 0.12 / 0.3 / 0.7)
+  18284 open faces, 195 carried by an off-centre lane, 0 without a lane that
+  crosses no metal at AIR_MIN
+
+front (cross machine, 95% of active cells within 0.02 of the steady field)
+  aligned 9 mask ticks (unchanged) | all valves at 0.12 rad: 12 ticks, 1 component
+  steady solves 37-48 sweeps, none at the 400-iteration cap
+
+rotation in the corridor (sealed machine, omega 2.4)
+  disc tangential mean 25 px/s (unchanged)
+  just outside an open port mouth 26.4 px/s; one reach (9 px) further 0.0
+  portless chamber: 0.0 px/s outside the rim
+
+cost
+  rebuild: 0.08 ms unchanged, 0.41 ms with one rotor turning, 2.9 ms with all 100
+  gas per 120 Hz step: off 0.19 / grid 0.88 ms (previous build, same harness: 0.19 / 0.98)
+  simulation-bench: grid 1.84 ms/60 Hz with 120 grains (previous build 2.02)
+
+picture (experiments/aperture-picture.cjs -> logs/grid-gas-aperture-0.2.png)
+  seed 7 layout, all 100 rotors at 0.113 rad, 200 mouths open, 24 mask ticks
+  previous commit a733b2d: 240 of 3511 air cells reach a mouth (6.8%), 310 components
+  working tree:            2098 of 3511 (59.8%), 78 components
+  1.5 px reference for the same geometry: 60.5% of the air reaches a mouth

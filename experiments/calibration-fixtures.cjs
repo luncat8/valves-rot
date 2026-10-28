@@ -177,6 +177,34 @@ const open = seamChain(3, 1);
 assert.ok(coarse.error < 1e-4 && fine.error < 1e-4, `serial-seam profile matches its analytical resistance (${coarse.error.toExponential(2)} / ${fine.error.toExponential(2)})`);
 assert.ok(fine.drop > open.drop * 2, "a narrow seam concentrates the pressure drop");
 
+// The measured face aperture is a serial resistance too: a chain whose fifth
+// of the links is a quarter-open face must show the same profile as one whose
+// cells are a quarter as conductive, so a closing port throttles the solve.
+function apertureChain(ap) {
+	const nx = 61;
+	const f = GAS.blankField(nx, 1, 6);
+	f.air.fill(1);
+	f.face.fill(15);
+	f.open.fill(1);
+	for (let k = 0; k < nx; k++) f.list[k] = k;
+	for (let k = 10; k < 22; k++) f.apR[k] = ap;
+	f.pin[0] = 2;
+	f.pin[nx - 1] = 1;
+	GAS.link(f);
+	GAS.components(f);
+	GAS.conductance(f);
+	GAS.steady(f, f.p);
+	return f;
+}
+const throttled = apertureChain(0.25);
+const fullBore = apertureChain(1);
+let apertureProfile = 0;
+const resistance = new Float64Array(throttled.nx);
+for (let k = 1; k < throttled.nx; k++) resistance[k] = resistance[k - 1] + 1 / throttled.gR[k - 1];
+for (let k = 0; k < throttled.nx; k++) apertureProfile = Math.max(apertureProfile, Math.abs(throttled.p[k] - (1 - resistance[k] / resistance[throttled.nx - 1])));
+assert.ok(apertureProfile < 1e-4, `a throttled face obeys its serial resistance (${apertureProfile.toExponential(2)})`);
+assert.ok(throttled.p[30] < fullBore.p[30] - 0.1, "a quarter-open face throttles the flow instead of switching it off");
+
 // A huge implicit step is stable and lands on the same equilibrium: pressure
 // never overshoots a constant-pressure boundary.
 const jump = seamChain(6, 1).f;
@@ -281,9 +309,81 @@ function runtimeRimWidth(angle) {
 assert.ok(runtimeRimWidth(0) > 0, "aligned seam admits grid faces");
 assert.equal(runtimeRimWidth(0.24), 0, "a shut rim cannot hide between face samples");
 
-// Compare every open runtime link to the geometry sweep over varied rotations.
+// The mask caches each cell's clearance and each face's aperture against the
+// valve that produced it, so a rebuild only re-samples what turned. An
+// incremental mask must be identical to one built from scratch at the same
+// angles — otherwise the cache would trade correctness for speed.
+function maskDiff(incremental, fresh) {
+	let diff = 0;
+	const nx = incremental.nx;
+	const ny = incremental.ny;
+	for (let k = 0; k < incremental.size; k++) {
+		if (incremental.air[k] !== fresh.air[k] || incremental.active[k] !== fresh.active[k]) diff++;
+		if (incremental.face[k] !== fresh.face[k]) diff++;
+		if (incremental.open[k] !== fresh.open[k]) diff++;
+		// Apertures are meaningful on a pair of air cells; a hand-built fixture
+		// graph defaults them to fully open, which a rebuilt field never does.
+		const gx = k % nx;
+		const gy = (k / nx) | 0;
+		if (incremental.air[k]) {
+			if (gx + 1 < nx && fresh.air[k + 1] && Math.abs(incremental.apR[k] - fresh.apR[k]) > 1e-6) diff++;
+			if (gy + 1 < ny && fresh.air[k + nx] && Math.abs(incremental.apD[k] - fresh.apD[k]) > 1e-6) diff++;
+		}
+	}
+	return diff;
+}
+let cacheDiff = 0;
+for (const seed of [7, 11, 42]) {
+	const machine = G.createLayout(seed);
+	const sim = S.create(machine, { turning: false });
+	S.setPressure(sim, "grid");
+	for (const step of [0.09, 0.17, 0.02, 0.31, 0.055, 0.5, 0.12]) {
+		for (let k = 0; k < machine.valves.length; k++) {
+			if ((k + seed) % 3 === ((step * 100) | 0) % 3 || k % 7 === 0) G.setAngle(machine.valves[k], G.hashUnit(seed, k, 91) * step);
+		}
+		GAS.refresh(sim, false);
+		const fresh = S.create(machine, { turning: false });
+		S.setPressure(fresh, "grid");
+		cacheDiff += maskDiff(sim.pressure, fresh.pressure);
+	}
+}
+assert.equal(cacheDiff, 0, "an incremental mask matches one built from scratch");
+// A replaced valve must invalidate its cached cells and faces.
+{
+	const machine = G.createLayout(42);
+	const sim = S.create(machine, { turning: false });
+	S.setPressure(sim, "grid");
+	G.setAngle(machine.valves[44], 0.21);
+	GAS.refresh(sim, false);
+	S.installValve(sim, 44, G.typeById("hollow-cross"), 0, G.RV * 0.8);
+	const fresh = S.create(machine, { turning: false });
+	S.setPressure(fresh, "grid");
+	assert.equal(maskDiff(sim.pressure, fresh.pressure), 0, "a replaced valve invalidates its cached geometry");
+}
+
+// Every open runtime link needs a real lane across its face. The centre line
+// answers most of them; a seam aperture that opens off-centre is carried by a
+// lateral lane, so a shut rim still cannot link two cells and no link may cross
+// metal along every lane of the face.
 const sweep = { x: 0, y: 0, hit: false };
+function laneHits(layout, x, y, dx, dy) {
+	G.sweep(layout, x, y, x + dx, y + dy, GAS.AIR_MIN, sweep);
+	return sweep.hit;
+}
+function openLane(layout, x, y, dx, dy) {
+	if (!laneHits(layout, x, y, dx, dy)) return true;
+	const cell = Math.abs(dx) || Math.abs(dy);
+	for (let q = -15; q <= 15; q++) {
+		const s = (q / 33) * cell;
+		if (Math.abs(s) > cell * 0.47) continue;
+		const ox = dx === 0 ? s : 0;
+		const oy = dy === 0 ? s : 0;
+		if (!laneHits(layout, x + ox, y + oy, dx, dy)) return true;
+	}
+	return false;
+}
 let links = 0;
+let offCentreLinks = 0;
 for (const seed of [7, 11, 42, 1234]) {
 	const machine = G.createLayout(seed);
 	const sim = S.create(machine, { turning: false });
@@ -296,24 +396,25 @@ for (const seed of [7, 11, 42, 1234]) {
 			const k = gy * field.nx + gx;
 			const x = (gx + 0.5) * cell;
 			const y = (gy + 0.5) * cell - G.POUR;
-			if (field.face[k] & 2) {
-				G.sweep(machine, x, y, x + cell, y, GAS.AIR_MIN, sweep);
-				assert.ok(!sweep.hit, `open horizontal face crosses metal: seed ${seed}, ${gx},${gy}`);
-				links++;
-			}
-			if (field.face[k] & 8) {
-				G.sweep(machine, x, y, x, y + cell, GAS.AIR_MIN, sweep);
-				assert.ok(!sweep.hit, `open vertical face crosses metal: seed ${seed}, ${gx},${gy}`);
+			const turns = (field.face[k] & 2 ? 1 : 0) + (field.face[k] & 8 ? 1 : 0);
+			for (let f = 0; f < turns; f++) {
+				const horizontal = field.face[k] & 2 && f === 0;
+				const dx = horizontal ? cell : 0;
+				const dy = horizontal ? 0 : cell;
+				if (laneHits(machine, x, y, dx, dy)) offCentreLinks++;
+				assert.ok(openLane(machine, x, y, dx, dy), `an open face has no lane across it: seed ${seed}, ${gx},${gy}`);
 				links++;
 			}
 		}
 	}
 }
 assert.ok(links > 15000, "validate a representative set of actual grid links");
+assert.ok(offCentreLinks > 20, `there are real off-centre seam links to validate (${offCentreLinks})`);
 
 console.log(
 	`OK calibration: ${ref.hits} wall hits, ${ref.pa.toFixed(4)} Pa vs ${theory.toFixed(4)} Pa theory; ` +
 	`steady serial seam errors ${coarse.error.toExponential(2)} / ${fine.error.toExponential(2)} (6/3 px); ` +
-	`aperture errors ${coarseError.toFixed(2)} / ${fineError.toFixed(2)} px; ${links} real faces clear; ` +
+	`aperture errors ${coarseError.toFixed(2)} / ${fineError.toFixed(2)} px; a quarter-open face throttles its link; ` +
+	`${links} real faces clear (${offCentreLinks} through an off-centre seam); ` +
 	`closed wall isolates both halves and a pinless half keeps its air. The grid is a conservative relative pressure.`,
 );
