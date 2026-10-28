@@ -1,0 +1,47 @@
+Pressure propagation, Node v22.22.3, Linux x64, Xeon 2.60 GHz (2 CPUs)
+========================================================================
+Moving seams sampled at 120 Hz; still relaxation at 30 Hz. Transient solve is
+one elapsed-time-scaled implicit step, IC(0)-PCG capped at 16 iterations.
+
+Correctness (pressure-propagation-fixtures.cjs)
+  isolated casing: next-tick transfer, no through-metal leak, conserved air
+  short fast turn: minimum 0.571 pressure in the receiving casing; both turn
+    directions and all four 30 Hz clock phases; connections close immediately
+  all 10 ported valve types transfer on their opening tick; a 720-angle seam
+    sweep found minimum 0.393 rad linked openings vs 0.126 rad/tick max speed
+  high/low reservoir openings, zero-time and paused settling, elapsed-time
+    scaling, rotating sealed-air conservation, display-to-network occupancy OK
+  240 sealed speed-3 ticks: seeds 7/42 drift <0.000067 total pressure
+  calibration: 500 sampled seam links clear, serial errors 2.98e-7 / 5.96e-7
+
+Sequential whole simulation (simulation-bench.cjs, ms per 60 Hz frame)
+  grains  turning  off    grid   particles
+    120    false   0.86   1.68     3.41
+    120     true   0.98   3.59     3.70
+    500     true   3.56   6.22     6.21
+   1000     true   7.11   9.90     9.82
+  gas-fixtures: off 0.191 vs grid 1.768 ms per 120 Hz step; limit
+    max(3 ms, off * 12), best of three 400-step runs
+
+Before/after comparison (same sandbox, ms per 120 Hz step; two 400-step runs
+following 120 warmup steps, reversed measurement order). Before = c2078e3.
+  scenario             before        after
+  seeded sim, speed 3  0.896/0.808   2.455/2.374 (69 grains, 100% auto)
+  one random rotor     0.184/0.182   0.899/0.812 (gas only)
+  all random rotors    0.336/0.362   1.662/1.619 (gas only)
+  all cross rotors     0.776/0.668   2.313/2.356 (gas only)
+  Gas-only cases set angles each tick at 0.01 rad/tick; before did not update
+  seams at this cadence or diffuse isolated pockets, so it did less work.
+
+front-probe, connected cross, % within 0.02 of steady by 30 Hz step:
+  dt=1200: 28 28 36 53 84 100 (initial sealed gradient now relaxes)
+  serpentine dt=2400: settled at tick 121, no cap hits
+aperture-probe: 2031 seam links across four angles, 0 blocked; rebuild
+  unchanged 0.498 ms, one rotor 0.468 ms, all 100 1.645 ms
+
+Headless Chromium 153, real file:// shared page, speed 3, 90% auto:
+  UI reported 60 fps; 183515 canvas pixels changed when overlay toggled;
+  no page/console errors; sealed casing transfer 0.499 on next tick;
+  fast rotating port first-tick transfer 0.362, receiving casing 0.571;
+  seeded speed-3 whole simulation 3.05 ms per 120 Hz step in browser.
+Hardware and page rendering load affect timings; these are not FPS guarantees.

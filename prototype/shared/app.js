@@ -926,8 +926,7 @@
 				syncGameUI();
 			}
 		} else {
-			// The air field only answers the mouths, so a paused page still lets it
-			// settle while the grains stay frozen.
+			// A paused page still lets the air field settle while grains stay frozen.
 			S.settlePressure(sim, dt);
 		}
 		drawFrame(false);

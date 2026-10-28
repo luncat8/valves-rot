@@ -267,7 +267,7 @@ for (let side = 0; side < 2; side++) {
 }
 assert.ok(mainTexts.includes("eq. Pa"), "the ramp still describes the trapped air");
 assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent · all mouths sealed");
-// The overlay keeps drawing the frozen pressure instead of hiding the field.
+// The overlay keeps drawing trapped pressure instead of hiding the field.
 for (let i = 0; i < 20; i++) {
 	mainDrawImages.length = 0;
 	frames.shift()((now += 16.7));

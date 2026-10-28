@@ -278,7 +278,7 @@ function testQuestLifecycle() {
 }
 
 // 6. Pressure quest: auto-enables Grid gas, opens an air route to both mouth
-// bands, starts uncommitted, and freezes (rather than repaints) when sealed.
+// bands, and starts uncommitted. Sealing the mouths conserves the trapped air.
 function testPressureQuest() {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
@@ -306,17 +306,33 @@ function testPressureQuest() {
 	assert.ok(pq.threshold > 0 && pq.threshold < 1, "the target is fitted to a reachable pressure");
 	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "spawned pressure quest requires player action");
 
-	// Sealing every mouth must not recolor the machine: with no constant-pressure
-	// boundary the air simply holds, so the quest cannot advance.
+	// Sealing the mouths must not repaint the field or create air. Connected
+	// pockets can still redistribute their existing pressure over time.
+	const beforeSeal = Float32Array.from(sim.pressure.p);
 	for (let k = 0; k < 2 * G.N; k++) if (sim.inlets.open[k]) S.toggleInlet(sim, k, false);
-	const frozen = Float32Array.from(sim.pressure.p);
+	assert.deepEqual(sim.pressure.p, beforeSeal, "sealing the mouths does not repaint pressure");
+	const net = sim.pressure.net;
+	let beforeAir = 0;
+	for (let n = 0; n < net.count; n++) beforeAir += net.p[net.list[n]];
 	GAS.refresh(sim);
 	runGame(sim, game, 0.4);
-	let moved = 0;
-	for (let k = 0; k < frozen.length; k++) if (Math.abs(frozen[k] - sim.pressure.p[k]) > 1e-6) moved++;
+	let afterAir = 0;
+	for (let n = 0; n < net.count; n++) afterAir += net.p[net.list[n]];
 	assert.equal(sim.pressure.pins, 0, "every mouth is sealed");
-	assert.equal(moved, 0, "a sealed machine keeps its pressure pattern");
-	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a frozen field never satisfies a pressure quest");
+	assert.ok(Math.abs(afterAir - beforeAir) < 0.01, "the sealed network conserves its air");
+	assert.equal(game.players[0].completed, 0, "the quest cannot finish before its hold time");
+
+	// An unfavorable uniform sealed field is stable without assuming that a
+	// nonuniform sealed gradient must freeze. It must not satisfy the quest even
+	// after the full hold interval.
+	const unfavorable = pq.op === ">" ? 0 : 1;
+	for (let n = 0; n < net.count; n++) net.p[net.list[n]] = unfavorable;
+	GAS.refresh(sim);
+	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "unfavorable pressure does not meet the target");
+	runGame(sim, game, pq.holdNeed + 0.2);
+	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a uniform sealed field stays unfavorable");
+	assert.equal(game.players[0].completed, 0, "unfavorable pressure held past the window cannot finish the quest");
+	assert.equal(game.players[0].questId, pq.id, "the pressure quest remains active");
 
 	// The bots' recipe: open the favourable band, keep one far mouth of the other
 	// band open as a reference. The pressure front then reaches the bottle.
@@ -331,8 +347,10 @@ function testPressureQuest() {
 		if (!!sim.inlets.open[opp] !== (c === far)) S.toggleInlet(sim, opp, false);
 	}
 	assert.ok(sim.pressure.pins > 0, "the recipe reopens constant-pressure mouths");
-	runGame(sim, game, 2.4);
-	assert.equal(game.players[0].completed, 1, "pressure quest completes once the front arrives");
+	runGame(sim, game, 0.5);
+	assert.equal(game.players[0].completed, 0, "an arriving front cannot skip the hold window");
+	runGame(sim, game, 1.9);
+	assert.equal(game.players[0].completed, 1, "pressure quest completes once the front arrives and holds");
 	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "pressure bottle seals to solid blank");
 	conserved(sim, "pressure quest");
 }

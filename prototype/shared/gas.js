@@ -8,11 +8,11 @@
 // Both kinds of link are checked with a small clearance disc, so no edge can
 // cut through metal, and a narrowing seam throttles its links continuously.
 //
-// The 30 Hz mask clock rebuilds rotation-dependent links. Boundary or topology
-// changes schedule one immediate transient step on the next fixed simulation
-// tick; subsequent solves use the mask cadence, with no geometry sampling. Open
-// mouths outside the field are Dirichlet cells; a component without one keeps
-// its air. Pressure is a normalized relative quantity, velocity is the actual
+// Turning valves refresh their seam links on each fixed simulation tick. Still
+// fields diffuse at 30 Hz, while boundary and topology changes start a step on
+// the next tick. Open mouths outside the field are Dirichlet cells; isolated
+// components redistribute their air without exchanging it with other pockets.
+// Pressure is a normalized relative quantity, velocity is the actual
 // face flux plus the rigid swirl of a turning rotor (no inertia state), and
 // packed cells throttle the links through them. A regular texel grid remains
 // only as the display, grain-coupling and public index()/p/air projection.
@@ -53,7 +53,7 @@ const ValveGas = (() => {
 	const D = 8;
 
 	const MASK_DT = 1 / 30;
-	const ANGLE_EPS = 0.012;
+	const ANGLE_EPS = 1e-9;
 	const AIR_MIN = 0.75;
 	const OPEN_MIN = 0.12;
 	const FILL_COST = 3;
@@ -140,6 +140,12 @@ const ValveGas = (() => {
 			gw: nb ? new Float32Array(size * nb) : null,
 			comp: new Int32Array(size),
 			compPinned: new Uint8Array(size),
+			compDynamic: new Uint8Array(size),
+			compMin: new Float32Array(size),
+			compMax: new Float32Array(size),
+			compDelta: new Float64Array(size),
+			compTotal: new Float64Array(size),
+			compSize: new Uint32Array(size),
 			active: new Uint8Array(size),
 			queue: new Int32Array(size),
 			list: new Int32Array(size),
@@ -158,6 +164,12 @@ const ValveGas = (() => {
 			pcgB: new Float64Array(size),
 			pcgDiag: new Float64Array(size),
 			pcgIC: new Float64Array(size),
+			pcgInvIC: new Float64Array(size),
+			pcgStart: new Int32Array(size + 1),
+			pcgSplit: new Int32Array(size),
+			pcgNbr: nb ? new Int32Array(size * nb) : null,
+			pcgWeight: nb ? new Float32Array(size * nb) : null,
+			pcgFactor: nb ? new Float64Array(size * nb) : null,
 			unknowns: new Int32Array(size),
 			solves: 0,
 			pcgIters: 0,
@@ -251,7 +263,7 @@ const ValveGas = (() => {
 	}
 
 	// Flood fill the open-edge graph. A component containing a mouth can
-	// exchange air with a reservoir; the rest hold whatever pressure they have.
+	// exchange air with a reservoir; other components conserve their own air.
 	function components(f) {
 		const comp = f.comp;
 		const list = f.list;
@@ -298,66 +310,143 @@ const ValveGas = (() => {
 		}
 	}
 
+	// Uniform components need no work, but a newly joined pocket with different
+	// pressures must diffuse even if it has no reservoir boundary.
+	function markDynamic(f) {
+		const low = f.compMin;
+		const high = f.compMax;
+		const dynamic = f.compDynamic;
+		low.fill(1, 0, f.compCount);
+		high.fill(0, 0, f.compCount);
+		dynamic.fill(0, 0, f.compCount);
+		for (let n = 0; n < f.count; n++) {
+			const k = f.list[n];
+			const c = f.comp[k];
+			const p = f.pin[k] ? pinnedValue(f, k) : f.prev[k];
+			if (p < low[c]) low[c] = p;
+			if (p > high[c]) high[c] = p;
+		}
+		let count = 0;
+		for (let c = 0; c < f.compCount; c++) {
+			if (high[c] - low[c] <= 1e-7) continue;
+			dynamic[c] = 1;
+			count++;
+		}
+		return count;
+	}
+
+	// Iteration limits and clamping can otherwise create or remove air from an
+	// isolated component. Correct its residual in proportion to available slack,
+	// preserving both its previous sum and the pressure bounds.
+	function conserveIsolated(f, out) {
+		const delta = f.compDelta;
+		const total = f.compTotal;
+		const size = f.compSize;
+		delta.fill(0, 0, f.compCount);
+		total.fill(0, 0, f.compCount);
+		size.fill(0, 0, f.compCount);
+		for (let n = 0; n < f.count; n++) {
+			const k = f.list[n];
+			const c = f.comp[k];
+			if (f.active[k] || !f.compDynamic[c]) continue;
+			delta[c] += f.prev[k] - out[k];
+			total[c] += out[k];
+			size[c]++;
+		}
+		for (let n = 0; n < f.count; n++) {
+			const k = f.list[n];
+			const c = f.comp[k];
+			if (f.active[k] || !f.compDynamic[c] || delta[c] === 0) continue;
+			const p = out[k];
+			const slack = delta[c] > 0 ? size[c] - total[c] : total[c];
+			if (slack <= 0) continue;
+			out[k] = p + delta[c] * (delta[c] > 0 ? 1 - p : p) / slack;
+		}
+	}
+
 	function pinnedValue(f, k) {
 		return f.pin[k] === 2 ? 1 : 0;
 	}
 
-	// A x = (mass + w*gsum) x - w * sum(g * x_neighbour), fused with a dot
-	// product. Only the compact unknown list is visited; pinned mouths are
-	// eliminated from the operator and contribute through the right-hand side.
-	function matvec(f, src, dst, w, mass, nu, dotv) {
+	// Compact the unknown-to-unknown edges once per solve. The two IC sweeps
+	// then need neither pin/order checks nor divisions on every iteration.
+	function prepareOperator(f, w, nu) {
 		const uk = f.unknowns;
+		const diag = f.pcgDiag;
+		const inv = f.pcgInvIC;
+		const start = f.pcgStart;
+		const split = f.pcgSplit;
+		const adj = f.pcgNbr;
+		const weight = f.pcgWeight;
+		const factor = f.pcgFactor;
 		const nbr = f.nbr;
 		const gw = f.gw;
 		const nb = f.slots;
-		let dot = 0;
+		for (let i = 0; i < nu; i++) inv[uk[i]] = 1 / f.pcgIC[uk[i]];
+		let used = 0;
 		for (let i = 0; i < nu; i++) {
 			const k = uk[i];
 			const e0 = k * nb;
-			let s = 0;
-			for (let m = 0; m < f.nbrCount[k]; m++) {
-				const e = e0 + m;
-				s += gw[e] * src[nbr[e]];
+			const end = e0 + f.nbrCount[k];
+			start[i] = used;
+			for (let e = e0; e < end; e++) {
+				const j = nbr[e];
+				if (j >= k || diag[j] <= 0 || gw[e] <= 0) continue;
+				adj[used] = j;
+				weight[used] = gw[e];
+				factor[used++] = w * gw[e] * inv[j];
 			}
-			const v = (mass + w * f.gsum[k]) * src[k] - w * s;
+			split[i] = used;
+			for (let e = e0; e < end; e++) {
+				const j = nbr[e];
+				if (j <= k || diag[j] <= 0 || gw[e] <= 0) continue;
+				adj[used] = j;
+				weight[used] = gw[e];
+				factor[used++] = w * gw[e] * inv[k];
+			}
+		}
+		start[nu] = used;
+	}
+
+	// Pinned mouths are eliminated and contribute through the right-hand side.
+	function matvec(f, src, dst, w, nu, dotv) {
+		const uk = f.unknowns;
+		const start = f.pcgStart;
+		const nbr = f.pcgNbr;
+		const weight = f.pcgWeight;
+		const diag = f.pcgDiag;
+		let dot = 0;
+		for (let i = 0; i < nu; i++) {
+			const k = uk[i];
+			let s = 0;
+			for (let e = start[i]; e < start[i + 1]; e++) s += weight[e] * src[nbr[e]];
+			const v = diag[k] * src[k] - w * s;
 			dst[k] = v;
 			if (dotv) dot += dotv[k] * v;
 		}
 		return dot;
 	}
 
-	// IC(0): the factor shares the graph's edges and is exact along a 1-D pipe,
-	// so a front crosses a long corridor at the physical rate of the step
-	// instead of crawling at one cell per iteration.
-	function applyIC(f, src, dst, w, nu) {
+	// IC(0) is exact along a 1-D pipe, so a front does not crawl one cell per
+	// iteration. The compact edges are ordered into lower and upper sweeps.
+	function applyIC(f, src, dst, nu) {
 		const uk = f.unknowns;
-		const nbr = f.nbr;
-		const gw = f.gw;
-		const ic = f.pcgIC;
-		const pin = f.pin;
-		const diag = f.pcgDiag;
-		const nb = f.slots;
+		const start = f.pcgStart;
+		const split = f.pcgSplit;
+		const nbr = f.pcgNbr;
+		const factor = f.pcgFactor;
+		const inv = f.pcgInvIC;
 		for (let i = 0; i < nu; i++) {
 			const k = uk[i];
-			const e0 = k * nb;
 			let s = src[k];
-			for (let m = 0; m < f.nbrCount[k]; m++) {
-				const e = e0 + m;
-				const j = nbr[e];
-				if (j < k && !pin[j] && diag[j] > 0) s += w * gw[e] / ic[j] * dst[j];
-			}
-			dst[k] = s / ic[k];
+			for (let e = start[i]; e < split[i]; e++) s += factor[e] * dst[nbr[e]];
+			dst[k] = s * inv[k];
 		}
 		for (let i = nu - 1; i >= 0; i--) {
 			const k = uk[i];
-			const e0 = k * nb;
 			let s = dst[k];
-			for (let m = 0; m < f.nbrCount[k]; m++) {
-				const e = e0 + m;
-				const j = nbr[e];
-				if (j > k && !pin[j] && diag[j] > 0) s += w * gw[e] / ic[k] * dst[j];
-			}
-			dst[k] = s / ic[k];
+			for (let e = split[i]; e < start[i + 1]; e++) s += factor[e] * dst[nbr[e]];
+			dst[k] = s * inv[k];
 		}
 	}
 
@@ -377,12 +466,22 @@ const ValveGas = (() => {
 		const b = f.pcgB;
 		const diag = f.pcgDiag;
 		const prev = f.prev;
+		if (mass > 0 && !markDynamic(f)) {
+			for (let n = 0; n < f.count; n++) {
+				const k = list[n];
+				if (pin[k]) out[k] = pinnedValue(f, k);
+			}
+			f.pcgIters = 0;
+			f.pcgResidual = 0;
+			return;
+		}
 		let nu = 0;
 		let scale = 1;
 		for (let n = 0; n < f.count; n++) {
 			const k = list[n];
 			x[k] = r[k] = z[k] = d[k] = q[k] = b[k] = diag[k] = f.pcgIC[k] = 0;
-			if (!active[k] || pin[k] || f.gsum[k] <= 0) continue;
+			if (pin[k] || f.gsum[k] <= 0) continue;
+			if (mass > 0 ? !f.compDynamic[f.comp[k]] : !active[k]) continue;
 			uk[nu++] = k;
 			diag[k] = mass + w * f.gsum[k];
 			x[k] = out[k];
@@ -408,14 +507,15 @@ const ValveGas = (() => {
 			const ab = Math.abs(b[k]);
 			if (ab > scale) scale = ab;
 		}
-		matvec(f, x, q, w, mass, nu, null);
+		prepareOperator(f, w, nu);
+		matvec(f, x, q, w, nu, null);
 		const tol = PCG_TOL * scale;
 		let rz = 0;
 		for (let i = 0; i < nu; i++) {
 			const k = uk[i];
 			r[k] = b[k] - q[k];
 		}
-		applyIC(f, r, z, w, nu);
+		applyIC(f, r, z, nu);
 		for (let i = 0; i < nu; i++) {
 			const k = uk[i];
 			d[k] = z[k];
@@ -425,7 +525,7 @@ const ValveGas = (() => {
 		let residual = 0;
 		if (rz > 0) {
 			for (; iters < limit; iters++) {
-				const dq = matvec(f, d, q, w, mass, nu, d);
+				const dq = matvec(f, d, q, w, nu, d);
 				if (!(dq > 0)) break;
 				const alpha = rz / dq;
 				residual = 0;
@@ -437,7 +537,7 @@ const ValveGas = (() => {
 					if (ar > residual) residual = ar;
 				}
 				if (residual < tol) break;
-				applyIC(f, r, z, w, nu);
+				applyIC(f, r, z, nu);
 				let rzNext = 0;
 				for (let i = 0; i < nu; i++) {
 					const k = uk[i];
@@ -457,10 +557,11 @@ const ValveGas = (() => {
 				out[k] = pinnedValue(f, k);
 				continue;
 			}
-			if (!active[k] || diag[k] <= 0) continue;
+			if (diag[k] <= 0) continue;
 			const v = x[k];
 			out[k] = v < 0 ? 0 : v > 1 ? 1 : v;
 		}
+		if (mass > 0) conserveIsolated(f, out);
 		f.pcgIters = iters;
 		f.pcgResidual = residual;
 		f.solves++;
@@ -557,7 +658,7 @@ const ValveGas = (() => {
 		let delta = 0;
 		for (let n = 0; n < net.count; n++) {
 			const k = net.list[n];
-			if (!net.active[k] || net.pin[k]) continue;
+			if (net.pin[k]) continue;
 			const d = Math.abs(net.p[k] - net.prev[k]);
 			if (d > delta) delta = d;
 		}
@@ -584,7 +685,7 @@ const ValveGas = (() => {
 		let delta = 0;
 		for (let n = 0; n < f.count; n++) {
 			const k = f.list[n];
-			if (!f.active[k] || f.pin[k]) continue;
+			if (f.pin[k]) continue;
 			const d = Math.abs(f.p[k] - f.prev[k]);
 			if (d > delta) delta = d;
 		}
@@ -648,6 +749,7 @@ const ValveGas = (() => {
 		gas.inletVersion = -1;
 		gas.clock = 0;
 		gas.maskClock = 0;
+		gas.solveClock = 0;
 		gas.updates = 0;
 		gas.rebuilds = 0;
 		gas.drags = 0;
@@ -657,10 +759,8 @@ const ValveGas = (() => {
 		rebuild(sim, gas);
 		applyPins(sim, gas);
 		steady(gas, gas.p);
-		gas.fastPending = false;
 		velocity(sim, gas, true);
 		measure(gas);
-		gas.settled = true;
 		return gas;
 	}
 
@@ -1167,7 +1267,7 @@ const ValveGas = (() => {
 		gas.inletVersion = inlets.version;
 		gas.settled = false;
 		gas.fastPending = true;
-		// The pin set changes which components solve, so refresh the projection.
+		// Project which components can reach a reservoir for display and probes.
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
 			const node = gas.map[k];
@@ -1188,8 +1288,9 @@ const ValveGas = (() => {
 			const y = sim.y[k];
 			if (y < 0 || y > G.SIZE) continue;
 			const cell = index(sim.x[k], y);
-			const node = gas.air[cell] ? gas.map[cell] : sampleCell(gas, sim.x[k], y);
-			if (node < 0) continue;
+			const sample = gas.air[cell] ? cell : sampleCell(gas, sim.x[k], y);
+			if (sample < 0) continue;
+			const node = gas.map[sample];
 			if (now[node] < 65535) now[node]++;
 		}
 		let changed = false;
@@ -1242,25 +1343,23 @@ const ValveGas = (() => {
 			const k = net.list[n];
 			let vx = 0;
 			let vy = 0;
-			if (net.active[k]) {
-				const e0 = k * nb;
-				const c = p[k];
-				for (let m = 0; m < net.nbrCount[k]; m++) {
-					const e = e0 + m;
-					const g = net.gw[e];
-					if (g <= 0) continue;
-					const j = net.nbr[e];
-					const dx = net.wx[j] - net.wx[k];
-					const dy = net.wy[j] - net.wy[k];
-					const len = Math.sqrt(dx * dx + dy * dy);
-					if (len < 0.01) continue;
-					const q = g * (c - p[j]) / len;
-					vx += q * dx;
-					vy += q * dy;
-				}
-				vx *= FLOW_SCALE;
-				vy *= FLOW_SCALE;
+			const e0 = k * nb;
+			const c = p[k];
+			for (let m = 0; m < net.nbrCount[k]; m++) {
+				const e = e0 + m;
+				const g = net.gw[e];
+				if (g <= 0) continue;
+				const j = net.nbr[e];
+				const dx = net.wx[j] - net.wx[k];
+				const dy = net.wy[j] - net.wy[k];
+				const len = Math.sqrt(dx * dx + dy * dy);
+				if (len < 0.01) continue;
+				const q = g * (c - p[j]) / len;
+				vx += q * dx;
+				vy += q * dy;
 			}
+			vx *= FLOW_SCALE;
+			vy *= FLOW_SCALE;
 			if (spinning) {
 				const t = net.owner[k];
 				const om = omega[t];
@@ -1322,27 +1421,21 @@ const ValveGas = (() => {
 		gas.mean = gas.count ? sum / gas.count : 0;
 	}
 
-	function update(sim, gas, snap, force, elapsed) {
+	function update(sim, gas, elapsed) {
 		const velocityElapsed = gas.settled ? MASK_DT : elapsed;
 		const changed = measureCost(sim, gas);
-		if (snap) {
-			steady(gas, gas.p);
-			gas.settled = true;
-			gas.fastPending = false;
-		} else if (force || changed || !gas.settled || gas.fastPending) {
-			// Scale the immediate transient step by elapsed time; regular mask
-			// updates retain the original per-interval diffusion strength.
-			const dt = elapsed > 0 ? DIFFUSE_DT * Math.min(elapsed, MASK_DT) / MASK_DT : DIFFUSE_DT;
-			gas.settled = diffuse(gas, dt) < SETTLE_TOL;
+		if (changed || !gas.settled || gas.fastPending) {
+			const fraction = Math.min(elapsed, MASK_DT) / MASK_DT;
+			gas.settled = diffuse(gas, DIFFUSE_DT * fraction) < SETTLE_TOL * fraction;
 			gas.fastPending = false;
 		}
-		velocity(sim, gas, snap, velocityElapsed);
+		velocity(sim, gas, false, velocityElapsed);
 		measure(gas);
 		gas.updates++;
 	}
 
 	function maybeSolve(sim, gas) {
-		if (gas.clock - gas.maskClock + 1e-9 < MASK_DT) return false;
+		const maskTick = gas.clock - gas.maskClock + 1e-9 >= MASK_DT;
 		const valves = sim.layout.valves;
 		let moved = false;
 		for (let k = 0; k < valves.length; k++) {
@@ -1354,12 +1447,15 @@ const ValveGas = (() => {
 		if (moved) {
 			rebuild(sim, gas);
 			applyPins(sim, gas);
-		}
-		update(sim, gas, false, moved, MASK_DT);
-		// Keep the tick phase instead of snapping to the frame clock.
+		} else if (gas.inletVersion !== sim.inlets.version) applyPins(sim, gas);
+		if (!maskTick && !gas.fastPending) return;
+		const elapsed = gas.clock - gas.solveClock;
+		if (!(elapsed > 0)) return;
+		update(sim, gas, elapsed);
+		gas.solveClock = gas.clock;
+		if (!maskTick) return;
 		gas.maskClock += MASK_DT;
 		if (gas.clock - gas.maskClock > 2 * MASK_DT) gas.maskClock = gas.clock;
-		return true;
 	}
 
 	// A grain resting on a wall sits in a texel whose centre is metal, so the
@@ -1454,11 +1550,7 @@ const ValveGas = (() => {
 		const gas = sim.pressure;
 		rebuild(sim, gas);
 		applyPins(sim, gas);
-		if (snap) {
-			steady(gas, gas.p);
-			gas.fastPending = false;
-		}
-		gas.settled = !!snap;
+		if (snap) steady(gas, gas.p);
 		velocity(sim, gas, !!snap);
 		measure(gas);
 		gas.updates++;
@@ -1478,27 +1570,13 @@ const ValveGas = (() => {
 	function settle(sim, dt) {
 		const gas = sim.pressure;
 		gas.clock += dt;
-		const maskTick = maybeSolve(sim, gas);
-		if (gas.inletVersion !== sim.inlets.version) {
-			applyPins(sim, gas);
-			update(sim, gas, false, true, dt);
-		} else if (!maskTick && gas.fastPending) {
-			// Start after a boundary/topology change on this fixed step; subsequent
-			// transient solves return to the mask cadence to bound CPU cost.
-			update(sim, gas, false, false, dt);
-		}
+		maybeSolve(sim, gas);
 	}
 
 	function step(sim, h) {
 		const gas = sim.pressure;
 		gas.clock += h;
-		const maskTick = maybeSolve(sim, gas);
-		if (gas.inletVersion !== sim.inlets.version) {
-			applyPins(sim, gas);
-			update(sim, gas, false, true, h);
-		} else if (!maskTick && gas.fastPending) {
-			update(sim, gas, false, false, h);
-		}
+		maybeSolve(sim, gas);
 		drag(sim, gas, h);
 	}
 

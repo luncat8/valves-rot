@@ -315,3 +315,23 @@ The user's diagnosis was that this was the wrong decomposition. Their proposal: 
 ## Next step
 
 The remaining cost is the 16-iteration PCG on fully connected machines (~1.5 ms/step). A fixed-slot lower/upper stencil (no `nbrCount` loop or `j < k` branches in `matvec`/`applyIC`) should cut each iteration several-fold, as the old 5-point kernel did; if a browser check is available, also confirm that the carried-pressure front reads as rotation rather than repaint at animation speed.
+
+# Connected pressure during fast turns (2026-10-28)
+
+## Review and changes
+
+- The local-cell geometry already separated rotor and casing air, but transient solves excluded every component without a reservoir. A disconnected six-node casing pipe with pressures 1 and 0 therefore never exchanged air. Also, the 30 Hz seam refresh could skip a straight-port opening at the UI's 3× turn speed.
+- Transient diffusion now includes nonuniform unpinned components. A bounded, per-component correction preserves isolated air despite PCG's finite iteration budget; steady solves remain pinned-only. Uniform components are skipped.
+- Moving seams are refreshed and solved on each 120 Hz simulation tick; still fields settle at 30 Hz. The implicit diffusion strength and settling tolerance scale with elapsed time, and zero elapsed time cannot consume a pending update. Snapped steady refreshes leave isolated gradients scheduled for relaxation.
+- PCG compacts unknown edges and precomputes sweep factors once per solve to offset the extra work; the 16-iteration cap is retained for accuracy. Fixed the grain-occupancy fallback to translate display texels through `gas.map` before indexing network cells.
+- Updated sealed-air and pressure-quest gates, help and specification. Added `pressure-propagation-fixtures.cjs` for isolated casing exchange, conservation and projection, fast openings in both directions and four clock phases, all ported valve types, high/low reservoirs, paused/zero-time behavior, clock scaling, sealed rotation and wall occupancy.
+
+## Validation
+
+- All pass sequentially on Node v22.22.3: `geometry-check`, `geometry-fixtures`, `simulation-fixtures`, `gas-fixtures`, `pressure-propagation-fixtures`, `air-fixtures`, `calibration-fixtures`, `game-fixtures`, and `render-smoke`; `front-probe`, `aperture-probe` and `simulation-bench` also ran. Fast openings transferred at least 0.571 pressure to the adjacent casing; a 720-angle sweep of all 10 ported types found linked openings at least 0.393 rad wide, compared with a maximum 0.126 rad/tick at speed 3. After 240 sealed speed-3 ticks, total-pressure drift was under 0.000067 for seeds 7 and 42.
+- A real headless Chromium 153 `file://` smoke test found no page errors, exercised the overlay and fast-turn and isolated-casing scenarios, and reported 60 fps in the UI at speed 3. The seeded whole simulation measured 3.05 ms per 120 Hz step in that browser. These timings are hardware-dependent.
+- Sequential Node cost with 120 grains and turning: 3.59 ms per 60 Hz frame, versus 0.98 ms with pressure off. A speed-3 seeded run measured 2.37–2.46 ms per 120 Hz step, versus 0.81–0.90 before; all-cross rotors measured 2.31–2.36 ms. The previous solver skipped these exchanges, so the increased cost is explicit; `experiments/logs/grid-gas-propagation.txt` records comparisons and the updated gas budget.
+
+## Next step
+
+Profile on a lower-power browser and consider caching unaffected component operators during one-valve turns; preserve next-tick exchange and sealed-component conservation when optimizing further.
