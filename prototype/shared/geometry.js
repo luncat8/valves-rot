@@ -422,6 +422,31 @@ const ValveGeometry = (() => {
 		return valveClearance(layout.valves[cellAt(x, y)], x, y);
 	}
 
+	// Largest disc inside a rotor passage at rotor-local coordinates. The prims
+	// are stored in that frame and never rotate, so this is a static property of
+	// the valve; only the rim clip is applied here, with no seam opening.
+	function primDepth(v, px, py) {
+		const prims = v.prims;
+		let best = 0;
+		for (let k = 0; k < prims.length; k++) {
+			const pr = prims[k];
+			let d;
+			if (pr.t === T_TUBE) d = tubeDepth(pr, px, py);
+			else if (pr.t === T_ARC) d = arcDepth(pr, px, py);
+			else d = pr.r - Math.sqrt(px * px + py * py);
+			if (d > best) best = d;
+		}
+		return best;
+	}
+
+	function passageClearance(v, px, py) {
+		const r = Math.sqrt(px * px + py * py);
+		if (r >= RV) return 0;
+		const d = primDepth(v, px, py);
+		const room = RV - r;
+		return d < room ? d : room;
+	}
+
 	// Clearance is the largest disc that fits at a point, evaluated against the
 	// unions actually present rather than each primitive separately:
 	// - inside the rotor, the passages clipped by the rim, plus the seam opening
@@ -440,15 +465,7 @@ const ValveGeometry = (() => {
 			const room = RV - r;
 			const px = lx * v.cos + ly * v.sin;
 			const py = ly * v.cos - lx * v.sin;
-			const prims = v.prims;
-			for (let k = 0; k < prims.length; k++) {
-				const pr = prims[k];
-				let d;
-				if (pr.t === T_TUBE) d = tubeDepth(pr, px, py);
-				else if (pr.t === T_ARC) d = arcDepth(pr, px, py);
-				else d = pr.r - Math.sqrt(px * px + py * py);
-				if (d > best) best = d;
-			}
+			best = primDepth(v, px, py);
 			let rim = room;
 			for (let s = 0; s < 4; s++) {
 				const seam = v.seam[s];
@@ -844,6 +861,7 @@ const ValveGeometry = (() => {
 		setAngle,
 		cellAt,
 		valveClearance,
+		passageClearance,
 		airClearance,
 		isAir,
 		sweep,

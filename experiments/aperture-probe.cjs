@@ -1,6 +1,6 @@
-// Aperture diagnostics: the 6 px mask against a 1.5 px reference at several
-// rotor angles, whether every open face has a lane that crosses no metal, and
-// what a mask rebuild costs.
+// Aperture diagnostics: the network's mouth-connected air against a 1.5 px
+// reference at several rotor angles, whether every seam link crosses no metal,
+// and what a rebuild costs.
 // Run: node experiments/aperture-probe.cjs
 const G = require("../prototype/shared/geometry.js");
 const GAS = require("../prototype/shared/gas.js");
@@ -104,35 +104,38 @@ for (const seed of [7, 42, 1234]) {
 	}
 }
 
-console.log("lanes (seed 7, four rotation states)");
+console.log("seam links (seed 7, four rotation states)");
 {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
 	S.setPressure(sim, "grid");
-	let faces = 0;
+	let links = 0;
 	let offCentre = 0;
 	let dead = 0;
+	let conductance = 0;
 	for (const spin of [0, 0.12, 0.3, 0.7]) {
 		for (let k = 0; k < layout.valves.length; k++) G.setAngle(layout.valves[k], G.hashUnit(7, k, 77) * spin);
 		GAS.refresh(sim, false);
-		const field = sim.pressure;
-		for (let gy = 0; gy < field.ny; gy++) {
-			for (let gx = 0; gx < field.nx; gx++) {
-				const k = gy * field.nx + gx;
-				const x = (gx + 0.5) * field.cell;
-				const y = (gy + 0.5) * field.cell - G.POUR;
-				for (let f = 0; f < 2; f++) {
-					if (!(field.face[k] & (f === 0 ? 2 : 8))) continue;
-					const dx = f === 0 ? field.cell : 0;
-					const dy = f === 0 ? 0 : field.cell;
-					faces++;
-					if (laneHits(layout, x, y, dx, dy)) offCentre++;
-					if (!hasLane(layout, x, y, dx, dy)) dead++;
-				}
+		const net = sim.pressure.net;
+		for (let n = 0; n < net.count; n++) {
+			const a = net.list[n];
+			const sa = a % GAS.SLOTS;
+			const e0 = a * net.slots;
+			for (let m = 0; m < net.nbrCount[a]; m++) {
+				const e = e0 + m;
+				const b = net.nbr[e];
+				if (b < a || net.gw[e] <= 0) continue;
+				const sb = b % GAS.SLOTS;
+				if ((sa < GAS.RSLOTS) === (sb < GAS.RSLOTS)) continue;
+				links++;
+				conductance += net.gw[e];
+				if (((sb - GAS.RSLOTS) % GAS.LANES) !== 1) offCentre++;
+				G.sweep(layout, net.wx[a], net.wy[a], net.wx[b], net.wy[b], GAS.AIR_MIN, sweep);
+				if (sweep.hit) dead++;
 			}
 		}
 	}
-	console.log(`  ${faces} open faces, ${offCentre} through an off-centre lane, ${dead} without any lane`);
+	console.log(`  ${links} seam links, ${offCentre} on an off-centre lane, ${dead} blocked, conductance ${conductance.toFixed(1)}`);
 }
 
 console.log("rebuild cost");

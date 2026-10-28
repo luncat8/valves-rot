@@ -309,10 +309,10 @@ function runtimeRimWidth(angle) {
 assert.ok(runtimeRimWidth(0) > 0, "aligned seam admits grid faces");
 assert.equal(runtimeRimWidth(0.24), 0, "a shut rim cannot hide between face samples");
 
-// The mask caches each cell's clearance and each face's aperture against the
-// valve that produced it, so a rebuild only re-samples what turned. An
-// incremental mask must be identical to one built from scratch at the same
-// angles — otherwise the cache would trade correctness for speed.
+// Rotor passages are sampled once in valve-local coordinates, casing pipes
+// are static, and a turn only rewrites seam links plus the rim texels. An
+// incremental mask must still be identical to one built from scratch at the
+// same angles — otherwise the cache would trade correctness for speed.
 function maskDiff(incremental, fresh) {
 	let diff = 0;
 	const nx = incremental.nx;
@@ -361,60 +361,90 @@ assert.equal(cacheDiff, 0, "an incremental mask matches one built from scratch")
 	assert.equal(maskDiff(sim.pressure, fresh.pressure), 0, "a replaced valve invalidates its cached geometry");
 }
 
-// Every open runtime link needs a real lane across its face. The centre line
-// answers most of them; a seam aperture that opens off-centre is carried by a
-// lateral lane, so a shut rim still cannot link two cells and no link may cross
-// metal along every lane of the face.
+// The live graph has static edges inside rotors and casings plus seam edges
+// that join a rotor cell to a static corridor cell for the current rotation.
+// A seam edge is a link through the rim, so a small disc must be able to
+// travel between its endpoints; a shut seam must produce no links at all.
 const sweep = { x: 0, y: 0, hit: false };
-function laneHits(layout, x, y, dx, dy) {
-	G.sweep(layout, x, y, x + dx, y + dy, GAS.AIR_MIN, sweep);
-	return sweep.hit;
-}
-function openLane(layout, x, y, dx, dy) {
-	if (!laneHits(layout, x, y, dx, dy)) return true;
-	const cell = Math.abs(dx) || Math.abs(dy);
-	for (let q = -15; q <= 15; q++) {
-		const s = (q / 33) * cell;
-		if (Math.abs(s) > cell * 0.47) continue;
-		const ox = dx === 0 ? s : 0;
-		const oy = dy === 0 ? s : 0;
-		if (!laneHits(layout, x + ox, y + oy, dx, dy)) return true;
+function liveSeams(gas) {
+	const net = gas.net;
+	const list = [];
+	let conductance = 0;
+	for (let n = 0; n < net.count; n++) {
+		const a = net.list[n];
+		const sa = a % GAS.SLOTS;
+		const e0 = a * net.slots;
+		for (let m = 0; m < net.nbrCount[a]; m++) {
+			const e = e0 + m;
+			const b = net.nbr[e];
+			if (b < a || net.gw[e] <= 0) continue;
+			const sb = b % GAS.SLOTS;
+			if ((sa < GAS.RSLOTS) === (sb < GAS.RSLOTS)) continue;
+			list.push({ a, b, lane: (sb - GAS.RSLOTS) % GAS.LANES, g: net.gw[e] });
+			conductance += net.gw[e];
+		}
 	}
-	return false;
+	return { list, conductance };
 }
 let links = 0;
 let offCentreLinks = 0;
 for (const seed of [7, 11, 42, 1234]) {
 	const machine = G.createLayout(seed);
-	const sim = S.create(machine, { turning: false });
 	for (let k = 0; k < machine.valves.length; k++) G.setAngle(machine.valves[k], G.hashUnit(seed, k, 77) * G.TAU);
+	const sim = S.create(machine, { turning: false });
 	S.setPressure(sim, "grid");
-	const field = sim.pressure;
-	const cell = field.cell;
-	for (let gy = 0; gy < field.ny; gy++) {
-		for (let gx = 0; gx < field.nx; gx++) {
-			const k = gy * field.nx + gx;
-			const x = (gx + 0.5) * cell;
-			const y = (gy + 0.5) * cell - G.POUR;
-			const turns = (field.face[k] & 2 ? 1 : 0) + (field.face[k] & 8 ? 1 : 0);
-			for (let f = 0; f < turns; f++) {
-				const horizontal = field.face[k] & 2 && f === 0;
-				const dx = horizontal ? cell : 0;
-				const dy = horizontal ? 0 : cell;
-				if (laneHits(machine, x, y, dx, dy)) offCentreLinks++;
-				assert.ok(openLane(machine, x, y, dx, dy), `an open face has no lane across it: seed ${seed}, ${gx},${gy}`);
-				links++;
-			}
-		}
+	GAS.refresh(sim, false);
+	const net = sim.pressure.net;
+	const { list } = liveSeams(sim.pressure);
+	assert.ok(list.length > 50, `rotation builds seam links: seed ${seed} (${list.length})`);
+	for (const link of list) {
+		assert.equal(((link.a - link.a % GAS.SLOTS) / GAS.SLOTS) | 0, ((link.b - link.b % GAS.SLOTS) / GAS.SLOTS) | 0,
+			"a seam link stays inside one valve");
+		G.sweep(machine, net.wx[link.a], net.wy[link.a], net.wx[link.b], net.wy[link.b], GAS.AIR_MIN, sweep);
+		assert.ok(!sweep.hit, `a seam link crosses metal: seed ${seed}, cell ${link.a}`);
+		if (link.lane !== 1) offCentreLinks++;
 	}
+	links += list.length;
 }
-assert.ok(links > 15000, "validate a representative set of actual grid links");
+assert.ok(links > 300, `validate a representative set of live seam links (${links})`);
 assert.ok(offCentreLinks > 20, `there are real off-centre seam links to validate (${offCentreLinks})`);
+
+// A shut rotor has no seam links, and a turning rotor throttles the ones it
+// has. The rotor's own air cells are sampled once and never resampled.
+{
+	const machine = G.createLayout(7);
+	const blank = { seed: 7, valves: [] };
+	for (let j = 0; j < G.N; j++) {
+		for (let i = 0; i < G.N; i++) blank.valves.push(G.makeValve(i, j, "solid", [], 0, 0));
+	}
+	const solid = S.create(blank, { turning: false });
+	S.setPressure(solid, "grid");
+	assert.equal(liveSeams(solid.pressure).list.length, 0, "a solid blank has no seam links");
+
+	const sim = S.create(machine, { turning: false });
+	S.setPressure(sim, "grid");
+	const net = sim.pressure.net;
+	const rotorAir = Uint8Array.from(net.air);
+	const widths = [];
+	for (const angle of [0, 0.09, 0.18, 0.24]) {
+		G.setAngle(machine.valves[44], angle);
+		GAS.refresh(sim, false);
+		let g = 0;
+		for (const link of liveSeams(sim.pressure).list) {
+			if ((((link.a - link.a % GAS.SLOTS) / GAS.SLOTS) | 0) === 44) g += link.g;
+		}
+		widths.push(g);
+		for (let k = 0; k < rotorAir.length; k++) assert.equal(rotorAir[k], net.air[k], "a turn never resamples rotor clearance");
+	}
+	assert.ok(widths[0] > widths[1] && widths[1] > widths[2] && widths[2] >= widths[3],
+		`a narrowing seam throttles its links (${widths.map(v => v.toFixed(2)).join(" / ")})`);
+	assert.ok(widths[3] < widths[0] * 0.2, "a nearly shut seam leaves no wide open link");
+}
 
 console.log(
 	`OK calibration: ${ref.hits} wall hits, ${ref.pa.toFixed(4)} Pa vs ${theory.toFixed(4)} Pa theory; ` +
 	`steady serial seam errors ${coarse.error.toExponential(2)} / ${fine.error.toExponential(2)} (6/3 px); ` +
 	`aperture errors ${coarseError.toFixed(2)} / ${fineError.toFixed(2)} px; a quarter-open face throttles its link; ` +
-	`${links} real faces clear (${offCentreLinks} through an off-centre seam); ` +
+	`${links} seam links clear (${offCentreLinks} off-centre); ` +
 	`closed wall isolates both halves and a pinless half keeps its air. The grid is a conservative relative pressure.`,
 );

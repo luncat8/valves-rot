@@ -298,19 +298,52 @@ assert.equal(gg().active[pocketCell], 1, "opening the ports connects the chamber
 run(gated, 0.5);
 assert.ok(gg().p[pocketCell] > 0.5, `air now flows into the opened chamber (${gg().p[pocketCell].toFixed(2)})`);
 
-// Turning a rotor rebuilds the mask without erasing the field; in a machine
-// whose only source-to-vent path runs through that valve, the path changes.
+// Turning a rotor carries its air: the rotor-local cells keep their pressure,
+// so a quarter-turn reorients the pattern inside that valve instead of asking
+// the mouths to repaint it. The casing cells stay exactly as they were and the
+// tile's pressure budget is conserved.
 const turned = S.create(columnLayout(), { turning: false });
 S.setPressure(turned, "grid");
 const tv = turned.layout.valves[44];
 const beforeTurn = Float32Array.from(turned.pressure.p);
+function tileBudget(field, v, source) {
+	let sum = 0;
+	let lo = 1;
+	let hi = 0;
+	let n = 0;
+	for (let i = 0; i < field.count; i++) {
+		const k = field.list[i];
+		const x = (k % field.nx) * field.cell + field.cell / 2;
+		const y = ((k / field.nx) | 0) * field.cell + field.cell / 2 - G.POUR;
+		if (Math.abs(x - v.cx) > G.S / 2 || Math.abs(y - v.cy) > G.S / 2) continue;
+		const p = source[k];
+		sum += p;
+		if (p < lo) lo = p;
+		if (p > hi) hi = p;
+		n++;
+	}
+	return { sum, lo, hi, n };
+}
+const carried = tileBudget(turned.pressure, tv, beforeTurn);
 G.setAngle(tv, tv.angle + G.HALF_PI);
 const maskRebuilds = turned.pressure.rebuilds;
 GAS.refresh(turned);
-assert.ok(turned.pressure.rebuilds > maskRebuilds, "a rotor turn rebuilds the mask");
-let unchanged = 0;
-for (let k = 0; k < beforeTurn.length; k++) if (Math.abs(beforeTurn[k] - turned.pressure.p[k]) < 1e-6) unchanged++;
-assert.equal(unchanged, beforeTurn.length, "changing connectivity does not repaint the pressure");
+assert.ok(turned.pressure.rebuilds > maskRebuilds, "a rotor turn rebuilds the seam edges");
+let movedByTurn = 0;
+let outside = 0;
+for (let k = 0; k < beforeTurn.length; k++) {
+	if (Math.abs(beforeTurn[k] - turned.pressure.p[k]) > 1e-6) movedByTurn++;
+	const x = (k % turned.pressure.nx) * turned.pressure.cell + turned.pressure.cell / 2;
+	const y = ((k / turned.pressure.nx) | 0) * turned.pressure.cell + turned.pressure.cell / 2 - G.POUR;
+	if (Math.abs(x - tv.cx) > G.S / 2 || Math.abs(y - tv.cy) > G.S / 2) {
+		if (Math.abs(beforeTurn[k] - turned.pressure.p[k]) > 1e-6) outside++;
+	}
+}
+assert.equal(outside, 0, "the static casing keeps its pressure through a turn");
+const afterTurn = tileBudget(turned.pressure, tv, turned.pressure.p);
+assert.ok(movedByTurn > 0, "a turned rotor carries its pressure into new world texels");
+assert.ok(Math.abs(afterTurn.sum - carried.sum) < 1e-4, "the turn adds no air from the mouths");
+assert.ok(Math.abs(afterTurn.lo - carried.lo) < 1e-6 && Math.abs(afterTurn.hi - carried.hi) < 1e-6, "the carried pressure keeps its range");
 run(turned, 0.4);
 let moved = 0;
 for (let i = 0; i < turned.pressure.count; i++) {

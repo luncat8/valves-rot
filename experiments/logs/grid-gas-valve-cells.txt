@@ -1,0 +1,68 @@
+Local valve pipe cells: rotation-aware pressure (Node v22.22.3, this sandbox CPU)
+===============================================================================
+State: RS=8 rotor-local cells per valve + 3-lane static casing corridors, rotation-
+dependent seam links, 6 px display projection. One implicit diffusion step per
+1/30 s mask tick: DIFFUSE_DT=1200, PCG_STEP_ITERS=16, FLOW_SCALE=22000,
+PCG_LIVE_STEADY_ITERS=12 (warm start from two BFS distance fields).
+
+fixtures (last line of each)
+  geometry-check        OK 261 elbow fixtures
+  geometry-fixtures     seams 27000, throats 8436, shut 39564, 538 ms
+  simulation-fixtures   10/10 frame rates, 14638 steps, 2623 ms
+  air-fixtures          3.26 ms/60Hz incl. assertions, 900 air
+  calibration-fixtures  serial seam errors 2.98e-7 / 5.96e-7; aperture errors
+                        11.27 / 5.14 px; 500 seam links clear, 340 off-centre
+  gas-fixtures          pile flow 95 vs empty 126; fall 0.32 / 0.62 s / hover;
+                        drift 3.8 px; off 0.248 ms vs grid 0.655 ms per 120 Hz step
+  game-fixtures         bots 3 quests / 85 pts in 7756 ms
+  render-smoke          drawCalls 320313, overlay 149
+
+front (front-probe.cjs, connected cross machine, % of active cells within 0.02
+of steady by mask tick)
+  dt= 600:  5 5 7 9 10 14 19 22 27 32 38 44 49 56
+  dt=1200:  5 7 11 19 27 36 47 59 73 90 100 ...     <- chosen DIFFUSE_DT
+  dt=2400:  5 12 20 29 42 58 74 95 100 ...
+  serpentine dt=2400 settled@t120, 0 cap hits, maxIters 16
+  create+steady x20: 13.7 ms
+
+aperture (aperture-probe.cjs, mouth-connected share vs 1.5 px flood fill)
+  seed 7    spin 0 / .12 / .2 / .3 / .4
+            ref  60.5 60.5 56.5 34.7 27.0 %   mask 54.9 55.4 55.1 28.2 21.1 %
+  seed 42   ref  57.3 57.2 37.5 28.5 21.8 %   mask 51.6 52.9 52.7 24.6 19.4 %
+  seed 1234 ref  62.6 62.7 50.3 27.7 14.1 %   mask 57.3 58.6 57.9 26.7  7.8 %
+  component counts: 78 -> 185 (seed 7), 93 -> 175 (seed 42), 79 -> 202 (1234)
+  seam links over four rotation states: 2031, 1596 off-centre, 0 blocked,
+  conductance 339.8
+  rebuild: 0.61 ms unchanged, 0.42 ms one rotor, 1.48 ms all 100
+
+aperture picture (aperture-picture.cjs, seed 7, all rotors at 0.113 rad)
+  HEAD          2098 of 3511 air cells reach a mouth (59.8%), 78 components
+  working tree  2495 of 4125 (60.5%), 78 components
+  1.5 px reference for the same geometry: 60.5%
+
+graph validity (independent G.sweep at AIR_MIN, all rotors at hash(seed)*0.2)
+  seed    7: 5968 links, 505 seams, 0 blocked
+  seed   42: 5667 links, 443 seams, 0 blocked
+  seed 1234: 6033 links, 474 seams, 0 blocked
+
+cost (400 steps after 50 warmup, 120 Hz step)
+  random layout:          off 0.195 ms, grid + all rotors turning 1.067 ms
+  connected cross layout: off 0.055 ms, grid + all rotors turning 1.496 ms
+  create (20 fresh fields): 11.2 ms random, 11.6 ms connected cross
+  simulation-bench: grid 1.37 ms/60 Hz with 120 grains, 169 rebuilds,
+                    air 3403 of 15600 display cells, mean p 0.35, flow 18
+  per-step load table (120 grains, turning): off 0.82 ms/60Hz, grid 1.65,
+                    particles 3.68; 1000 grains: off 6.96, grid 7.91,
+                    particles 9.93
+  air coupling (30 px fall): off 0.32 s, grid f0.5 0.42 s, f1 0.62 s
+                    (drift 3.8 px), f2 stalled, particles f1 0.41 s
+
+Rejected alternatives (measured, do not retry at this resolution)
+  explicit conservative sweeps, global rate: 32 sweeps/tick x 20 ticks -> 5%
+    coverage of steady; per-edge rate alpha/max(deg_a,deg_b): 128 sweeps/tick
+    x 20 ticks -> 6% coverage (needs O(L^2) sweeps to cross an L-cell pipe)
+  in-place SOR on the radial node order: 400 sweeps, error 0.05-0.99
+  full-tolerance transient PCG (700 iters) doubled per-tick cost on a connected
+    cross machine for the same front; cap 10/12 starved the front, cap 24 costs
+    ~12% more than cap 16 -> PCG_STEP_ITERS=16
+  degree-normalized face flux: hid conductance loss, pile flow 55.5 vs 39.5

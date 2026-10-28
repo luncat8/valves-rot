@@ -1,5 +1,5 @@
 // Aperture picture: the grid-gas field on a machine whose 100 rotors all sit at
-// 0.113 rad, rendered twice — a reference git revision of gas.js on the left,
+// 0.113 rad, rendered twice — a reference git revision of gas.js on the left (HEAD by default),
 // the working tree on the right — and written to logs/grid-gas-aperture-0.2.png.
 // Run: node experiments/aperture-picture.cjs [git-rev-of-the-old-build]
 const fs = require("node:fs");
@@ -10,7 +10,7 @@ const { execFileSync } = require("node:child_process");
 
 const ROOT = path.join(__dirname, "..");
 const SHARED = path.join(ROOT, "prototype/shared");
-const REV = process.argv[2] || "a733b2d";
+const REV = process.argv[2] || "HEAD";
 const OUT = path.join(__dirname, "logs", "grid-gas-aperture-0.2.png");
 const CELL = 6;
 const ANGLE = 0.113;
