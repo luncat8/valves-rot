@@ -278,6 +278,48 @@ for (; briskTicks < 30; briskTicks++) {
 }
 assert.ok(briskTicks <= 15, `the front crosses a connected machine quickly (${briskTicks} mask ticks)`);
 
+// Pressure starts on the first simulation tick after a boundary change; the
+// 30 Hz mask clock is reserved for rebuilding rotation-dependent geometry.
+const immediate = S.create(crossLayout(), { turning: false });
+S.setPressure(immediate, "grid");
+setOpen(immediate, I.TOP, false);
+setOpen(immediate, I.BOTTOM, false);
+run(immediate, 0.2);
+const ig = immediate.pressure;
+ig.maskClock = ig.clock; // begin just after a mask update, like a UI event
+S.toggleInlet(immediate, I.BOTTOM * G.N + 4, false);
+const beforeImmediate = Float32Array.from(ig.net.p);
+S.step(immediate);
+assert.ok(ig.delta > 0, "an inlet change diffuses on the very next simulation tick");
+let firstTickChanges = 0;
+for (let n = 0; n < ig.net.count; n++) {
+	const k = ig.net.list[n];
+	if (!ig.net.pin[k] && Math.abs(ig.net.p[k] - beforeImmediate[k]) > 1e-8) firstTickChanges++;
+}
+assert.ok(firstTickChanges > 0, "the first tick carries pressure beyond the newly pinned mouth");
+
+// Keep advancing while a rotor turns continuously: a moving seam must not
+// starve pressure updates until the rotor finally stops.
+const continuousSpin = S.create(crossLayout(), { turning: false });
+S.setPressure(continuousSpin, "grid");
+setOpen(continuousSpin, I.TOP, false);
+setOpen(continuousSpin, I.BOTTOM, false);
+run(continuousSpin, 0.2);
+S.toggleInlet(continuousSpin, I.TOP * G.N + 0, false);
+S.toggleInlet(continuousSpin, I.BOTTOM * G.N + (G.N - 1), false);
+const spinValve = continuousSpin.layout.valves[44];
+const spinBefore = Float32Array.from(continuousSpin.pressure.net.p);
+const spinRebuilds = continuousSpin.pressure.rebuilds;
+for (let n = 0; n < 24; n++) {
+	G.setAngle(spinValve, spinValve.angle + 0.09);
+	S.step(continuousSpin);
+}
+assert.ok(continuousSpin.pressure.rebuilds > spinRebuilds, "rotation-dependent seams rebuild while turning");
+let spinChange = 0;
+for (let k = 0; k < spinBefore.length; k++) spinChange += Math.abs(continuousSpin.pressure.net.p[k] - spinBefore[k]);
+assert.ok(spinChange > 1,
+	`pressure continues to propagate during rotation (total change ${spinChange.toFixed(2)})`);
+
 // ---- valves decide where the air can go ---------------------------------
 const gated = S.create(crossLayout(), { turning: false });
 gated.layout.valves[44] = G.makeValve(4, 4, "hollow", [], 0, G.RV * 0.8);

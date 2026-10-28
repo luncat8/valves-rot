@@ -8,8 +8,9 @@
 // Both kinds of link are checked with a small clearance disc, so no edge can
 // cut through metal, and a narrowing seam throttles its links continuously.
 //
-// One backward-Euler diffusion step runs on the 30 Hz mask clock over that
-// graph: no per-frame substeps and no geometry sampling in the solve. Open
+// The 30 Hz mask clock rebuilds rotation-dependent links. Boundary or topology
+// changes schedule one immediate transient step on the next fixed simulation
+// tick; subsequent solves use the mask cadence, with no geometry sampling. Open
 // mouths outside the field are Dirichlet cells; a component without one keeps
 // its air. Pressure is a normalized relative quantity, velocity is the actual
 // face flux plus the rigid swirl of a turning rotor (no inertia state), and
@@ -57,9 +58,9 @@ const ValveGas = (() => {
 	const OPEN_MIN = 0.12;
 	const FILL_COST = 3;
 	const GRAIN_CAPACITY = 1.5;
-	// One implicit step per mask tick. sqrt(DIFFUSE_DT) cells per tick is what
-	// makes a mouth click readable as a front crossing the pipes instead of an
-	// instant repaint or a crawl.
+	// Diffusion strength over one mask interval. Transient sub-tick solves scale
+	// this by elapsed time, so fronts begin immediately without changing the
+	// modeled diffusion rate per second.
 	const DIFFUSE_DT = 1200;
 	const PCG_STEADY_ITERS = 700;
 	// Live steady solves start from the distance-ratio field, so a dozen sweeps
@@ -652,9 +653,11 @@ const ValveGas = (() => {
 		gas.drags = 0;
 		gas.gain = 0;
 		gas.settled = false;
+		gas.fastPending = false;
 		rebuild(sim, gas);
 		applyPins(sim, gas);
 		steady(gas, gas.p);
+		gas.fastPending = false;
 		velocity(sim, gas, true);
 		measure(gas);
 		gas.settled = true;
@@ -1131,6 +1134,7 @@ const ValveGas = (() => {
 		for (let t = 0; t < valves.length; t++) gas.angles[t] = valves[t].angle;
 		project(sim, gas, gas.moved, count);
 		gas.settled = false;
+		gas.fastPending = true;
 		gas.rebuilds++;
 	}
 
@@ -1162,6 +1166,7 @@ const ValveGas = (() => {
 		markActive(net);
 		gas.inletVersion = inlets.version;
 		gas.settled = false;
+		gas.fastPending = true;
 		// The pin set changes which components solve, so refresh the projection.
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
@@ -1217,8 +1222,11 @@ const ValveGas = (() => {
 	// Target velocity per network cell: the actual edge fluxes projected along
 	// the pipe direction, plus the rigid wall velocity of a turning rotor disc.
 	// No momentum is stored; the display velocity only eases toward this target.
-	function velocity(sim, gas, snap) {
+	function velocity(sim, gas, snap, elapsed) {
 		const net = gas.net;
+		const relax = elapsed > 0
+			? 1 - Math.pow(1 - RELAX, Math.min(elapsed, MASK_DT) / MASK_DT)
+			: RELAX;
 		const p = net.p;
 		const nb = NB;
 		const valves = sim.layout.valves;
@@ -1292,8 +1300,8 @@ const ValveGas = (() => {
 				gas.gx[k] = vx;
 				gas.gy[k] = vy;
 			} else {
-				gas.gx[k] += (vx - gas.gx[k]) * RELAX;
-				gas.gy[k] += (vy - gas.gy[k]) * RELAX;
+				gas.gx[k] += (vx - gas.gx[k]) * relax;
+				gas.gy[k] += (vy - gas.gy[k]) * relax;
 			}
 			const ax = gas.gx[k];
 			const ay = gas.gy[k];
@@ -1314,21 +1322,27 @@ const ValveGas = (() => {
 		gas.mean = gas.count ? sum / gas.count : 0;
 	}
 
-	function update(sim, gas, snap, force) {
+	function update(sim, gas, snap, force, elapsed) {
+		const velocityElapsed = gas.settled ? MASK_DT : elapsed;
 		const changed = measureCost(sim, gas);
 		if (snap) {
 			steady(gas, gas.p);
 			gas.settled = true;
-		} else if (force || changed || !gas.settled) {
-			gas.settled = diffuse(gas, DIFFUSE_DT) < SETTLE_TOL;
+			gas.fastPending = false;
+		} else if (force || changed || !gas.settled || gas.fastPending) {
+			// Scale the immediate transient step by elapsed time; regular mask
+			// updates retain the original per-interval diffusion strength.
+			const dt = elapsed > 0 ? DIFFUSE_DT * Math.min(elapsed, MASK_DT) / MASK_DT : DIFFUSE_DT;
+			gas.settled = diffuse(gas, dt) < SETTLE_TOL;
+			gas.fastPending = false;
 		}
-		velocity(sim, gas, snap);
+		velocity(sim, gas, snap, velocityElapsed);
 		measure(gas);
 		gas.updates++;
 	}
 
 	function maybeSolve(sim, gas) {
-		if (gas.clock - gas.maskClock < MASK_DT) return;
+		if (gas.clock - gas.maskClock + 1e-9 < MASK_DT) return false;
 		const valves = sim.layout.valves;
 		let moved = false;
 		for (let k = 0; k < valves.length; k++) {
@@ -1341,10 +1355,11 @@ const ValveGas = (() => {
 			rebuild(sim, gas);
 			applyPins(sim, gas);
 		}
-		update(sim, gas, false, moved);
+		update(sim, gas, false, moved, MASK_DT);
 		// Keep the tick phase instead of snapping to the frame clock.
 		gas.maskClock += MASK_DT;
 		if (gas.clock - gas.maskClock > 2 * MASK_DT) gas.maskClock = gas.clock;
+		return true;
 	}
 
 	// A grain resting on a wall sits in a texel whose centre is metal, so the
@@ -1439,7 +1454,10 @@ const ValveGas = (() => {
 		const gas = sim.pressure;
 		rebuild(sim, gas);
 		applyPins(sim, gas);
-		if (snap) steady(gas, gas.p);
+		if (snap) {
+			steady(gas, gas.p);
+			gas.fastPending = false;
+		}
 		gas.settled = !!snap;
 		velocity(sim, gas, !!snap);
 		measure(gas);
@@ -1447,7 +1465,8 @@ const ValveGas = (() => {
 		gas.maskClock = gas.clock;
 	}
 
-	// Only the boundary changed: no graph rebuild, no implicit step.
+	// Only the boundary changed: schedule a first transient step without
+	// rebuilding the graph or solving synchronously inside the UI event.
 	function repin(sim) {
 		const gas = sim.pressure;
 		applyPins(sim, gas);
@@ -1459,20 +1478,26 @@ const ValveGas = (() => {
 	function settle(sim, dt) {
 		const gas = sim.pressure;
 		gas.clock += dt;
-		maybeSolve(sim, gas);
+		const maskTick = maybeSolve(sim, gas);
 		if (gas.inletVersion !== sim.inlets.version) {
 			applyPins(sim, gas);
-			update(sim, gas, false, true);
+			update(sim, gas, false, true, dt);
+		} else if (!maskTick && gas.fastPending) {
+			// Start after a boundary/topology change on this fixed step; subsequent
+			// transient solves return to the mask cadence to bound CPU cost.
+			update(sim, gas, false, false, dt);
 		}
 	}
 
 	function step(sim, h) {
 		const gas = sim.pressure;
 		gas.clock += h;
-		maybeSolve(sim, gas);
+		const maskTick = maybeSolve(sim, gas);
 		if (gas.inletVersion !== sim.inlets.version) {
 			applyPins(sim, gas);
-			update(sim, gas, false, true);
+			update(sim, gas, false, true, h);
+		} else if (!maskTick && gas.fastPending) {
+			update(sim, gas, false, false, h);
 		}
 		drag(sim, gas, h);
 	}
