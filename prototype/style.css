@@ -105,6 +105,7 @@ select {
 	box-sizing: border-box;
 }
 .game-panel[hidden] { display: none; }
+.game-panel [hidden] { display: none; }
 .game-head {
 	display: flex;
 	justify-content: space-between;
@@ -141,13 +142,34 @@ select {
 }
 .player-row {
 	display: grid;
-	grid-template-columns: 12px minmax(64px, auto) 1fr auto;
+	grid-template-columns: 12px minmax(56px, auto) minmax(0, 1fr) auto auto auto;
 	align-items: center;
 	gap: 8px;
 	padding: 5px 8px;
 	background: #1f2833;
 	border-radius: 4px;
 	font-size: 13px;
+}
+/* Each seat says for itself whether a bot plays it, so the master switch above
+   is only a pause over the seats that are bots at all. */
+.player-bot {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	color: #aeb9c5;
+	font-size: 12px;
+	white-space: nowrap;
+}
+.player-row button {
+	font-size: 11px;
+	padding: 2px 6px;
+}
+.game-panel h3 button {
+	float: right;
+	font-size: 11px;
+	text-transform: none;
+	letter-spacing: 0;
+	padding: 2px 8px;
 }
 .player-swatch,
 .tint-dot,
@@ -169,6 +191,52 @@ select {
 .player-score {
 	font-variant-numeric: tabular-nums;
 	font-weight: 600;
+}
+.vent-list {
+	display: grid;
+	gap: 5px;
+}
+/* The row is the seat's own gauge: the edge color says whether the pocket is
+   inside its band right now, the bar how much of the hold is done. */
+.vent-row {
+	display: grid;
+	grid-template-columns: 12px minmax(56px, auto) minmax(0, 1fr) auto 54px auto;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	background: #1f2833;
+	border-left: 3px solid #3c4856;
+	border-radius: 4px;
+	font-size: 13px;
+}
+.vent-row[data-seat] { cursor: pointer; }
+.vent-row[data-seat]:hover { background: #26313e; }
+.vent-row.in { border-left-color: #5ce8b0; }
+.vent-row.out { border-left-color: #ff7d6b; }
+.vent-band,
+.vent-rounds {
+	color: #aeb9c5;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+.vent-press {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+}
+.vent-row.in .vent-press { color: #5ce8b0; }
+.vent-row.out .vent-press { color: #ff9d94; }
+.vent-gauge {
+	height: 7px;
+	background: #10161d;
+	border: 1px solid #3c4856;
+	border-radius: 4px;
+	overflow: hidden;
+}
+.vent-gauge i {
+	display: block;
+	height: 100%;
+	background: #efc179;
 }
 .quest-list {
 	display: grid;

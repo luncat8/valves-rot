@@ -31,7 +31,11 @@ const ValveRender = (() => {
 		{ id: 1, name: "Ada", bot: true, hex: "#e05a4f", accent: "#ff8d82", tileHi: "hsl(6,50%,45%)", tileLo: "hsl(6,52%,31%)", gptTile: "#844844" },
 		{ id: 2, name: "Bolt", bot: true, hex: "#4a8af4", accent: "#85b4ff", tileHi: "hsl(216,54%,46%)", tileLo: "hsl(216,56%,32%)", gptTile: "#426394" },
 		{ id: 3, name: "Lyra", bot: true, hex: "#b266e8", accent: "#d79eff", tileHi: "hsl(278,45%,45%)", tileLo: "hsl(278,48%,31%)", gptTile: "#6d4887" },
+		{ id: 4, name: "Kai", bot: true, hex: "#e0a13c", accent: "#ffc978", tileHi: "hsl(36,52%,46%)", tileLo: "hsl(36,54%,31%)", gptTile: "#8a6a35" },
 	];
+	// Gauge geometry for a vent bottle: a 0..1 rail down the right of its cell.
+	const GAUGE_W = 5;
+	const GAUGE_H = S - 24;
 	const LEGEND_W = 7;
 	const LEGEND_H = 104;
 	const LEGEND_X = SIZE - 30;
@@ -493,6 +497,31 @@ const ValveRender = (() => {
 
 	// Goal bottles carry a hold-completion arc and a cached status tag so players
 	// can watch progress directly on the field with zero per-frame allocations.
+	function drawHoldArc(ctx, v, ratio, player) {
+		if (!(ratio > 0)) return;
+		ctx.beginPath();
+		ctx.arc(v.cx, v.cy, RV + 3.4, -Math.PI / 2, -Math.PI / 2 + TAU * ratio);
+		ctx.strokeStyle = player.accent;
+		ctx.lineWidth = 2.8;
+		ctx.stroke();
+	}
+
+	// Cached one-line status pinned to the cell's lower left. Callers set the font.
+	function drawCellTag(ctx, v, tag, player) {
+		if (!tag) return;
+		const w = tag.length * 4.5 + 7;
+		const tx = v.cx - S / 2 + 3.5;
+		const ty = v.cy + S / 2 - 14.5;
+		roundRect(ctx, tx, ty, w, 11, 3);
+		ctx.fillStyle = "rgba(10,14,20,0.82)";
+		ctx.fill();
+		ctx.strokeStyle = player.accent;
+		ctx.lineWidth = 0.9;
+		ctx.stroke();
+		ctx.fillStyle = player.accent;
+		ctx.fillText(tag, tx + 3.5, ty + 5.6);
+	}
+
 	function renderGoals(ctx, layout, game) {
 		if (!game || game.mode !== "game") return;
 		const quests = game.quests;
@@ -505,29 +534,53 @@ const ValveRender = (() => {
 			if (quest.owner < 0) continue;
 			const player = PLAYERS[quest.owner];
 			for (let s = 0; s < quest.cellCount; s++) {
-				const idx = quest.cells[s];
-				const v = layout.valves[idx];
-				if (quest.holdRatio > 0) {
-					ctx.beginPath();
-					ctx.arc(v.cx, v.cy, RV + 3.4, -Math.PI / 2, -Math.PI / 2 + TAU * quest.holdRatio);
-					ctx.strokeStyle = player.accent;
-					ctx.lineWidth = 2.8;
-					ctx.stroke();
-				}
-				const tag = quest.cellTags[s];
-				if (!tag) continue;
-				const w = tag.length * 4.5 + 7;
-				const tx = v.cx - S / 2 + 3.5;
-				const ty = v.cy + S / 2 - 14.5;
-				roundRect(ctx, tx, ty, w, 11, 3);
-				ctx.fillStyle = "rgba(10,14,20,0.82)";
-				ctx.fill();
-				ctx.strokeStyle = player.accent;
-				ctx.lineWidth = 0.9;
-				ctx.stroke();
-				ctx.fillStyle = player.accent;
-				ctx.fillText(tag, tx + 3.5, ty + 5.6);
+				const v = layout.valves[quest.cells[s]];
+				drawHoldArc(ctx, v, quest.holdRatio, player);
+				drawCellTag(ctx, v, quest.cellTags[s], player);
 			}
+		}
+		ctx.restore();
+	}
+
+	// A vent bottle is an instrument: a 0..1 rail beside the rotor with the target
+	// band marked in the owner's color and a needle on the live chamber pressure.
+	// The rail sits just outside the rotor rim, so the hold arc passes under it.
+	function drawGauge(ctx, v, seat, player) {
+		const x = v.cx + RV + 0.6;
+		const y = v.cy - GAUGE_H / 2;
+		roundRect(ctx, x, y, GAUGE_W, GAUGE_H, 2);
+		ctx.fillStyle = "rgba(8,12,18,0.78)";
+		ctx.fill();
+		const bandY = y + (1 - seat.hi) * GAUGE_H;
+		const bandH = Math.max(2, (seat.hi - seat.lo) * GAUGE_H);
+		ctx.fillStyle = seat.ok ? player.accent : player.hex;
+		ctx.globalAlpha = seat.ok ? 0.85 : 0.45;
+		ctx.fillRect(x + 0.6, bandY, GAUGE_W - 1.2, bandH);
+		ctx.globalAlpha = 1;
+		const ny = y + (1 - (seat.pressure < 0 ? 0 : seat.pressure > 1 ? 1 : seat.pressure)) * GAUGE_H;
+		ctx.beginPath();
+		ctx.moveTo(x - 2.4, ny);
+		ctx.lineTo(x + GAUGE_W + 2.4, ny);
+		ctx.strokeStyle = seat.ok ? "#fff6e4" : "#ff7d6b";
+		ctx.lineWidth = 1.6;
+		ctx.stroke();
+	}
+
+	function renderVents(ctx, layout, game) {
+		if (!game || game.mode !== "vent") return;
+		const vent = game.vent;
+		ctx.save();
+		ctx.font = "bold 8px system-ui, sans-serif";
+		ctx.textBaseline = "middle";
+		ctx.textAlign = "left";
+		for (let s = 0; s < vent.count; s++) {
+			const seat = vent.seats[s];
+			if (seat.bottle < 0) continue;
+			const player = PLAYERS[seat.player];
+			const v = layout.valves[seat.bottle];
+			drawHoldArc(ctx, v, seat.holdRatio, player);
+			drawGauge(ctx, v, seat, player);
+			drawCellTag(ctx, v, seat.tag, player);
 		}
 		ctx.restore();
 	}
@@ -807,6 +860,7 @@ const ValveRender = (() => {
 		renderSelection,
 		renderDrag,
 		renderGoals,
+		renderVents,
 		makeAirMap,
 		renderAirMap,
 		renderGrains,

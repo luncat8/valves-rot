@@ -11,6 +11,10 @@
 // mouth, and an owned mouth keeps the polarity it was dealt. The bands are dealt
 // separately, so a player's own in and out mouths never share an x; one column
 // can still carry a source for one player and a vent for another.
+//
+// Vent mode deals one in and one out per player instead, both in that player's
+// own prebuilt shaft column (`claimColumn`), because the field there is a
+// regulator rig: two switches per seat and nothing to sweep.
 const ValveInlets = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -23,6 +27,8 @@ const ValveInlets = (() => {
 	// Marker depth inside the band, clear of the housing edge.
 	const MOUTH = 5;
 	const PER_PLAYER = 2;
+	// Ten columns, two in mouths each: the widest seat list a deal can serve.
+	const MAX_PLAYERS = (G.N / PER_PLAYER) | 0;
 
 	function create() {
 		const count = G.N * 2;
@@ -91,12 +97,8 @@ const ValveInlets = (() => {
 	// skip each player's own in columns, so a column owned in one band never
 	// holds the same player's mouth in the other.
 	function deal(inlets, players, rnd) {
-		for (let k = 0; k < inlets.count; k++) {
-			inlets.present[k] = 0;
-			inlets.owner[k] = UNOWNED;
-			inlets.open[k] = 0;
-		}
-		const dealt = Math.min(players, (G.N / PER_PLAYER) | 0);
+		clearAll(inlets);
+		const dealt = Math.min(players, MAX_PLAYERS);
 		const mouths = dealt * PER_PLAYER;
 		shuffleColumns(dealColumns, rnd);
 		for (let s = 0; s < mouths; s++) inColumns[s] = dealColumns[s];
@@ -152,6 +154,37 @@ const ValveInlets = (() => {
 		inlets.owner[index] = owner;
 		inlets.level[index] = level;
 		inlets.open[index] = 1;
+		inlets.version++;
+	}
+
+	// Every slot empty: no mouth to press anywhere in either band.
+	function clearAll(inlets) {
+		for (let k = 0; k < inlets.count; k++) {
+			inlets.present[k] = 0;
+			inlets.owner[k] = UNOWNED;
+			inlets.open[k] = 0;
+		}
+		inlets.version++;
+	}
+
+	// Vent mode: one seat's pair, a source below and a vent above its own prebuilt
+	// shaft column, so the whole mouth policy is two switches. A rejected rig hands
+	// the pair back with `releaseColumn`.
+	function claimColumn(inlets, column, owner) {
+		claim(inlets, BOTTOM * G.N + column, owner, HIGH);
+		claim(inlets, TOP * G.N + column, owner, LOW);
+	}
+
+	function release(inlets, index) {
+		inlets.present[index] = 0;
+		inlets.owner[index] = UNOWNED;
+		inlets.open[index] = 0;
+		inlets.version++;
+	}
+
+	function releaseColumn(inlets, column) {
+		release(inlets, BOTTOM * G.N + column);
+		release(inlets, TOP * G.N + column);
 	}
 
 	// A click toggles a mouth between open and sealed; a flipped mouth swaps its
@@ -198,6 +231,6 @@ const ValveInlets = (() => {
 		return side * G.N + column;
 	}
 
-	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, create, reset, deal, press, canPress, ownedBy, count, hit };
+	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, MAX_PLAYERS, create, reset, deal, clearAll, claimColumn, releaseColumn, press, canPress, ownedBy, count, hit };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveInlets;

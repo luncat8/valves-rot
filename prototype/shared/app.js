@@ -71,6 +71,7 @@
 	let shownIndex = -2;
 	let shownQuarter = -1;
 	let shownGameVersion = -1;
+	let shownRosterVersion = -1;
 
 	$("pressure-span").value = String(pressureSpan);
 	if ($("auto-rotate").value === "") $("auto-rotate").value = "90";
@@ -119,10 +120,12 @@
 		S.seed(sim);
 		S.setPressure(sim, readMode());
 		Game.resetMatch(game, sim);
-		if (game.mode === "game") setAutoSlider(Math.round(Game.GAME_AUTO * 100));
+		if (game.mode !== "lab") setAutoSlider(Math.round(Game.autoFor(game.mode) * 100));
 		rebuild(true);
+		syncPressureRadios();
 		shownIndex = -2;
 		shownGameVersion = -1;
+		shownRosterVersion = -1;
 		if (paused) drawFrame(true);
 	}
 
@@ -133,13 +136,15 @@
 		S.setAirForce(sim, +$("force").value);
 		S.setLubricant(sim, +$("lube").value);
 		S.seed(sim);
-		if (game.mode === "game") {
+		if (game.mode !== "lab") {
 			Game.resetMatch(game, sim);
-			setAutoSlider(Math.round(Game.GAME_AUTO * 100));
+			setAutoSlider(Math.round(Game.autoFor(game.mode) * 100));
 		}
 		rebuild(true);
+		syncPressureRadios();
 		shownIndex = -2;
 		shownGameVersion = -1;
+		shownRosterVersion = -1;
 		if (paused) drawFrame(true);
 	}
 
@@ -170,75 +175,150 @@
 	}
 
 	function canPlayerTurn(index) {
-		if (index < 0) return false;
-		return game.mode !== "game" || sim.goalOwner[index] <= 0;
+		return Game.canTurn(game, index);
 	}
 
 	function turnSelected(quarters) {
-		if (!canPlayerTurn(selected)) return;
+		if (!canPlayerTurn(selected)) {
+			if (game.mode === "vent") Game.notice(game, "Vent mode is played at the mouths — every valve is locked.");
+			return;
+		}
 		S.turn(sim, selected, quarters);
 		overlayDirty = true;
 		if (paused) drawFrame(true);
 	}
 
-	// ---- Lab / Game mode ----------------------------------------------------
+	// ---- Lab / Game / Vent mode ---------------------------------------------
+	const MODE_TITLES = { lab: "Lab bench", game: "Game goals", vent: "Vent seats" };
+
 	function applyPlayMode(mode) {
-		const isGame = mode === "game";
+		const lab = mode === "lab";
+		const vent = mode === "vent";
 		Game.setMode(game, mode);
-		$("mode-lab").checked = !isGame;
-		$("mode-game").checked = isGame;
-		$("game-panel").hidden = !isGame;
-		$("drain").disabled = isGame;
-		$("open-valves").disabled = isGame;
-		$("brush-summary").hidden = isGame;
-		if (isGame && openDrawerId === "valve-drawer") setDrawer(null);
-		setAutoSlider(Math.round((isGame ? Game.GAME_AUTO : Game.LAB_AUTO) * 100));
+		$("mode-lab").checked = lab;
+		$("mode-game").checked = mode === "game";
+		$("mode-vent").checked = vent;
+		$("mode-title").textContent = MODE_TITLES[mode];
+		$("game-panel").hidden = lab;
+		$("quest-heading").hidden = vent;
+		$("quest-list").hidden = vent;
+		$("vent-heading").hidden = !vent;
+		$("vent-list").hidden = !vent;
+		$("mouth-hint").hidden = vent;
+		$("vent-hint").hidden = !vent;
+		$("add-seat").textContent = vent ? "Add seat" : "Add competitor";
+		$("drain").disabled = !lab;
+		$("pour").disabled = vent;
+		$("open-valves").disabled = !lab;
+		$("brush-summary").hidden = !lab;
+		// A vent seat reads the grid gas; without it there is no pressure to hold.
+		$("pressure-off").disabled = vent;
+		$("pressure-particles").disabled = vent;
+		if (!lab && openDrawerId === "valve-drawer") setDrawer(null);
+		setAutoSlider(Math.round(Game.autoFor(mode) * 100));
 		Game.consumeDirty(game, scene);
-		if (!isGame && scene) R.rebuildBackground(scene, layout, sim.caseTint);
+		if (lab && scene) R.rebuildBackground(scene, layout, sim.caseTint);
+		syncPressureRadios();
 		overlayDirty = true;
 		shownIndex = -2;
 		shownGameVersion = -1;
+		shownRosterVersion = -1;
 		syncGameUI();
 		if (paused) drawFrame(true);
 	}
 
+	// G walks the three modes, so a keyboard never has to pass through Lab to
+	// reach Vent.
+	function nextMode(mode) {
+		if (mode === "lab") return "game";
+		if (mode === "game") return "vent";
+		return "lab";
+	}
+
 	$("mode-lab").onchange = () => { if ($("mode-lab").checked) applyPlayMode("lab"); };
 	$("mode-game").onchange = () => { if ($("mode-game").checked) applyPlayMode("game"); };
+	$("mode-vent").onchange = () => { if ($("mode-vent").checked) applyPlayMode("vent"); };
 	$("bot-enable").onchange = () => {
 		Game.setBotControl(game, $("bot-enable").checked);
 		syncGameUI();
 	};
 	$("new-match").onclick = resetSim;
 
+	// The panel is split by what changes: the seat list only when a seat comes,
+	// goes, or changes hands, and the mode's own list on every game version bump.
 	function syncGameUI() {
-		if (game.mode !== "game" || game.version === shownGameVersion) return;
+		if (game.mode === "lab") return;
+		syncRosterUI();
+		if (game.version === shownGameVersion) return;
 		shownGameVersion = game.version;
 		syncPressureRadios();
 		$("game-status").textContent = game.lastEvent;
+		if (game.mode === "vent") syncVentUI();
+		else syncQuestUI();
+	}
 
-		let pHtml = "";
+	function rosterTask(player) {
+		if (game.mode === "vent") {
+			const seat = game.vent.seats[player.id];
+			return seat && seat.bottle >= 0 ? "band " + seat.tag : "no rig";
+		}
+		if (player.questId < 0) return "idle";
+		for (let q = 0; q < game.quests.length; q++) {
+			if (game.quests[q].id === player.questId) return game.quests[q].title;
+		}
+		return "idle";
+	}
+
+	function rosterScore(player) {
+		if (game.mode !== "vent") return player.score + " pts (" + player.completed + ")";
+		return player.score + " pts · " + player.completed + " held · " + player.failed + " lost";
+	}
+
+	function syncRosterUI() {
+		if (game.rosterVersion === shownRosterVersion) return;
+		shownRosterVersion = game.rosterVersion;
+		const limit = game.mode === "vent" ? Game.VENT_MAX : Game.MAX_SEATS;
+		let html = "";
 		for (let p = 0; p < game.players.length; p++) {
 			const pl = game.players[p];
-			let task = "idle";
-			if (pl.questId >= 0) {
-				for (let q = 0; q < game.quests.length; q++) {
-					if (game.quests[q].id === pl.questId) {
-						task = game.quests[q].title;
-						break;
-					}
-				}
-			}
-			const role = pl.bot ? (game.botControl ? " [bot]" : " [paused]") : "";
-			pHtml +=
+			const held = pl.bot && !game.botControl ? " · paused" : "";
+			html +=
 				'<div class="player-row">' +
 				'<span class="player-swatch" style="background:' + pl.hex + '"></span>' +
-				"<strong>" + pl.name + role + "</strong>" +
-				'<span class="player-task">' + task + "</span>" +
-				'<span class="player-score">' + pl.score + " pts (" + pl.completed + ")</span>" +
+				"<strong>" + pl.name + held + "</strong>" +
+				'<span class="player-task">' + rosterTask(pl) + "</span>" +
+				'<span class="player-score">' + rosterScore(pl) + "</span>" +
+				'<label class="player-bot"><input type="checkbox" data-bot="' + p + '"' + (pl.bot ? " checked" : "") + "> bot</label>" +
+				'<button type="button" data-remove="' + p + '"' + (p === 0 ? " disabled" : "") + ">Remove</button>" +
 				"</div>";
 		}
-		$("player-list").innerHTML = pHtml;
+		$("player-list").innerHTML = html;
+		$("add-seat").disabled = game.players.length >= limit;
+	}
 
+	function syncVentUI() {
+		let html = "";
+		for (let s = 0; s < game.vent.count; s++) {
+			const seat = game.vent.seats[s];
+			const pl = game.players[seat.player];
+			if (seat.bottle < 0) {
+				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span class="vent-band">no rig fits this seed</span></div>';
+				continue;
+			}
+			html +=
+				'<div class="vent-row' + (seat.ok ? " in" : " out") + '" data-seat="' + s + '" title="Select the bottle on the field">' +
+				'<span class="player-swatch" style="background:' + pl.hex + '"></span>' +
+				"<strong>" + pl.name + "</strong>" +
+				'<span class="vent-band">' + seat.tag + " · " + seat.points + " pts</span>" +
+				'<span class="vent-press">' + seat.pressure.toFixed(2) + "</span>" +
+				'<span class="vent-gauge"><i style="width:' + Math.round(seat.holdRatio * 100) + '%"></i></span>' +
+				'<span class="vent-rounds">' + seat.rounds + " held</span>" +
+				"</div>";
+		}
+		$("vent-list").innerHTML = html;
+	}
+
+	function syncQuestUI() {
 		const userBusy = game.players[0].questId >= 0;
 		let qHtml = "";
 		for (let k = 0; k < game.quests.length; k++) {
@@ -269,6 +349,47 @@
 		}
 		$("quest-list").innerHTML = qHtml;
 	}
+
+	// A seat that came, went, or changed hands moves mouths and rigs, so the scene
+	// and the air overlay are rebuilt around the new seat list.
+	function afterRosterChange() {
+		Game.consumeDirty(game, scene);
+		overlayDirty = true;
+		shownIndex = -2;
+		syncGameUI();
+		if (paused) drawFrame(true);
+	}
+
+	$("player-list").onclick = event => {
+		const remove = event.target.closest("[data-remove]");
+		if (!remove) return;
+		Game.removePlayer(game, Number(remove.dataset.remove));
+		afterRosterChange();
+	};
+
+	$("player-list").onchange = event => {
+		const box = event.target.closest("[data-bot]");
+		if (!box) return;
+		Game.setPlayerBot(game, Number(box.dataset.bot), box.checked);
+		afterRosterChange();
+	};
+
+	// A vent row is the seat's locate button: the bottle is the only cell of the
+	// rig a seat ever needs to look at.
+	$("vent-list").onclick = event => {
+		const row = event.target.closest("[data-seat]");
+		if (!row) return;
+		const seat = game.vent.seats[Number(row.dataset.seat)];
+		if (!seat || seat.bottle < 0) return;
+		selected = seat.bottle;
+		canvas.focus();
+		if (paused) drawFrame(false);
+	};
+
+	$("add-seat").onclick = () => {
+		Game.addPlayer(game);
+		afterRosterChange();
+	};
 
 	$("quest-list").onclick = event => {
 		const signBtn = event.target.closest("[data-sign]");
@@ -323,11 +444,12 @@
 	};
 	$("reset").onclick = resetSim;
 	$("pour").onclick = () => {
+		if (game.mode === "vent") return;
 		S.pour(sim, 24);
 		if (paused) drawFrame(false);
 	};
 	$("drain").onclick = () => {
-		if (game.mode === "game") return;
+		if (game.mode !== "lab") return;
 		S.drain(sim);
 		if (paused) drawFrame(false);
 	};
@@ -338,7 +460,7 @@
 	$("step").onclick = () => {
 		if (!paused) return;
 		S.step(sim, S.STEP);
-		if (game.mode === "game") {
+		if (game.mode !== "lab") {
 			Game.step(game, S.STEP);
 			Game.consumeDirty(game, scene);
 			syncGameUI();
@@ -434,8 +556,8 @@
 		if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
 		if (event.key === "Escape" && openDrawerId) closeDrawers();
 		else if (event.key === "?" || event.key === "h" || event.key === "H") toggleDrawer("help-drawer");
-		else if ((event.key === "v" || event.key === "V") && game.mode !== "game") toggleDrawer("valve-drawer");
-		else if (event.key === "g" || event.key === "G") applyPlayMode(game.mode === "game" ? "lab" : "game");
+		else if ((event.key === "v" || event.key === "V") && game.mode === "lab") toggleDrawer("valve-drawer");
+		else if (event.key === "g" || event.key === "G") applyPlayMode(nextMode(game.mode));
 	});
 
 	// ---- valve brush --------------------------------------------------------
@@ -817,12 +939,17 @@
 		}
 		pointerState(event);
 		if (at.inlet >= 0) {
-			// Owned mouths answer only to their owner; a dealt mouth keeps its in/out
-			// role, so the shift-click swap is a Lab-mode move.
-			const pressed = S.toggleInlet(sim, at.inlet, event.shiftKey, 0);
-			if (!pressed && game.mode === "game") {
-				const owner = sim.inlets.owner[at.inlet];
-				Game.notice(game, owner >= 0 ? "That mouth belongs to " + game.players[owner].name + "." : "No mouth was dealt in that slot.");
+			// A mouth answers only to the seat that owns it, and only while a person
+			// plays that seat. It keeps its in/out role, so the shift-click swap stays
+			// a Lab-mode move.
+			const actor = Game.pressActor(game, at.inlet);
+			if (actor < 0) {
+				refuseMouth(at.inlet);
+				return;
+			}
+			const pressed = S.toggleInlet(sim, at.inlet, event.shiftKey, actor);
+			if (!pressed) {
+				Game.notice(game, "A dealt mouth keeps its in/out role — the polarity swap is a Lab move.");
 				syncGameUI();
 			}
 			if (paused) drawFrame(pressed);
@@ -831,12 +958,27 @@
 		selected = at.cell;
 		if (selected < 0 || event.detail > 1) return;
 		if (event.ctrlKey) {
-			if (game.mode !== "game") S.fillValve(sim, selected);
+			if (game.mode === "lab") S.fillValve(sim, selected);
 		} else turnSelected(event.shiftKey ? -1 : 1);
 		if (paused) drawFrame(true);
 	};
+	// The status line answers a press that was not allowed, naming the seat that
+	// holds the mouth instead of leaving the click silently dead.
+	function refuseMouth(inlet) {
+		const owner = sim.inlets.owner[inlet];
+		const player = owner >= 0 ? game.players[owner] : null;
+		if (!player) {
+			Game.notice(game, game.mode === "vent" ? "Only the rigs' own mouths are in the bands here." : "No mouth was dealt in that slot.");
+		} else if (player.bot) {
+			Game.notice(game, player.name + " is bot controlled — untick its bot box to play that seat.");
+		} else {
+			Game.notice(game, "That mouth belongs to " + player.name + ".");
+		}
+		syncGameUI();
+	}
+
 	canvas.ondblclick = event => {
-		if (game.mode === "game") return;
+		if (game.mode !== "lab") return;
 		event.preventDefault();
 		const w = worldFromPointer(event);
 		if (!w) return;
@@ -850,7 +992,7 @@
 	};
 	canvas.onkeydown = event => {
 		if (event.key === "p" || event.key === "P") {
-			if (game.mode === "game") return;
+			if (game.mode !== "lab") return;
 			event.preventDefault();
 			if (selected < 0) selected = 44;
 			placeBrushAt(selected);
@@ -954,6 +1096,7 @@
 		R.renderGrains(ctx, sim, scene);
 		R.renderInletBadges(ctx, sim.inlets, hoverInlet);
 		R.renderGoals(ctx, layout, game);
+		R.renderVents(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
 		R.renderDrag(ctx, layout, sim, drag);
 		if (drawPressure && pressure.kind === "grid") R.renderPressureLegend(ctx, pressureSpanLabel);
@@ -994,7 +1137,7 @@
 		previous = now;
 		if (!paused) {
 			const steps = S.advance(sim, dt);
-			if (steps > 0 && game.mode === "game") {
+			if (steps > 0 && game.mode !== "lab") {
 				Game.step(game, steps * S.STEP);
 				Game.consumeDirty(game, scene);
 				syncGameUI();

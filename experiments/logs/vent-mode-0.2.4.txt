@@ -1,0 +1,69 @@
+Vent mode: rig authority, seat balance, and what leaving the mode restores
+node v22.22.3 Intel(R) Xeon(R) Processor @ 2.60GHz (2 cpus)
+node experiments/vent-balance.cjs 45 7 21 3 42 101 2024 555 99
+
+rig authority (span = what the seat's two mouths can do to its own pocket)
+  every seed: span 1.00..1.00 over columns x rows 3/5/7, sealed leak <= 0.0001/s
+  charge 1.00 / drain 0.00 on all 30 column x row x seed combinations tried
+  a sealed pocket is a closed volume: it keeps whatever it is left with, which is
+  what makes "hold a band" a possible task at all
+
+design sweep (held = share of samples inside the band, sw/s = mouth moves per
+second; rows below the first are the same rigs with one rule changed)
+  cross bottle, drift picks the rig, 15 Hz loop    92..97%   4.2..6.6 sw/s
+  straight bottle, drift deleted, 15 Hz loop       27..96%   1.2..19.8 sw/s
+  straight bottle, seat loop on the sim cadence    73..99%   0.5..11.7 sw/s
+  + bottle rows 4..6 (away from the mouth bands)   75..99%   0.4..6.6 sw/s
+  + VENT_SETTLE 0.4 s waited out after a pulse     77..99%   0.4..1.4 sw/s
+  + pulse ends VENT_AIM_INSET into the band        93..99%   0.4..0.7 sw/s
+
+where a pulse ends (8 seeds x 45 s, two seats; the slide after sealing runs the
+way the pulse was pushing, so the center is not the aim point)
+  ends at                       held      sw/s     rounds   pts/match
+  0.5 past the center          11..96%   0.7..4.1    0..10     132
+  the center                   44..98%   0.4..2.4    4..11     312
+  0.25 in from the edge        84..98%   0.5..0.8    9..11     338
+  0.125 in from the edge       93..99%   0.4..0.7   10..11     342   <- shipped
+
+final balance, 45 s per match, 8 seeds
+  seats          n   held      sw/s     rounds   lost   pts/match
+  1 player       8   93..99%  0.4..0.7   10..11   0..1   295..410
+  2 players     16   96..98%  0.5..0.7   10..11   0..1   240..435
+  1 bot + idle   8   96..98%  0.5..0.7   10..11   0..1   240..395
+  a second rig does not cost the first its band: two seats hold *better* than
+  one, because the two columns are placed as far apart as the field allows and
+  each seat only answers its own mouths.
+
+  seed 7    1 seat col1/row6 0.25-0.45  93% 0.5  10 rounds 375 pts 0 lost
+            2 seats col1/row6 0.08-0.23 96% 0.5  10 rounds 295 pts 0 lost
+                    col6/row4 0.33-0.47 98% 0.6  10 rounds 335 pts 1 lost
+  seed 21   2 seats col5/row4 0.33-0.46 97% 0.7  10 rounds 370 pts 0 lost
+                    col0/row4 0.48-0.69 98% 0.5  10 rounds 320 pts 1 lost
+  seed 3    2 seats col4/row4 0.26-0.48 98% 0.6  10 rounds 280 pts 0 lost
+                    col9/row5 0.79-0.91 97% 0.6  10 rounds 330 pts 0 lost
+  seed 42   2 seats col7/row4 0.66-0.81 98% 0.6  10 rounds 435 pts 1 lost
+                    col2/row4 0.14-0.30 97% 0.7  10 rounds 255 pts 0 lost
+  seed 101  2 seats col6/row5 0.10-0.28 97% 0.7  10 rounds 330 pts 0 lost
+                    col1/row5 0.29-0.49 98% 0.6  11 rounds 420 pts 0 lost
+  seed 2024 2 seats col6/row5 0.76-0.94 97% 0.6  10 rounds 240 pts 1 lost
+                    col1/row6 0.23-0.38 96% 0.5  10 rounds 400 pts 0 lost
+  seed 555  2 seats col9/row4 0.49-0.65 97% 0.6  10 rounds 420 pts 0 lost
+                    col4/row6 0.55-0.76 97% 0.5  10 rounds 435 pts 1 lost
+  seed 99   2 seats col8/row5 0.54-0.67 97% 0.6  10 rounds 320 pts 1 lost
+                    col3/row5 0.07-0.23 98% 0.5  10 rounds 360 pts 0 lost
+
+leaving vent mode: the lab has to get its own field back
+  seed 7:  2 rigs torn down, 4 vent mouths back to 20, auto-rotate 0.05 -> 0.9,
+           cell state diffs 0 (100 cells compared: kind, world ports, chamber,
+           tint, auto-lock, goal owner)
+  seed 21: same, cell state diffs 0
+  the diff is only 0 once the saved quarter is G.orientationOf(v) instead of the
+  auto-rotate schedule's pending target: quarterOf(sim.target) restored 17 of 100
+  cells already turned to where they were heading.
+
+costs
+  entering vent mode   8..34 ms (shafts, two GAS.refresh, two converged spans)
+  45 s of play        2.8..6.8 s of CPU (120 Hz seat loop, 2 seats)
+  GAS.steady(pTarget) 3.6 ms converged, 0.4 ms on the 12-iteration live path
+  GAS.refresh(true)   25 ms
+  S.rebuildPressure   44 ms  (why the mode drains grains and locks its rotors)

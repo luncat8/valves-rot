@@ -16,6 +16,7 @@
 			<legend>Mode</legend>
 			<label><input id="mode-lab" name="mode" type="radio" value="lab" checked> Lab</label>
 			<label><input id="mode-game" name="mode" type="radio" value="game"> Game</label>
+			<label><input id="mode-vent" name="mode" type="radio" value="vent"> Vent</label>
 		</fieldset>
 		<label>Seed <input id="seed" type="number" min="0" max="999999" value="7" step="1"></label>
 		<button id="shuffle" type="button">Shuffle seed</button>
@@ -46,10 +47,10 @@
 		<span id="brush-summary">Double-click places: random valve type · keep current direction</span>
 	</div>
 	<div class="play-stage">
-		<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click, press-drag, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P in Lab mode, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it; in Game mode each competitor owns two in and two out mouths in their color and only the owner can press them."></canvas>
+		<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click, press-drag, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P in Lab mode, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it; in Game mode each competitor owns two in and two out mouths in their color and only the owner can press them. In Vent mode the valves are locked and each seat presses only the two mouths of its own rig."></canvas>
 		<section id="game-panel" class="game-panel" hidden aria-labelledby="game-panel-title">
 			<div class="game-head">
-				<h2 id="game-panel-title">Game goals <small>v0.2</small></h2>
+				<h2 id="game-panel-title"><span id="mode-title">Game goals</span> <small>v0.2</small></h2>
 				<div class="game-actions">
 					<label><input id="bot-enable" type="checkbox" checked> Bot control</label>
 					<button id="new-match" type="button">New match</button>
@@ -57,10 +58,13 @@
 			</div>
 			<p id="game-status" class="game-status" role="status" aria-live="polite"></p>
 			<p class="hint" id="mouth-hint">Each competitor is dealt <strong>2 in</strong> (source) and <strong>2 out</strong> (vent) mouths at independent random columns of the two bands, drawn in their color — four different columns per player, never an in mouth above one of that player's own out mouths. Press your own mouths to open or seal them; dealt mouths keep their in/out role, and rivals cannot press yours.</p>
-			<h3>Competitors</h3>
+			<p class="hint" id="vent-hint" hidden>Each seat borrows one column: a locked pipe runs its whole length with a bottle chamber in the middle, and only that seat's two mouths stay in the bands — a <strong>source</strong> at the bottom, a <strong>vent</strong> at the top. Open and seal them to hold your bottle's pressure inside your band for <strong>4 s</strong>; a narrower band scores more, and a held band moves a step and is played again. Valves cannot be turned in this mode, and 5% of them still drift on their own schedule. One or two seats only: more would share one average.</p>
+			<h3>Competitors <button id="add-seat" type="button">Add seat</button></h3>
 			<div id="player-list" class="player-list"></div>
-			<h3>Quests <small>(1 sign per goal)</small></h3>
+			<h3 id="quest-heading">Quests <small>(1 sign per goal)</small></h3>
 			<div id="quest-list" class="quest-list"></div>
+			<h3 id="vent-heading" hidden>Vent seats</h3>
+			<div id="vent-list" class="vent-list" hidden></div>
 		</section>
 	</div>
 	<p id="stats" aria-live="off"></p>
@@ -103,9 +107,10 @@
 			<button id="close-help" type="button">Close ×</button>
 		</div>
 		<h3>Playing</h3>
-		<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click or <strong>press-drag</strong> a valve — or focus the field and use arrow keys plus Enter/Space — to turn a rotor. A press-drag dials one 90° detent per quarter turn of the hand: its arc shows the pull, its bold notch the detent the rotor is committed to, and a short wobble never turns it. Pressing near the hub pulls horizontally instead, one detent per 52 px. <strong>Auto-rotate</strong> sets the share of valves that turn automatically on their schedule (90% default in Lab mode, 7% in Game mode).</p>
+		<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click or <strong>press-drag</strong> a valve — or focus the field and use arrow keys plus Enter/Space — to turn a rotor. A press-drag dials one 90° detent per quarter turn of the hand: its arc shows the pull, its bold notch the detent the rotor is committed to, and a short wobble never turns it. Pressing near the hub pulls horizontally instead, one detent per 52 px. <strong>Auto-rotate</strong> sets the share of valves that turn automatically on their schedule (90% default in Lab mode, 7% in Game mode, 5% in Vent mode).</p>
 		<p>In <strong>Game mode</strong> (<kbd>G</kbd>), sign an open quest to spawn one or two upright <code>hollow single · direction ↑ N · 270° (ports N)</code> goal bottles tinted in your player color (a pressure quest uses a four-way bottle). Build a route with the valves, press <strong>Pour</strong> for grains or connect a pressure source or sink to the target, and hold its count or local pressure to score. Pressure targets stay as advertised: no column is opened for you. Air from any open mouth can be routed, including a rival's, but only its owner can operate that mouth. Isolate competing branches when needed. Finished bottles become <code>solid blank</code> plugs and a new quest replaces the completed one.</p>
 		<p>The mouths in the pour and drain bands are constant-pressure boundary cells outside the 10×10 field: bottom rows hold high (1), top rows low (0). In Lab mode every column has a mouth: click one to seal or open it, Shift-click to swap its polarity. In Game mode the bands are dealt to the competitors instead — two in (source) mouths at the bottom and two out (vent) mouths at the top per player, at independent random columns and tinted in the owner's color — and only the owner can press them. A player's four mouths never share a column, and an in mouth never sits above that player's own out mouth; one column can still carry one player's source and another player's vent. Air only travels through open valve faces, so a shut port traps the pressure behind it.</p>
+		<p>In <strong>Vent mode</strong> the routes are built for you and the valves are out of reach: one locked pipe runs down each seat's column with a bottle chamber in the middle, cased in the seat's color, and the band beside that cell is the pressure range to hold. Only that seat's two mouths are in the bands — the bottom one a source, the top one a vent — and pressing them is the whole game. The gauge beside the bottle shows the live pocket pressure against the band, the arc around the cell how much of the 4 s hold is done, and the tag under it the band itself. Hold it and the band moves a step for the next round; leave it by more than a margin and the round is lost. Two seats at most, because every pocket shares one field average. Seats can be added or removed at any time, and each has its own <strong>bot</strong> checkbox — untick it to play that seat yourself.</p>
 		<h3>Shortcuts</h3>
 		<dl class="shortcuts">
 			<dt>Click valve</dt><dd>Turn it +90° (<kbd>Shift</kbd>-click for −90°)</dd>
@@ -116,7 +121,7 @@
 			<dt><kbd>Shift</kbd>-click mouth</dt><dd>Swap its polarity (source ⇄ vent, Lab mode)</dd>
 			<dt>Arrow keys</dt><dd>Move the valve selection (field focused)</dd>
 			<dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Turn the selected valve +90° (<kbd>Shift</kbd> for −90°)</dd>
-			<dt><kbd>G</kbd></dt><dd>Switch between Lab mode and Game mode</dd>
+			<dt><kbd>G</kbd></dt><dd>Cycle Lab → Game → Vent mode</dd>
 			<dt><kbd>P</kbd></dt><dd>Place the valve brush on the selected valve (Lab mode)</dd>
 			<dt><kbd>V</kbd></dt><dd>Open or close the Place valve drawer (Lab mode)</dd>
 			<dt><kbd>?</kbd> or <kbd>H</kbd></dt><dd>Open or close this Help drawer</dd>
