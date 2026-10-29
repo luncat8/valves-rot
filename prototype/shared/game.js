@@ -17,6 +17,21 @@ const ValveGame = (() => {
 	const BOARD_SIZE = 5;
 	const HOLD_OPEN = 0.45;
 	const HOLD_EXACT = 1.0;
+	// The field moves while other rotors turn, so a pressure target has to survive
+	// a longer window than a settled pile of grains.
+	const HOLD_PRESSURE = 1.6;
+	// A fresh quest stays on the board long enough for a person to read the board
+	// and sign it before the bots reach for it.
+	const BOT_GRACE = 4;
+	// A bounded clock is a share of the budget the quest's own demands need.
+	const TIME_BASE = 45;
+	const TIME_PER_GRAIN = 3.5;
+	const TIME_PER_BOTTLE = 18;
+	const TIME_WINDOW = 10;
+	const TIME_PRESSURE = 40;
+	const TIME_TIGHT = 0.8;
+	const TIME_MIN = 40;
+	const TIME_MAX = 90;
 	const COHERENCE_MIN = 0.42;
 	const GOAL_CHAMBER = G.RV * 0.53;
 	const EVAL_DT = 1 / 15;
@@ -140,15 +155,17 @@ const ValveGame = (() => {
 		if (isPressure) {
 			const op = rnd() < 0.5 ? ">" : "<";
 			const strong = rnd() < 0.42;
-			const threshold = op === ">" ? (strong ? 0.78 : 0.68) : strong ? 0.22 : 0.32;
 			const bottles = !strong && rnd() < 0.22 ? 2 : 1;
-			const timeRoll = rnd();
-			const timeLimit = timeRoll < 0.55 ? 0 : timeRoll < 0.82 ? 70 : 45;
-			const diff = (strong ? 3 : 2) + (bottles > 1 ? 2 : 0) + (timeLimit === 45 ? 2 : timeLimit > 0 ? 1 : 0);
+			const clock = rollTimeLimit(rnd, TIME_PRESSURE + (strong ? 8 : 0) + TIME_PER_BOTTLE * (bottles - 1), 0.55);
+			// The number on the board is a placeholder: signing fits the target to
+			// what the mouths can actually reach in the bottle's own column, and
+			// `aim` is how far of that headroom the tier demands.
+			const threshold = op === ">" ? (strong ? 0.78 : 0.68) : strong ? 0.22 : 0.32;
 			return finalizeQuest(id, {
 				kind: "pressure",
 				op,
 				threshold,
+				aim: strong ? 0.78 : 0.6,
 				minCount: 0,
 				maxCount: 0,
 				bands: 0,
@@ -159,8 +176,8 @@ const ValveGame = (() => {
 				hueHalf: 180,
 				colorMask: 63,
 				bottles,
-				timeLimit,
-				difficulty: diff,
+				timeLimit: clock.limit,
+				difficulty: (strong ? 3 : 2) + (bottles > 1 ? 2 : 0) + (clock.tight ? 2 : clock.limit > 0 ? 1 : 0),
 			});
 		}
 
@@ -218,9 +235,8 @@ const ValveGame = (() => {
 		}
 
 		const bottles = shapeDiff <= 2 && bands < 6 && rnd() < 0.16 ? 2 : 1;
-		const tRoll = rnd();
-		const timeLimit = tRoll < 0.72 ? 0 : tRoll < 0.9 ? 75 : 45;
-		const diff = shapeDiff + (bottles > 1 ? 2 : 0) + (timeLimit === 45 ? 2 : timeLimit > 0 ? 1 : 0);
+		const budget = TIME_BASE + TIME_PER_GRAIN * minCount + TIME_PER_BOTTLE * (bottles - 1) + (maxCount > 0 ? TIME_WINDOW : 0);
+		const clock = rollTimeLimit(rnd, budget, 0.72);
 
 		return finalizeQuest(id, {
 			kind: "grains",
@@ -236,15 +252,26 @@ const ValveGame = (() => {
 			hueHalf,
 			colorMask,
 			bottles,
-			timeLimit,
-			difficulty: diff,
+			timeLimit: clock.limit,
+			difficulty: shapeDiff + (bottles > 1 ? 2 : 0) + (clock.tight ? 2 : clock.limit > 0 ? 1 : 0),
 		});
+	}
+
+	// Untimed, or a share of the budget the quest needs; the tight share is what
+	// the extra difficulty point buys, so a small-count quest is never given a
+	// clock it cannot finish and a large one is never given an easy ride.
+	function rollTimeLimit(rnd, budget, untimedShare) {
+		const roll = rnd();
+		if (roll < untimedShare) return { limit: 0, tight: false };
+		const tight = roll >= 0.9;
+		const scaled = budget * (tight ? TIME_TIGHT : 1);
+		return { limit: Math.round(Math.min(TIME_MAX, Math.max(TIME_MIN, scaled))), tight };
 	}
 
 	function finalizeQuest(id, spec) {
 		const tier = spec.difficulty <= 1 ? "easy" : spec.difficulty <= 3 ? "med" : "hard";
 		const points = tier === "easy" ? 10 : tier === "med" ? 25 : 50;
-		const holdNeed = spec.kind === "grains" && spec.maxCount === 0 ? HOLD_OPEN : HOLD_EXACT;
+		const holdNeed = spec.kind === "pressure" ? HOLD_PRESSURE : spec.maxCount === 0 ? HOLD_OPEN : HOLD_EXACT;
 		const q = {
 			id,
 			tier,
@@ -265,15 +292,18 @@ const ValveGame = (() => {
 			bottles: spec.bottles,
 			timeLimit: spec.timeLimit,
 			remaining: spec.timeLimit,
+			aim: spec.aim || 0.6,
 			holdNeed,
 			hold: 0,
 			holdRatio: 0,
+			openFor: 0,
 			owner: -1,
 			cellCount: 0,
 			cells: new Int32Array(2),
 			cellValues: new Float64Array(2),
 			cellTotals: new Int16Array(2),
 			cellOk: new Uint8Array(2),
+			feed: new Int8Array(2),
 			cellTags: ["", ""],
 			title: "",
 			progressText: "Unsigned",
@@ -308,9 +338,12 @@ const ValveGame = (() => {
 		return null;
 	}
 
-	function spawnQuest(game, tierHint) {
+	// `aged` marks the board a match starts on as already claimable; every other quest
+	// opens young, so that the human gets the first look at it before the bots do.
+	function spawnQuest(game, tierHint, aged) {
 		const hint = tierHint || neededTier(game.quests);
 		const q = generateQuest(game, hint);
+		if (aged) q.openFor = BOT_GRACE;
 		game.quests.push(q);
 		game.version++;
 		return q;
@@ -344,7 +377,7 @@ const ValveGame = (() => {
 	function seedBoard(game) {
 		game.quests.length = 0;
 		const initial = ["easy", "easy", "med", "med", "hard"];
-		for (let k = 0; k < BOARD_SIZE; k++) spawnQuest(game, initial[k]);
+		for (let k = 0; k < BOARD_SIZE; k++) spawnQuest(game, initial[k], true);
 	}
 
 	function markRotorDirty(game, index) {
@@ -383,24 +416,47 @@ const ValveGame = (() => {
 		game.version++;
 	}
 
-	// Clears signed goals cleanly when resetting or returning to Lab mode.
-	function clearActiveGoals(game, sealWithBlank) {
+	// A signed quest's pour priority is only borrowed for the length of the quest.
+	function releaseFeeds(game, quest) {
+		for (let s = 0; s < quest.feed.length; s++) {
+			const column = quest.feed[s] - 1;
+			if (column < 0) continue;
+			quest.feed[s] = 0;
+			S.setGoalFeed(game.sim, column, false);
+		}
+	}
+
+	// Gives up the field a signed quest held: the bottles, their locks and tints,
+	// and the pour priority. The quest object keeps its own outcome for the HUD.
+	function unclaim(game, quest, sealWithBlank) {
 		const sim = game.sim;
 		const blank = G.typeById("solid-blank");
+		releaseFeeds(game, quest);
+		for (let s = 0; s < quest.cellCount; s++) {
+			const idx = quest.cells[s];
+			sim.autoLocked[idx] = 0;
+			sim.goalOwner[idx] = -1;
+			S.setCaseTint(sim, idx, -1);
+			if (sealWithBlank) {
+				S.installValve(sim, idx, blank, 0);
+				markRotorDirty(game, idx);
+			}
+		}
+		game.dirtyCases = true;
+	}
+
+	// Clears signed goals cleanly when resetting or returning to Lab mode. The card
+	// stays on the board, so it also has to forget that anyone ever held it.
+	function clearActiveGoals(game, sealWithBlank) {
 		for (let q = 0; q < game.quests.length; q++) {
 			const quest = game.quests[q];
 			if (quest.owner < 0) continue;
-			for (let s = 0; s < quest.cellCount; s++) {
-				const idx = quest.cells[s];
-				sim.autoLocked[idx] = 0;
-				sim.goalOwner[idx] = -1;
-				S.setCaseTint(sim, idx, -1);
-				if (sealWithBlank) {
-					S.installValve(sim, idx, blank, 0);
-					markRotorDirty(game, idx);
-				}
-			}
-			game.dirtyCases = true;
+			unclaim(game, quest, sealWithBlank);
+			quest.owner = -1;
+			quest.hold = 0;
+			quest.holdRatio = 0;
+			quest.remaining = quest.timeLimit;
+			quest.progressText = "Unsigned";
 		}
 		for (let p = 0; p < game.players.length; p++) game.players[p].questId = -1;
 	}
@@ -553,7 +609,8 @@ const ValveGame = (() => {
 		const reach = quest.op === ">" ? Math.max(upper, base + 0.25) : Math.min(lower, base - 0.25);
 		// Aim part of the way to what the best mouth set reaches, so the target
 		// sits inside the field this cell can actually produce and starts unmet.
-		const aim = base + (reach - base) * 0.6;
+		// The tier decides how much of that headroom the player must claim.
+		const aim = base + (reach - base) * quest.aim;
 		quest.threshold = Number(Math.min(0.98, Math.max(0.02, aim)).toFixed(2));
 		quest.swatch = quest.op === ">" ? "#ff8a5c" : "#5cc8ff";
 		quest.title = formatQuestTitle(quest);
@@ -662,6 +719,7 @@ const ValveGame = (() => {
 		quest.cellCount = cells.length;
 		quest.hold = 0;
 		quest.holdRatio = 0;
+		quest.feed.fill(0);
 		quest.remaining = quest.timeLimit;
 		quest.cellValues.fill(-1);
 		quest.cellTotals.fill(-1);
@@ -678,8 +736,14 @@ const ValveGame = (() => {
 			S.setCaseTint(sim, idx, playerId);
 			markRotorDirty(game, idx);
 			if (quest.kind === "grains") {
+				// Pour above the route the search found, so `Pour` feeds this bottle
+				// first for as long as the quest is signed. One claim per bottle, and
+				// `releaseFeeds` hands it back, so an already-promoted column is safe.
 				const topCol = findGravityTopSpout(sim, idx - N);
-				if (topCol >= 0) sim.spoutMask[topCol] = 1;
+				if (topCol >= 0) {
+					S.setGoalFeed(sim, topCol, true);
+					quest.feed[s] = topCol + 1;
+				}
 			}
 		}
 
@@ -791,20 +855,8 @@ const ValveGame = (() => {
 	function finishQuest(game, qIndex, outcome) {
 		const quest = game.quests[qIndex];
 		const player = game.players[quest.owner];
-		const sim = game.sim;
-		const blank = G.typeById("solid-blank");
-
-		for (let s = 0; s < quest.cellCount; s++) {
-			const idx = quest.cells[s];
-			sim.autoLocked[idx] = 0;
-			sim.goalOwner[idx] = -1;
-			S.setCaseTint(sim, idx, -1);
-			// Quest end: replace goal bottle 'hollow single' with 'solid blank'.
-			S.installValve(sim, idx, blank, 0);
-			markRotorDirty(game, idx);
-		}
-		game.dirtyCases = true;
-
+		// Quest end: every goal bottle becomes a 'solid blank' plug.
+		unclaim(game, quest, true);
 		if (player) {
 			player.questId = -1;
 			if (outcome === "done") {
@@ -820,6 +872,7 @@ const ValveGame = (() => {
 		}
 
 		game.quests.splice(qIndex, 1);
+		// The replacement is deliberately young: a fresh slot is the human's window.
 		spawnQuest(game, null);
 		game.version++;
 	}
@@ -853,7 +906,7 @@ const ValveGame = (() => {
 		let bestScore = -1e9;
 		for (let k = 0; k < game.quests.length; k++) {
 			const q = game.quests[k];
-			if (q.owner >= 0) continue;
+			if (q.owner >= 0 || q.openFor < BOT_GRACE) continue;
 			if (q.kind === "pressure" && activeBotPressure && q.op !== activeBotPressure) continue;
 			// Stagger bot appetite by bot id so competitors pick varied tiers.
 			let score = q.points * 0.4 - q.difficulty * (botId === 1 ? 4 : botId === 2 ? 1.5 : 0.5);
@@ -1169,7 +1222,10 @@ const ValveGame = (() => {
 
 		for (let q = game.quests.length - 1; q >= 0; q--) {
 			const quest = game.quests[q];
-			if (quest.owner < 0) continue;
+			if (quest.owner < 0) {
+				quest.openFor += dt;
+				continue;
+			}
 			if (quest.timeLimit > 0) {
 				const beforeSec = Math.ceil(quest.remaining);
 				quest.remaining -= dt;
@@ -1179,18 +1235,19 @@ const ValveGame = (() => {
 				}
 				if (Math.ceil(quest.remaining) !== beforeSec) game.version++;
 			}
-			const ok = doEval ? evaluateQuest(game, quest) : quest.cellCount > 0 && quest.cellOk[0] === 1 && (quest.cellCount < 2 || quest.cellOk[1] === 1);
-			if (ok) {
-				quest.hold += dt;
-				quest.holdRatio = quest.hold >= quest.holdNeed ? 1 : quest.hold / quest.holdNeed;
-				if (quest.hold >= quest.holdNeed) {
-					finishQuest(game, q, "done");
-					continue;
-				}
-			} else if (quest.hold > 0) {
+			if (doEval) evaluateQuest(game, quest);
+			// Every bottle has to hold, so one window covers the quest: the verdicts
+			// `evaluateQuest` cached on the settle cadence carry it between evaluations.
+			let ok = quest.cellCount > 0;
+			for (let s = 0; s < quest.cellCount; s++) if (!quest.cellOk[s]) ok = false;
+			if (!ok) {
 				quest.hold = 0;
 				quest.holdRatio = 0;
+				continue;
 			}
+			quest.hold += dt;
+			quest.holdRatio = quest.hold >= quest.holdNeed ? 1 : quest.hold / quest.holdNeed;
+			if (quest.hold >= quest.holdNeed) finishQuest(game, q, "done");
 		}
 
 		stepBots(game, dt);
@@ -1206,6 +1263,8 @@ const ValveGame = (() => {
 		GOAL_CHAMBER,
 		GRAIN_HUE_DEG,
 		BAND_GROUPS,
+		BOT_GRACE,
+		HOLD_PRESSURE,
 		angleDiffDeg,
 		create,
 		setMode,

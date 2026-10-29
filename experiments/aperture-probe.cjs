@@ -56,14 +56,16 @@ function reference(layout, step) {
 	return { live: live / total, total };
 }
 
+// The grid field is the mask itself: every entry counts its whole cell area.
+// (Aperture weighting lives on the rotor graph, and the mask does not use it.)
 function maskLive(gas) {
+	const area = gas.cell * gas.cell;
 	let total = 0;
 	let live = 0;
 	for (let n = 0; n < gas.count; n++) {
 		const k = gas.list[n];
-		const weight = gas.open[k] * gas.cell * gas.cell;
-		total += weight;
-		if (gas.active[k] && !gas.pin[k]) live += weight;
+		total += area;
+		if (gas.active[k] && !gas.pin[k]) live += area;
 	}
 	return { live: live / total, comps: gas.compCount };
 }

@@ -335,3 +335,29 @@ The remaining cost is the 16-iteration PCG on fully connected machines (~1.5 ms/
 ## Next step
 
 Profile on a lower-power browser and consider caching unaffected component operators during one-valve turns; preserve next-tick exchange and sealed-component conservation when optimizing further.
+
+# Solver leftovers and Game mode balance (2026-10-28)
+
+## Review
+
+The recorded next step of the previous stage — calibrate the ramp so it can carry a physical unit — was already finished: `calibration.js` converts measured wall impulse per wall area per elapsed time into pascals against a `0.7125 Pa` reference span, and the field is documented as a normalized relative potential with an editable Pa-equivalent label in the UI. What was actually open was the cost the propagation work left behind, and the balance of the mode the pressure quests live in.
+
+## Changes
+
+- `gas.js`: deleted the display mirrors (`face`, `apR`, `apD`, `comp`, `open`, `fill`, `cond` copies on the projection) that only the debug overlay could have read, the `syncConductance()` calls that existed to keep them warm, the duplicated edge build and a redundant measure pass; the harmonic-mean pass is gated on the network's own dirty flag, `gas.compCount` became `gas.net.compCount`, and `components`/`faceConductance`/`blankField` are exported for the fixtures that used to read a mirror. `gas-fixtures`, `calibration-fixtures` and `aperture-probe` were repointed at the live arrays; the probe's mask share is now area-weighted instead of aperture-weighted and lands within a point of the old numbers.
+- `simulation.js`: the mouth column a signed quest borrows for pouring is a refcount (`sim.goalFeed`, `S.setGoalFeed`) that the spout-mask builder ORs into the seeded rule, instead of a direct `spoutMask` write that the next valve replacement wiped. `installValve` rebuilds through the same function, so a promotion now survives the whole quest and is handed back when the quest ends.
+- `game.js`: pressure targets get their own, longer settle window (`HOLD_PRESSURE 1.6`, because the field moves while other rotors turn) and a tier-dependent share of the reachable headroom (`quest.aim` `0.6`, `0.78` on hard) instead of the grain rules with a four-face bottle and a full-column shaft thrown in. A bounded clock is scaled to what the quest asks for (`TIME_*`: base plus a share per required grain and per extra bottle, clamped to `40-90 s`) and the tight roll buys the difficulty point rather than being an arbitrary `45 s`. Bots only reach for a quest that has been open `BOT_GRACE` seconds; the board a match seeds is exempt. `finishQuest` and `clearActiveGoals` share one `unclaim`, so a quest abandoned on a mode switch releases its bottles, locks, tints and pour priority and goes back on the board unsigned.
+- `app.js`: an unsigned pressure quest's card names the `hollow cross` it actually spawns.
+
+## Validation
+
+- Cost, `experiments/logs/grid-gas-cleanup-0.2.txt`: rebuild `0.463 / 0.465 / 1.753 → 0.275 / 0.336 / 1.327 ms` (nothing / one / all rotors turning), the grid rows of `simulation-bench` `2-9%` down, `front-probe` create+steady `12.5 → 12.1 ms`. Every row the solver produces is identical to the previous build; the `off` and `particles` rows and `behavior-probe`'s `glm*` reference rows move between runs of the *same* tree, so they are the noise floor and not a result.
+- Balance, `experiments/game-balance.cjs` with 4 seeds × 90 s, bot field, idle human, at Game's `20%` auto-rotate and at `0%`. Earned rate by tier went from `110 / 264 / 628` to `247 / 246 / 400` pts/min, and from a `267 / 325 / 621` spread at `0%` to `195 / 299 / 396`; the runaway single-hue quest (`1208` pts/min, `2.5 s` solve) is gone. Solve time now scales with the tier (`2.5 / 6.4 / 7.5 s`, was `6.7 / 6.0 / 6.3 s` — flat), which is what the clock scaling was for. Bots let a fresh quest sit `3.9-10.1 s` before signing (was `0.9-4.5 s`). Pours per completed quest `24` (`17` per required grain) against `26` (`11`), so pouring is still not a shortcut. Air stayed conserved on every seed and the board stayed `58-59%` signed.
+- The harness's own spout probe now reports `survivedOther: true, releasedOnEnd: true`; its comparison was against a joined string and read false in both trees until it was fixed.
+- All fixtures pass sequentially on Node v22.22.3: `geometry-check`, `geometry-fixtures`, `simulation-fixtures`, `air-fixtures`, `gas-fixtures`, `calibration-fixtures`, `pressure-propagation-fixtures`, `game-fixtures`, `render-smoke`.
+- Two claims from the pre-patch measurements did not survive implementation and were reverted rather than kept: auto-rotate churn was not what starves the human (`0%` did not reduce expiry, it raised the wait), and per-bottle hold timers are equivalent to the shared one while the quest demands every bottle at once. A two-bottle quest completed `0` of `1-3` times in these small samples for a reason still unmeasured.
+- Not verified in a real browser (none in this sandbox).
+
+## Next step
+
+Pressure is now the bots' surest kind (`7/7` completed at `0%` auto-rotate) because opening the right band is a click puzzle with no grain physics in the way, while open-count grain quests expire most often (`1/4` completed). Two measured follow-ups, in order of value: watch which cells `pickGoalCells` gives a two-bottle quest and whether a `Pour` above one of them can raise the second at all, then, if pressure stays trivial for bots, leave the last mouth of the favourable band shut at signing so the player has to open it.

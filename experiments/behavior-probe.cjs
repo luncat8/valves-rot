@@ -2,6 +2,8 @@
 // inertial rolling on a flat floor, sliding through an elbow bend and column
 // spread are measured on the combined solver and on the GLM prototype engine as
 // a behavioural reference. Run: node experiments/behavior-probe.cjs
+// The `glm*` rows are not comparable between runs: the reference engine seeds itself
+// randomly. Only the combined-solver rows are deterministic and usable as a gate.
 const G = require("../prototype/shared/geometry.js");
 const S = require("../prototype/shared/simulation.js");
 

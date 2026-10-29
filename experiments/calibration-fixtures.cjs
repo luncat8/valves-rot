@@ -159,7 +159,7 @@ function seamChain(cell, aperture) {
 	GAS.conductance(f);
 	GAS.steady(f, f.p);
 	const resistance = new Float64Array(nx);
-	for (let k = 1; k < nx; k++) resistance[k] = resistance[k - 1] + 1 / f.gR[k - 1];
+	for (let k = 1; k < nx; k++) resistance[k] = resistance[k - 1] + 1 / GAS.faceConductance(f, k - 1, k);
 	let error = 0;
 	for (let k = 0; k < nx; k++) {
 		const exact = 1 - resistance[k] / resistance[nx - 1];
@@ -200,7 +200,7 @@ const throttled = apertureChain(0.25);
 const fullBore = apertureChain(1);
 let apertureProfile = 0;
 const resistance = new Float64Array(throttled.nx);
-for (let k = 1; k < throttled.nx; k++) resistance[k] = resistance[k - 1] + 1 / throttled.gR[k - 1];
+for (let k = 1; k < throttled.nx; k++) resistance[k] = resistance[k - 1] + 1 / GAS.faceConductance(throttled, k - 1, k);
 for (let k = 0; k < throttled.nx; k++) apertureProfile = Math.max(apertureProfile, Math.abs(throttled.p[k] - (1 - resistance[k] / resistance[throttled.nx - 1])));
 assert.ok(apertureProfile < 1e-4, `a throttled face obeys its serial resistance (${apertureProfile.toExponential(2)})`);
 assert.ok(throttled.p[30] < fullBore.p[30] - 0.1, "a quarter-open face throttles the flow instead of switching it off");
@@ -285,6 +285,18 @@ assert.ok(fineError < coarseError, "refining the face stencil reduces aperture e
 // layout the shut rim lies between the midpoint and an endpoint of a link.
 const live = S.create(layout, { turning: false });
 S.setPressure(live, "grid");
+	// The live display field is a projection, so the runtime face test reads the
+	// projection itself: two texels share an open face exactly when both resolve
+	// to air nodes inside one component of the network.
+	function joined(field, k) {
+		const map = field.map;
+		const a = map[k];
+		const b = map[k + 1];
+		if (a < 0 || b < 0) return false;
+		const net = field.net;
+		return net.comp[a] === net.comp[b];
+	}
+
 function runtimeRimWidth(angle) {
 	G.setAngle(valve, angle);
 	GAS.refresh(live);
@@ -301,7 +313,7 @@ function runtimeRimWidth(angle) {
 			const a = (x - valve.cx) ** 2 + dy * dy;
 			const b = (x + cell - valve.cx) ** 2 + dy * dy;
 			if (a >= G.RV ** 2 || b < G.RV ** 2) continue;
-			if (field.face[gy * field.nx + gx] & 2) width += cell;
+			if (joined(field, gy * field.nx + gx)) width += cell;
 		}
 	}
 	return width;
@@ -313,22 +325,15 @@ assert.equal(runtimeRimWidth(0.24), 0, "a shut rim cannot hide between face samp
 // are static, and a turn only rewrites seam links plus the rim texels. An
 // incremental mask must still be identical to one built from scratch at the
 // same angles — otherwise the cache would trade correctness for speed.
+// The projection is the cache: a rim texel that resolved to a different network
+// node, or landed in a different component, means an incremental rebuild
+// disagrees with one built from scratch.
 function maskDiff(incremental, fresh) {
 	let diff = 0;
-	const nx = incremental.nx;
-	const ny = incremental.ny;
 	for (let k = 0; k < incremental.size; k++) {
-		if (incremental.air[k] !== fresh.air[k] || incremental.active[k] !== fresh.active[k]) diff++;
-		if (incremental.face[k] !== fresh.face[k]) diff++;
-		if (incremental.open[k] !== fresh.open[k]) diff++;
-		// Apertures are meaningful on a pair of air cells; a hand-built fixture
-		// graph defaults them to fully open, which a rebuilt field never does.
-		const gx = k % nx;
-		const gy = (k / nx) | 0;
-		if (incremental.air[k]) {
-			if (gx + 1 < nx && fresh.air[k + 1] && Math.abs(incremental.apR[k] - fresh.apR[k]) > 1e-6) diff++;
-			if (gy + 1 < ny && fresh.air[k + nx] && Math.abs(incremental.apD[k] - fresh.apD[k]) > 1e-6) diff++;
-		}
+		if (incremental.air[k] !== fresh.air[k]) diff++;
+		else if (incremental.map[k] !== fresh.map[k]) diff++;
+		else if (incremental.active[k] !== fresh.active[k]) diff++;
 	}
 	return diff;
 }

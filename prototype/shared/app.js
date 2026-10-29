@@ -248,7 +248,7 @@
 				'<div class="quest-btns">' + btns + "</div>" +
 				"</div>" +
 				'<div class="quest-title">' + swatch + "<span>" + q.title + "</span></div>" +
-				'<div class="quest-foot"><span>' + (owner ? q.progressText : "Spawns " + q.bottles + "× hollow single ↑ N") + "</span></div>" +
+				'<div class="quest-foot"><span>' + (owner ? q.progressText : "Spawns " + q.bottles + "× " + (q.kind === "pressure" ? "hollow cross" : "hollow single ↑ N")) + "</span></div>" +
 				"</div>";
 		}
 		$("quest-list").innerHTML = qHtml;

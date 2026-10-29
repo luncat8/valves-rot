@@ -526,8 +526,13 @@ for (let k = 0; k < 12; k++) {
 	GAS.step(piled.s, S.STEP);
 }
 const center = GAS.index(vacant.v.cx, vacant.v.cy);
-assert.ok(piled.s.pressure.fill[center] > 0.4, "grains occupy their cell");
-assert.ok(piled.s.pressure.cond[center] < vacant.s.pressure.cond[center], "a pile lowers the cell conductance");
+// Occupancy and conductance are network quantities, reached through the projection.
+const packedNet = piled.s.pressure.net;
+const emptyNet = vacant.s.pressure.net;
+const packedCell = piled.s.pressure.map[center];
+const emptyCell = vacant.s.pressure.map[center];
+assert.ok(packedNet.fill[packedCell] > 0.4, "grains occupy their cell");
+assert.ok(packedNet.cond[packedCell] < emptyNet.cond[emptyCell], "a pile lowers the cell conductance");
 const vacantMid = slice(vacant.s.pressure, vacant.v.cx, vacant.v.cy, 14).speed;
 const piledMid = slice(piled.s.pressure, piled.v.cx, piled.v.cy, 14).speed;
 assert.ok(piledMid < vacantMid * 0.95, `a pile slows the flow through it (${piledMid.toFixed(1)} vs ${vacantMid.toFixed(1)})`);

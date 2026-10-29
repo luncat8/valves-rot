@@ -102,10 +102,15 @@ const ValveSimulation = (() => {
 
 	// Deterministic subset of drain-reachable top-row spouts, with a fallback so
 	// every seed activates at least three spouts when the layout allows it.
-	function buildSpoutMask(layout, reach) {
-		const mask = new Uint8Array(N);
-		const seed = layout.seed | 0;
+	// A signed goal adds its own column (`goalFeed`), because a valve replacement
+	// recomputes this base and would otherwise drop it.
+	function buildSpoutMask(sim) {
+		const mask = sim.spoutMask;
+		const reach = sim.reach;
+		const feed = sim.goalFeed;
+		const seed = sim.layout.seed | 0;
 		let chosen = 0;
+		mask.fill(0);
 		for (let i = 0; i < N; i++) {
 			if (!reach[i] || G.hashUnit(seed, i, 21) > 0.55) continue;
 			mask[i] = 1;
@@ -118,7 +123,16 @@ const ValveSimulation = (() => {
 			mask[i] = 1;
 			chosen++;
 		}
-		return mask;
+		for (let i = 0; i < N; i++) if (feed[i] > 0) mask[i] = 1;
+	}
+
+	// Refcounted, because two routes can be fed from the same column: releasing one
+	// must leave the other promoted. The mask only cares whether anyone claims it.
+	function setGoalFeed(sim, column, on) {
+		if (column < 0 || column >= N) return;
+		const had = sim.goalFeed[column] > 0;
+		sim.goalFeed[column] = on ? sim.goalFeed[column] + 1 : Math.max(0, sim.goalFeed[column] - 1);
+		if ((sim.goalFeed[column] > 0) !== had) buildSpoutMask(sim);
 	}
 
 	function create(layout, options) {
@@ -148,7 +162,8 @@ const ValveSimulation = (() => {
 			color: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
 			reach,
-			spoutMask: buildSpoutMask(layout, reach),
+			goalFeed: new Uint8Array(N),
+			spoutMask: new Uint8Array(N),
 			binCount: new Int32Array(BIN_COUNT),
 			binStart: new Int32Array(BIN_COUNT + 1),
 			// wall schedule and goal ownership
@@ -187,6 +202,7 @@ const ValveSimulation = (() => {
 		sim.stalledList.fill(-1);
 		sim.goalOwner.fill(-1);
 		sim.caseTint.fill(-1);
+		buildSpoutMask(sim);
 		initSchedule(sim);
 		return sim;
 	}
@@ -951,6 +967,8 @@ const ValveSimulation = (() => {
 		sim.autoLocked.fill(0);
 		sim.goalOwner.fill(-1);
 		sim.caseTint.fill(-1);
+		sim.goalFeed.fill(0);
+		buildSpoutMask(sim);
 		initSchedule(sim);
 		INL.reset(sim.inlets);
 		sim.pressure = pressureFor(sim, sim.pressureMode);
@@ -1024,7 +1042,7 @@ const ValveSimulation = (() => {
 		sim.stalledList[index] = -1;
 		sim.dwell[index] = 1;
 		sim.reach = G.drainReach(sim.layout);
-		sim.spoutMask = buildSpoutMask(sim.layout, sim.reach);
+		buildSpoutMask(sim);
 		if (sim.pressureMode === "grid" && sim.pressure) GAS.refresh(sim);
 		else sim.pressure = pressureFor(sim, sim.pressureMode);
 	}
@@ -1156,6 +1174,7 @@ const ValveSimulation = (() => {
 		canAutoRotate,
 		setCaseTint,
 		installValve,
+		setGoalFeed,
 		setSpeed,
 		setAirForce,
 		setPressure,

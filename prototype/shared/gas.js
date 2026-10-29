@@ -97,12 +97,17 @@ const ValveGas = (() => {
 	}
 
 	// Graph state shared by the live pipe network and hand-built 1-D fields.
+	// A field is only ever a node graph: the display texels are one node per cell
+	// with no edges of their own, and a fixture chain is a row of nodes whose four
+	// faces come from `link`. So the `face`/`apR`/`apD` stencil exists only for the
+	// 4-slot fields a fixture builds.
 	// Node indices are monotonic in the list, which is what IC(0) needs: an edge
 	// to a lower index belongs to the forward substitution, a higher one to the
 	// backward sweep.
 	function blankField(nx, ny, cell, slots) {
 		const size = nx * ny;
 		const nb = slots === undefined ? 4 : slots;
+		const stencil = nb === 4;
 		const f = {
 			kind: "grid",
 			cell,
@@ -111,29 +116,20 @@ const ValveGas = (() => {
 			size,
 			count: size,
 			slots: nb,
-			grid: nb > 0,
 			p: new Float32Array(size),
 			prev: new Float32Array(size),
 			work: new Float32Array(size),
 			pTarget: new Float32Array(size),
 			air: new Uint8Array(size),
-			face: new Uint8Array(size),
+			face: stencil ? new Uint8Array(size) : null,
 			pin: new Uint8Array(size),
 			open: new Float32Array(size),
 			fill: new Float32Array(size),
 			fillNow: new Uint16Array(size),
 			cond: new Float32Array(size),
-			apR: new Float32Array(size).fill(1),
-			apD: new Float32Array(size).fill(1),
-			gL: new Float32Array(size),
-			gR: new Float32Array(size),
-			gU: new Float32Array(size),
-			gD: new Float32Array(size),
+			apR: stencil ? new Float32Array(size).fill(1) : null,
+			apD: stencil ? new Float32Array(size).fill(1) : null,
 			gsum: new Float32Array(size),
-			nL: new Int32Array(size),
-			nR: new Int32Array(size),
-			nU: new Int32Array(size),
-			nD: new Int32Array(size),
 			nbr: nb ? new Int32Array(size * nb) : null,
 			nbrCount: nb ? new Uint8Array(size) : null,
 			baseG: nb ? new Float32Array(size * nb) : null,
@@ -198,10 +194,6 @@ const ValveGas = (() => {
 			const r = gx + 1 < nx && face & R ? k + 1 : k;
 			const u = gy > 0 && face & U ? k - nx : k;
 			const d = gy + 1 < ny && face & D ? k + nx : k;
-			f.nL[k] = l;
-			f.nR[k] = r;
-			f.nU[k] = u;
-			f.nD[k] = d;
 			let m = 0;
 			let e = k * nb;
 			if (l !== k) {
@@ -243,23 +235,32 @@ const ValveGas = (() => {
 			const k = list[n];
 			const ca = cond[k];
 			let sum = 0;
-			if (f.grid) f.gL[k] = f.gR[k] = f.gU[k] = f.gD[k] = 0;
 			const e0 = k * nb;
 			for (let m = 0; m < f.nbrCount[k]; m++) {
 				const e = e0 + m;
-				const j = f.nbr[e];
-				const cb = cond[j];
+				const cb = cond[f.nbr[e]];
 				const g = f.baseG[e] * (ca + cb > 0 ? 2 * ca * cb / (ca + cb) : 0);
 				f.gw[e] = g;
 				sum += g;
-				if (!f.grid) continue;
-				if (j === k - 1) f.gL[k] = g;
-				else if (j === k + 1) f.gR[k] = g;
-				else if (j === k - f.nx) f.gU[k] = g;
-				else if (j === k + f.nx) f.gD[k] = g;
 			}
 			f.gsum[k] = sum;
 		}
+	}
+
+	// The conductance of one link, for a fixture that wants to compare an edge
+	// against the analytical resistance of the same chain.
+	function syncConductance(f) {
+		if (!f.dirty) return;
+		f.dirty = false;
+		conductance(f);
+	}
+
+	function faceConductance(f, a, b) {
+		const e0 = a * f.slots;
+		for (let m = 0; m < f.nbrCount[a]; m++) {
+			if (f.nbr[e0 + m] === b) return f.gw[e0 + m];
+		}
+		return 0;
 	}
 
 	// Flood fill the open-edge graph. A component containing a mouth can
@@ -479,7 +480,7 @@ const ValveGas = (() => {
 		let scale = 1;
 		for (let n = 0; n < f.count; n++) {
 			const k = list[n];
-			x[k] = r[k] = z[k] = d[k] = q[k] = b[k] = diag[k] = f.pcgIC[k] = 0;
+			diag[k] = 0;
 			if (pin[k] || f.gsum[k] <= 0) continue;
 			if (mass > 0 ? !f.compDynamic[f.comp[k]] : !active[k]) continue;
 			uk[nu++] = k;
@@ -572,10 +573,14 @@ const ValveGas = (() => {
 	function projectP(gas, src, dst) {
 		const map = gas.map;
 		const list = gas.list;
+		let mean = 0;
 		for (let n = 0; n < gas.count; n++) {
 			const k = list[n];
-			dst[k] = src[map[k]];
+			const p = src[map[k]];
+			dst[k] = p;
+			if (dst === gas.p) mean += p;
 		}
+		if (dst === gas.p) gas.mean = gas.count ? mean / gas.count : 0;
 	}
 
 	// Steady harmonic pressure on the live network. `out` is a display texel
@@ -637,6 +642,7 @@ const ValveGas = (() => {
 		// the relaxation. A hypothetical mouth set used as a measurement gets
 		// a fully converged reference unless the caller asks for a quick fit.
 		const limit = out === gas.p || quick ? PCG_LIVE_STEADY_ITERS : PCG_STEADY_ITERS;
+		syncConductance(net);
 		markActive(net);
 		warmHarmonic(net, net.work);
 		solve(net, net.work, 1, 0, limit);
@@ -652,6 +658,7 @@ const ValveGas = (() => {
 
 	function diffuseLive(gas, dt) {
 		const net = gas.net;
+		syncConductance(net);
 		net.prev.set(net.p);
 		solve(net, net.p, dt, 1, PCG_STEP_ITERS);
 		projectP(gas, net.p, gas.p);
@@ -705,12 +712,14 @@ const ValveGas = (() => {
 	function makeNet() {
 		const net = blankField(NODES, 1, RS, NB);
 		net.kind = "net";
-		net.grid = false;
 		net.count = 0;
 		net.edges = 0;
 		// Static edges occupy the first slots of every node; only the seam
 		// edges after staticCount are rewritten when a rotor turns.
 		net.staticCount = new Uint8Array(NODES);
+		// Seam links and grain occupancy both move the edge weights; the graph
+		// recomputes them at most once per tick, whichever caller needs them.
+		net.dirty = false;
 		net.distH = new Int32Array(NODES);
 		net.distL = new Int32Array(NODES);
 		return net;
@@ -760,7 +769,6 @@ const ValveGas = (() => {
 		applyPins(sim, gas);
 		steady(gas, gas.p);
 		velocity(sim, gas, true);
-		measure(gas);
 		return gas;
 	}
 
@@ -849,6 +857,7 @@ const ValveGas = (() => {
 
 	function addEdge(net, a, b, geo) {
 		if (geo <= 0 || net.nbrCount[a] >= NB || net.nbrCount[b] >= NB) return;
+		net.dirty = true;
 		let e = a * NB + net.nbrCount[a]++;
 		net.nbr[e] = b;
 		net.baseG[e] = geo;
@@ -1022,15 +1031,10 @@ const ValveGas = (() => {
 		const net = gas.net;
 		net.nbrCount.fill(0);
 		net.edges = 0;
+		net.dirty = true;
 		staticEdges(sim, gas);
 		net.staticCount.set(net.nbrCount);
 		for (let t = 0; t < G.N * G.N; t++) seamEdgesFor(sim, gas, t);
-	}
-
-	function buildEdges(sim, gas) {
-		conductance(gas.net);
-		components(gas.net);
-		gas.compCount = gas.net.compCount;
 	}
 
 	// Texels outside every rotor rim map to static casing cells; the lookup is
@@ -1059,9 +1063,6 @@ const ValveGas = (() => {
 		const counts = new Int32Array(G.N * G.N);
 		gas.bandCount = 0;
 		gas.staticAirCount = 0;
-		gas.open.fill(0);
-		gas.fill.fill(0);
-		gas.cond.fill(0);
 		for (let gy = 0; gy < NY; gy++) {
 			const y = gy * CELL + CELL / 2 - G.POUR;
 			for (let gx = 0; gx < NX; gx++) {
@@ -1124,11 +1125,7 @@ const ValveGas = (() => {
 		} else if (node < 0 && gas.air[k]) {
 			gas.air[k] = 0;
 			gas.active[k] = 0;
-			gas.comp[k] = -1;
 			gas.pin[k] = 0;
-			gas.open[k] = 0;
-			gas.fill[k] = 0;
-			gas.cond[k] = 0;
 			const pos = gas.listPos[k];
 			const last = gas.list[--gas.count];
 			gas.list[pos] = last;
@@ -1172,38 +1169,16 @@ const ValveGas = (() => {
 		}
 		const map = gas.map;
 		const list = gas.list;
-		const face = gas.face;
-		face.fill(0);
-		gas.apR.fill(0);
-		gas.apD.fill(0);
+		let mean = 0;
 		for (let n = 0; n < gas.count; n++) {
 			const k = list[n];
 			const node = map[k];
-			gas.p[k] = net.p[node];
+			const p = gas.p[k] = net.p[node];
 			gas.active[k] = net.active[node];
-			gas.comp[k] = net.comp[node];
 			gas.pin[k] = net.pin[node];
-			gas.open[k] = net.open[node];
-			gas.fill[k] = net.fill[node];
-			gas.cond[k] = net.cond[node];
+			mean += p;
 		}
-		for (let n = 0; n < gas.count; n++) {
-			const k = list[n];
-			const gx = k % NX;
-			const gy = (k / NX) | 0;
-			const c = gas.comp[k];
-			if (c < 0) continue;
-			if (gx + 1 < NX && gas.comp[k + 1] === c && map[k + 1] >= 0) {
-				face[k] |= R;
-				face[k + 1] |= L;
-				gas.apR[k] = 1;
-			}
-			if (gy + 1 < NY && gas.comp[k + NX] === c && map[k + NX] >= 0) {
-				face[k] |= D;
-				face[k + NX] |= U;
-				gas.apD[k] = 1;
-			}
-		}
+		gas.mean = gas.count ? mean / gas.count : 0;
 	}
 
 	function rebuild(sim, gas) {
@@ -1230,7 +1205,10 @@ const ValveGas = (() => {
 			updateRotation(sim, gas, gas.moved, count);
 			refreshSeams(sim, gas, gas.moved, count);
 		}
-		buildEdges(sim, gas);
+		// Components follow the graph as it now stands. The edge weights are
+		// recomputed once, by the first solve or velocity pass that needs them.
+		components(gas.net);
+		gas.compCount = gas.net.compCount;
 		for (let t = 0; t < valves.length; t++) gas.angles[t] = valves[t].angle;
 		project(sim, gas, gas.moved, count);
 		gas.settled = false;
@@ -1267,12 +1245,11 @@ const ValveGas = (() => {
 		gas.inletVersion = inlets.version;
 		gas.settled = false;
 		gas.fastPending = true;
-		// Project which components can reach a reservoir for display and probes.
+		// Project which air reaches a reservoir for the overlay and the probes.
 		for (let n = 0; n < gas.count; n++) {
 			const k = gas.list[n];
 			const node = gas.map[k];
 			gas.active[k] = net.active[node];
-			gas.comp[k] = net.comp[node];
 			gas.p[k] = net.p[node];
 		}
 	}
@@ -1302,14 +1279,7 @@ const ValveGas = (() => {
 			fill[k] = f;
 			changed = true;
 		}
-		if (changed) {
-			conductance(net);
-			for (let n = 0; n < gas.count; n++) {
-				const k = gas.list[n];
-				gas.fill[k] = net.fill[gas.map[k]];
-				gas.cond[k] = net.cond[gas.map[k]];
-			}
-		}
+		if (changed) net.dirty = true;
 		return changed;
 	}
 
@@ -1325,6 +1295,7 @@ const ValveGas = (() => {
 	// No momentum is stored; the display velocity only eases toward this target.
 	function velocity(sim, gas, snap, elapsed) {
 		const net = gas.net;
+		syncConductance(net);
 		const relax = elapsed > 0
 			? 1 - Math.pow(1 - RELAX, Math.min(elapsed, MASK_DT) / MASK_DT)
 			: RELAX;
@@ -1410,15 +1381,9 @@ const ValveGas = (() => {
 				gas.gx[k] *= s;
 				gas.gy[k] *= s;
 			}
-			flow += Math.sqrt(gas.gx[k] * gas.gx[k] + gas.gy[k] * gas.gy[k]);
+			flow += speed > GAS_MAX ? GAS_MAX : speed;
 		}
 		gas.flow = gas.count ? flow / gas.count : 0;
-	}
-
-	function measure(gas) {
-		let sum = 0;
-		for (let n = 0; n < gas.count; n++) sum += gas.p[gas.list[n]];
-		gas.mean = gas.count ? sum / gas.count : 0;
 	}
 
 	function update(sim, gas, elapsed) {
@@ -1430,7 +1395,6 @@ const ValveGas = (() => {
 			gas.fastPending = false;
 		}
 		velocity(sim, gas, false, velocityElapsed);
-		measure(gas);
 		gas.updates++;
 	}
 
@@ -1552,7 +1516,6 @@ const ValveGas = (() => {
 		applyPins(sim, gas);
 		if (snap) steady(gas, gas.p);
 		velocity(sim, gas, !!snap);
-		measure(gas);
 		gas.updates++;
 		gas.maskClock = gas.clock;
 	}
@@ -1563,7 +1526,6 @@ const ValveGas = (() => {
 		const gas = sim.pressure;
 		applyPins(sim, gas);
 		velocity(sim, gas, false);
-		measure(gas);
 		gas.updates++;
 	}
 
@@ -1597,19 +1559,12 @@ const ValveGas = (() => {
 		markActive,
 		steady,
 		diffuse,
-		CELL,
-		NX,
-		NY,
+		syncConductance,
+		faceConductance,
 		AIR_MIN,
-		DRAG,
-		LIFT,
-		FLOW_SCALE,
 		GAS_MAX,
-		RELAX,
 		DIFFUSE_DT,
-		CELL_MASS,
 		SWIRL_REACH,
-		RS,
 		SLOTS,
 		RSLOTS,
 		LANES,

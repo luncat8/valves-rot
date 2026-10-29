@@ -1,0 +1,53 @@
+Gas cleanup: dead display mirrors and redundant passes
+Node v22.22.3, Intel Xeon 2.60 GHz, 2 cpus, uncontended passes
+
+Deleted from the display projection: the face/apR/apD/comp/open/fill/cond mirrors,
+the extra conductance syncs that only existed to keep them warm, the duplicated
+edge build and a redundant measure pass. The rebuild is gated on the dirty flag
+the network already carried. Every row the solver itself produces is identical
+between the two trees (simulation-bench, gas-fixtures, front-probe, and the
+combined-solver rows of behavior-probe; only that probe's glm reference rows
+jitter, run to run, in both trees), so every number below is a cost change and
+not a behaviour change.
+
+simulation-bench, ms per 60 Hz frame
+group                          HEAD   after   delta
+  120 grain still off           0.76   0.67  -11.8%
+  120 grain still grid          1.45   1.45   +0.0%
+  120 grain still particles     3.04   3.07   +1.0%
+  120 grain turn off            0.84   0.85   +1.2%
+  120 grain turn grid           2.95   2.88   -2.4%
+  120 grain turn particles      3.06   3.16   +3.3%
+  500 grain still off           2.93   2.77   -5.5%
+  500 grain still grid          3.65   3.39   -7.1%
+  500 grain still particles     4.92   4.98   +1.2%
+  500 grain turn off            3.01   2.95   -2.0%
+  500 grain turn grid           5.31   5.03   -5.3%
+  500 grain turn particles      5.29   5.30   +0.2%
+  1000 grain still off          5.58   5.73   +2.7%
+  1000 grain still grid         6.35   5.79   -8.8%
+  1000 grain still particles    7.31   7.66   +4.8%
+  1000 grain turn off           6.10   5.63   -7.7%
+  1000 grain turn grid          8.64   8.41   -2.7%
+  1000 grain turn particles     7.76   8.00   +3.1%
+
+Only the grid rows touch the deleted work. Off and particles rows do not run any
+of it, and they move by up to 12% between passes: that spread is the noise floor
+on two cpus, not a regression.
+
+aperture-probe, ms per rebuild
+  nothing changed               0.463  0.275   -40.6%
+  one rotor turning             0.465  0.336   -27.7%
+  every rotor turning           1.753  1.327   -24.3%
+  air cells 3185 / 3189 / 3940, seam links 2031 (1596 on an off-centre lane,
+  0 blocked), conductance 339.8: identical in both trees.
+
+unchanged
+  60 s seeded run (120 grains): 0.18 ms per 120 Hz step in both trees
+  front-probe create+steady x20: 12.5 ms before, 12.1 ms after; its coverage and
+  convergence rows are equal
+  retainedHeap(1200 steps): -2.7 KB before, -5.6 KB after (no growth either way)
+  component counts per rotation state, and front coverage in front-probe
+  the mask's mouth-connected share is now area-weighted on the display field
+  instead of aperture-weighted on a mirror; it lands within a point of the old
+  numbers (seed 7 spin 0: 53.7% against 54.6%, reference 60.5%)
