@@ -33,19 +33,6 @@ const ValveGame = (() => {
 	const TIME_MIN = 40;
 	const TIME_MAX = 90;
 	const COHERENCE_MIN = 0.42;
-	// A pressure pair that moves the chamber by less than this is treated as no
-	// headroom at all, so a fitted target never claims more than the field gives.
-	// A fitted span narrower than this is field drift (auto-rotation, rivals'
-	// mouths moving) rather than a lever the signer pulls, so such a cell is not
-	// offered a pressure quest at all.
-	const MIN_SPAN = 0.10;
-	// Nothing better on the board: a measured span this wide still lets the
-	// signer's own mouths move the chamber, so it is played at half aim.
-	const WEAK_SPAN = 0.02;
-	const PRESSURE_TRIES = 3;
-	// When no candidate column clears MIN_SPAN, the target falls back to the side
-	// the field already holds by this much, so the quest is dull but completable.
-	const SOFT_MARGIN = 0.05;
 	const GOAL_CHAMBER = G.RV * 0.53;
 	const EVAL_DT = 1 / 15;
 
@@ -94,7 +81,6 @@ const ValveGame = (() => {
 	const cellGrains = new Uint16Array(SLOTS);
 	const baseMasks = new Uint8Array(SLOTS);
 	const scanColumns = new Uint8Array(N);
-	const prefColumns = new Uint8Array(N);
 
 	function rotMask(mask, quarter) {
 		const q = ((quarter % 4) + 4) % 4;
@@ -176,19 +162,15 @@ const ValveGame = (() => {
 		if (isPressure) {
 			const op = rnd() < 0.5 ? ">" : "<";
 			const strong = rnd() < 0.42;
-			// One chamber: two bottles would sit in two pockets with one shared
-			// target, and no single mouth policy has to reach both.
+			// One chamber per pressure route.
 			const bottles = 1;
 			const clock = rollTimeLimit(rnd, TIME_PRESSURE + (strong ? 8 : 0), 0.55);
-			// The number on the board is a placeholder: signing fits the target to
-			// what the mouths can actually reach in the bottle's own column, and
-			// `aim` is how far of that headroom the tier demands.
+			// Keep the advertised target fixed; players must route and isolate air.
 			const threshold = op === ">" ? (strong ? 0.78 : 0.68) : strong ? 0.22 : 0.32;
 			return finalizeQuest(id, {
 				kind: "pressure",
 				op,
 				threshold,
-				aim: strong ? 0.78 : 0.6,
 				minCount: 0,
 				maxCount: 0,
 				bands: 0,
@@ -315,7 +297,6 @@ const ValveGame = (() => {
 			bottles: spec.bottles,
 			timeLimit: spec.timeLimit,
 			remaining: spec.timeLimit,
-			aim: spec.aim || 0.6,
 			holdNeed,
 			hold: 0,
 			holdRatio: 0,
@@ -606,8 +587,7 @@ const ValveGame = (() => {
 		return findGravityTopSpout(sim, targetCell, false) >= 0;
 	}
 
-	// Mean potential of the air cells in the bottle's chamber; `field` is `p`, or
-	// the target buffer of a hypothetical mouth set.
+	// Mean local pressure of the air cells in the bottle's chamber.
 	function sampleChamber(sim, index, field) {
 		const gas = sim.pressure;
 		const v = sim.layout.valves[index];
@@ -637,74 +617,6 @@ const ValveGame = (() => {
 		const gas = sim.pressure;
 		if (!gas || gas.kind !== "grid") return 0.5;
 		return sampleChamber(sim, index, gas.p);
-	}
-
-	// Keep a pressure quest inside what the signer's own two-in/two-out policy
-	// can actually reach at the chosen cell. Base, charge and drain are all
-	// converged solves of the same network: the live field is still diffusing, so
-	// sampling it would compare a transient against settled probes and pick a
-	// target nobody can hold. Rival mouths stay where they are; they are part of
-	// the field the signer plays around.
-	function fitPressureQuest(sim, quest, index, playerId, relax) {
-		const gas = sim.pressure;
-		if (!gas || gas.kind !== "grid") return 0;
-		GAS.refresh(sim, true);
-		GAS.snapSteady(sim);
-		const base = sampleChamberPotential(sim, index);
-		const col = index % N;
-		const high = GAS.probeMouths(sim, true, col, playerId) ? sampleChamber(sim, index, gas.pTarget) : base;
-		const low = GAS.probeMouths(sim, false, col, playerId) ? sampleChamber(sim, index, gas.pTarget) : base;
-		const up = high - base;
-		const down = base - low;
-		const floor = relax ? WEAK_SPAN : MIN_SPAN;
-		const share = relax ? 0.4 : quest.aim;
-		// The generated polarity whenever its measured span is usable. The other
-		// side only rescues a cell where the wanted one barely moves, and it has
-		// to clear the same bar to be worth printing.
-		let op = quest.op;
-		let span = op === ">" ? up : down;
-		if (span < floor) {
-			// Only a cell where the wanted side does not move at all may borrow
-			// the other polarity, and only once every column has been tried.
-			const other = op === ">" ? down : up;
-			if (!relax || other < floor) return 0;
-			op = op === ">" ? "<" : ">";
-			span = other;
-		}
-		let aim = base + (op === ">" ? span : -span) * share;
-		if (aim <= 0.001 || aim >= 0.999) {
-			// A span that only pushes into a bound is not a lever here, even a
-			// large one: the other side has to answer the same question.
-			const otherOp = op === ">" ? "<" : ">";
-			const otherSpan = otherOp === ">" ? up : down;
-			const otherAim = base + (otherOp === ">" ? otherSpan : -otherSpan) * share;
-			if (otherSpan < floor || otherAim <= 0.001 || otherAim >= 0.999) return 0;
-			op = otherOp;
-			span = otherSpan;
-			aim = otherAim;
-		}
-		// Round toward the base: `>` floors and `<` ceils, so printing the target
-		// never rounds it past the extreme the mouth policy actually reaches.
-		const rounded = op === ">" ? Math.floor(aim * 1000) / 1000 : Math.ceil(aim * 1000) / 1000;
-		quest.op = op;
-		quest.threshold = Number(rounded.toFixed(3));
-		// A target the field already meets is not a quest.
-		if (op === ">" ? base > quest.threshold : base < quest.threshold) return 0;
-		quest.swatch = op === ">" ? "#ff8a5c" : "#5cc8ff";
-		quest.title = formatQuestTitle(quest);
-		return span;
-	}
-
-	// Every candidate column fitted to noise: fall back to the side the field
-	// already holds, with a margin wide enough that the hold window is a formality.
-	function softenPressureQuest(sim, quest, index) {
-		const base = sampleChamberPotential(sim, index);
-		quest.op = base >= 0.5 ? ">" : "<";
-		const aim = base >= 0.5 ? base - SOFT_MARGIN : base + SOFT_MARGIN;
-		const rounded = quest.op === ">" ? Math.floor(aim * 1000) / 1000 : Math.ceil(aim * 1000) / 1000;
-		quest.threshold = Number(Math.min(0.999, Math.max(0.001, rounded)).toFixed(3));
-		quest.swatch = quest.op === ">" ? "#ff8a5c" : "#5cc8ff";
-		quest.title = formatQuestTitle(quest);
 	}
 
 	function columnHasGoal(sim, col, chosen) {
@@ -737,111 +649,52 @@ const ValveGame = (() => {
 		return true;
 	}
 
-	// A pressure quest opens a shaft down one column, so the bottle it places
-	// sits in whatever pocket that shaft joins. What the signer can do there is
-	// decided by who owns that pocket's boundary: sealing an own vent charges a
-	// pocket that rivals' vents no longer feed, and sealing an own source drains
-	// one that rivals' sources no longer fill. Columns are ranked by that share,
-	// computed on the live graph before anything is installed, so the shaft goes
-	// where the signer's mouths are the strongest lever and the rest is left to
-	// the fit's measurement.
-	const pocketStamp = new Int32Array(4096);
-	const pocketScores = new Float64Array(N);
-	const skipColumns = new Uint8Array(N);
-	let stampId = 0;
-
-	// Mark every pocket the shaft in `col` will join: the casing air around each
-	// rotor of the column plus every band cell at its two ends (a mouth pins all
-	// of its column's band cells, so they are all part of its reach).
-	function stampPocket(sim, col) {
-		const gas = sim.pressure;
-		const net = gas.net;
-		const valves = sim.layout.valves;
-		const rv2 = G.RV * G.RV;
-		const stamp = pocketStamp;
-		stampId++;
-		for (let n = 0; n < net.count; n++) {
-			const k = net.list[n];
-			if (!net.air[k] || net.owner[k] % G.N !== col) continue;
-			const v = valves[net.owner[k]];
-			const dx = net.wx[k] - v.cx;
-			const dy = net.wy[k] - v.cy;
-			if (dx * dx + dy * dy <= rv2) continue;
-			stamp[net.comp[k]] = stampId;
+	// Search possible quarter-turn routes, not current pressure or mouth ownership.
+	// A rival's open reservoir is usable; only our own sealed ones can be opened.
+	const airParent = new Int16Array(SLOTS * 4);
+	const airQueue = new Int16Array(SLOTS * 4);
+	const airQuarter = new Int8Array(SLOTS * 4);
+	function findAirRoute(sim, goal, wantHigh, playerId) {
+		airParent.fill(-2);
+		let head = 0;
+		let tail = 0;
+		for (let side = 0; side < 4; side++) {
+			const state = goal * 4 + side;
+			airParent[state] = -1;
+			airQueue[tail++] = state;
 		}
-		for (let n = 0; n < gas.bandCount; n++) {
-			if (gas.bandColumn[n] !== col) continue;
-			const node = gas.map[gas.band[n]];
-			if (node >= 0) stamp[net.comp[node]] = stampId;
-		}
-	}
-
-	// Does any band cell of this mouth sit in the stamped pocket?
-	function mouthReaches(sim, inlet) {
-		const gas = sim.pressure;
-		const inlets = sim.inlets;
-		const side = inlets.side[inlet];
-		const column = inlets.column[inlet];
-		for (let n = 0; n < gas.bandCount; n++) {
-			if (gas.bandSide[n] !== side || gas.bandColumn[n] !== column) continue;
-			const node = gas.map[gas.band[n]];
-			if (node >= 0 && pocketStamp[gas.net.comp[node]] === stampId) return true;
-		}
-		return false;
-	}
-
-	// Share of the pocket's boundary on the signer's own side: a pocket whose
-	// vents are only theirs charges when they seal them, and one whose sources
-	// are only theirs drains the same way.
-	function pocketColumnScore(sim, playerId, col, wantHigh) {
-		const inlets = sim.inlets;
-		stampPocket(sim, col);
-		let own = 0;
-		let rival = 0;
-		for (let k = 0; k < inlets.count; k++) {
-			if (!inlets.present[k]) continue;
-			const vent = inlets.level[k] === I.LOW;
-			if (vent !== wantHigh || !mouthReaches(sim, k)) continue;
-			if (inlets.owner[k] === playerId) own++;
-			else rival++;
-		}
-		return own > 0 ? own / (own + rival + 1) : 0;
-	}
-
-	function pressurePocketColumns(sim, playerId, out, rnd, wantHigh) {
-		const gas = sim.pressure;
-		if (!gas || gas.kind !== "grid" || !gas.net.compCount || gas.net.compCount > pocketStamp.length) return 0;
-		for (let c = 0; c < N; c++) pocketScores[c] = skipColumns[c] ? -1 : pocketColumnScore(sim, playerId, c, wantHigh) + rnd() * 0.05;
-		let n = 0;
-		for (let c = 0; c < N; c++) {
-			// Selection sort: ten columns, so the quadratic pass is cheaper than
-			// carrying a sorted index array.
-			let best = -1;
-			for (let d = 0; d < N; d++) {
-				if (pocketScores[d] < 0 || containsColumn(out, n, d)) continue;
-				if (best < 0 || pocketScores[d] > pocketScores[best]) best = d;
+		while (head < tail) {
+			const state = airQueue[head++];
+			const cell = state >> 2;
+			const incoming = state & 3;
+			const v = sim.layout.valves[cell];
+			for (let side = 0; side < 4; side++) {
+				if (cell !== goal && side === incoming) continue;
+				const need = (1 << incoming) | (1 << side);
+				const q = cell === goal ? 0 : bestQuarterForMask(valveMask(v), G.quarterOf(sim.target[cell]), need);
+				if (q < 0 || (cell !== goal && sim.goalOwner[cell] >= 0)) continue;
+				const x = cell % N + G.DX[side];
+				const y = ((cell / N) | 0) + G.DY[side];
+				if (x < 0 || x >= N) continue;
+				if (y < 0 || y >= N) {
+					const inlet = (y < 0 ? I.TOP : I.BOTTOM) * N + x;
+					const mouths = sim.inlets;
+					if (!mouths.present[inlet] || (mouths.level[inlet] === I.HIGH) !== wantHigh) continue;
+					if (!mouths.open[inlet] && mouths.owner[inlet] !== playerId) continue;
+					airQuarter[state] = q;
+					return state;
+				}
+				const nextCell = y * N + x;
+				let ancestor = state;
+				while (ancestor >= 0 && (ancestor >> 2) !== nextCell) ancestor = airParent[ancestor];
+				if (ancestor >= 0) continue;
+				const next = nextCell * 4 + ((side + 2) & 3);
+				if (airParent[next] !== -2) continue;
+				airParent[next] = state;
+				airQueue[tail++] = next;
 			}
-			if (best < 0) break;
-			out[n++] = best;
 		}
-		return n;
-	}
-
-	function containsColumn(out, n, col) {
-		for (let k = 0; k < n; k++) if (out[k] === col) return true;
-		return false;
-	}
-
-	// Playable columns from a random start first, then every column, no repeats.
-	function scanOrder(prefCount, startCol) {
-		for (let c = 0; c < prefCount; c++) scanColumns[c] = prefColumns[c];
-		if (prefCount === N) return N;
-		let n = prefCount;
-		for (let c = 0; c < N; c++) {
-			const col = (startCol + c) % N;
-			if (n < N && !containsColumn(scanColumns, n, col)) scanColumns[n++] = col;
-		}
-		return n;
+		return -1;
 	}
 
 	function pickGoalCells(game, quest, playerId) {
@@ -850,11 +703,6 @@ const ValveGame = (() => {
 		const chosen = [];
 		const rowMin = 3;
 		const rowMax = quest.kind === "pressure" ? 6 : 8;
-		// A pressure bottle goes in a column whose shaft joins a pocket one of the
-		// signer's own mouths can press. That is a filter on the air, not on the
-		// deal: the column itself may carry nobody's mouth, and the pocket holds
-		// whatever rivals' mouths share it.
-		const prefCount = quest.kind === "pressure" ? pressurePocketColumns(sim, playerId, prefColumns, rnd, quest.op === ">") : 0;
 		for (let slot = 0; slot < quest.bottles; slot++) {
 			let picked = -1;
 			// Pass 0: distinct column + gravity path; Pass 1: distinct column + reachable;
@@ -862,12 +710,14 @@ const ValveGame = (() => {
 			for (let pass = 0; pass < 3 && picked < 0; pass++) {
 				const startCol = (rnd() * N) | 0;
 				const startRow = rowMin + ((rnd() * (rowMax - rowMin + 1)) | 0);
-				const columns = scanOrder(prefCount, startCol);
+				const columns = N;
+				for (let c = 0; c < N; c++) scanColumns[c] = (startCol + c) % N;
 				for (let dr = 0; dr <= rowMax - rowMin && picked < 0; dr++) {
 					const j = rowMin + ((startRow - rowMin + dr) % (rowMax - rowMin + 1));
 					for (let dc = 0; dc < columns; dc++) {
 						const idx = j * N + scanColumns[dc];
 						if (!goalCellFits(sim, quest, idx, pass, chosen)) continue;
+						if (quest.kind === "pressure" && findAirRoute(sim, idx, quest.op === ">", playerId) < 0) continue;
 						picked = idx;
 						break;
 					}
@@ -879,70 +729,11 @@ const ValveGame = (() => {
 		return chosen;
 	}
 
-	// A pressure goal bottle has a single north port, so a random machine can
-	// leave it cut off from both mouth bands. Open a vertical shaft through its
-	// column: that gives the bottle a route to the high and low constant-pressure
-	// boundaries without sealing any other valve.
-	function ensureAirRoute(game, cells) {
-		const sim = game.sim;
-		const cross = G.typeById("solid-cross");
-		for (let s = 0; s < cells.length; s++) {
-			const i = cells[s] % N;
-			for (let j = 0; j < N; j++) {
-				const k = j * N + i;
-				if (sim.goalOwner[k] >= 0) continue;
-				const v = sim.layout.valves[k];
-				if (G.typeOf(v).id === "solid-cross" && v.angle === 0) continue;
-				S.installValve(sim, k, cross, 0, undefined, true);
-				markRotorDirty(game, k);
-			}
-		}
-	}
-
 	function questIndexById(game, questId) {
 		for (let k = 0; k < game.quests.length; k++) if (game.quests[k].id === questId) return k;
 		return -1;
 	}
 
-	// A trial pressure placement can be undone: the shaft commandeers its whole
-	// column, and when the fit measures no usable span the next candidate has to
-	// start from the column as it was.
-	const trialType = new Array(N);
-	const trialQuarter = new Uint8Array(N);
-	const trialChamber = new Float64Array(N);
-	const trialTint = new Int8Array(N);
-	const trialLocked = new Uint8Array(N);
-	const trialOwner = new Int8Array(N);
-
-	function saveColumn(sim, col) {
-		for (let j = 0; j < N; j++) {
-			const k = j * N + col;
-			const v = sim.layout.valves[k];
-			trialType[j] = G.typeOf(v);
-			trialQuarter[j] = Math.round(v.angle / G.HALF_PI) & 3;
-			trialChamber[j] = v.chamberR;
-			trialTint[j] = sim.caseTint[k];
-			trialLocked[j] = sim.autoLocked[k];
-			trialOwner[j] = sim.goalOwner[k];
-		}
-	}
-
-	function restoreColumn(game, col) {
-		const sim = game.sim;
-		for (let j = 0; j < N; j++) {
-			const k = j * N + col;
-			S.installValve(sim, k, trialType[j], trialQuarter[j], trialChamber[j] > 0 ? trialChamber[j] : undefined, true);
-			S.setCaseTint(sim, k, trialTint[j]);
-			sim.autoLocked[k] = trialLocked[j];
-			sim.goalOwner[k] = trialOwner[j];
-			markRotorDirty(game, k);
-		}
-		S.rebuildPressure(sim);
-	}
-
-	// Spawn the goal bottles ('hollow single · ↑ N · 270°' or a four-way
-	// pressure chamber) in the player's color, and reopen the feeder above each
-	// so the bottle stays routable.
 	function placeBottles(game, quest, cells, playerId) {
 		const sim = game.sim;
 		const bottleType = G.typeById(quest.kind === "pressure" ? "hollow-cross" : "hollow-single");
@@ -955,7 +746,7 @@ const ValveGame = (() => {
 			S.setCaseTint(sim, idx, playerId);
 			markRotorDirty(game, idx);
 			const above = idx - N;
-			if (sim.goalOwner[above] < 0 && sim.layout.valves[above].ports.length < 2) {
+			if (quest.kind === "grains" && sim.goalOwner[above] < 0 && sim.layout.valves[above].ports.length < 2) {
 				S.installValve(sim, above, G.typeById("solid-tee"), 0, undefined, true);
 				markRotorDirty(game, above);
 			}
@@ -984,7 +775,7 @@ const ValveGame = (() => {
 		const sim = game.sim;
 		if (quest.kind === "pressure") {
 			if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
-			// Current pockets: the pocket lookup below reads the live graph.
+			// Keep the network ready for the new chamber.
 			GAS.refresh(sim, true);
 		}
 
@@ -1000,64 +791,8 @@ const ValveGame = (() => {
 		quest.cellTotals.fill(-1);
 		quest.cellOk.fill(0);
 
-		// Open the air route first, then fit the target to the range this cell can
-		// actually reach; that also keeps it from being satisfied on frame 0. A
-		// column whose shaft lands in a pocket the signer's own mouths barely
-		// move is not a pressure quest at all, so the placement is retried.
-		if (quest.kind === "pressure") {
-			let span = 0;
-			let placed = false;
-			skipColumns.fill(0);
-			for (let attempt = 0; attempt < PRESSURE_TRIES; attempt++) {
-				const col = cells[0] % N;
-				saveColumn(sim, col);
-				placeBottles(game, quest, cells, playerId);
-				ensureAirRoute(game, cells);
-				span = fitPressureQuest(sim, quest, cells[0], playerId);
-				if (span > 0) {
-					placed = true;
-					break;
-				}
-				restoreColumn(game, col);
-				if (attempt + 1 === PRESSURE_TRIES) break;
-				cells = pickGoalCells(game, quest, playerId);
-				if (!cells.length) break;
-			}
-			// No candidate clears MIN_SPAN: play the widest weak span the rest of
-			// the board measures, at half aim, so the target is still inside what
-			// the signer's own mouths reach here.
-			if (!placed) skipColumns[cells[0] % N] = 1;
-			for (let attempt = 0; attempt < PRESSURE_TRIES && !placed; attempt++) {
-				cells = pickGoalCells(game, quest, playerId);
-				if (!cells.length) break;
-				saveColumn(sim, cells[0] % N);
-				placeBottles(game, quest, cells, playerId);
-				ensureAirRoute(game, cells);
-				span = fitPressureQuest(sim, quest, cells[0], playerId, true);
-				if (span > 0) placed = true;
-				else {
-					restoreColumn(game, cells[0] % N);
-					skipColumns[cells[0] % N] = 1;
-				}
-			}
-			if (!placed) {
-				// The whole board is field, not lever: ask only for the side the
-				// field already holds, so the quest stays completable.
-				cells = pickGoalCells(game, quest, playerId);
-				if (!cells.length) {
-					skipColumns.fill(0);
-					return false;
-				}
-				placeBottles(game, quest, cells, playerId);
-				ensureAirRoute(game, cells);
-				fitPressureQuest(sim, quest, cells[0], playerId);
-				softenPressureQuest(sim, quest, cells[0]);
-			}
-			skipColumns.fill(0);
-		} else {
-			placeBottles(game, quest, cells, playerId);
-			S.rebuildPressure(sim);
-		}
+		placeBottles(game, quest, cells, playerId);
+		S.rebuildPressure(sim);
 
 		quest.owner = playerId;
 		quest.cellCount = cells.length;
@@ -1429,33 +1164,21 @@ const ValveGame = (() => {
 			}
 		}
 		const goalIdx = quest.cells[slot];
-		const col = goalIdx % N;
-		const row = (goalIdx / N) | 0;
 		const wantHigh = quest.op === ">";
-		const wantBottleQ = wantHigh ? 1 : 3;
-		const curBottleQ = G.quarterOf(sim.target[goalIdx]);
-		if (curBottleQ !== wantBottleQ) {
-			const delta = ((wantBottleQ - curBottleQ + 4) & 3) === 3 ? -1 : 1;
-			return S.turn(sim, goalIdx, delta);
-		}
-
-		// 1. Set my own mouths: favourable pair open, opposing pair sealed.
 		if (botMouthAction(sim, playerId, wantHigh)) return true;
-
-		// 2. Align vertical shaft between goal and the favourable boundary.
-		const startR = wantHigh ? row + 1 : 0;
-		const endR = wantHigh ? N - 1 : row - 1;
-		for (let r = startR; r <= endR; r++) {
-			const idx = r * N + col;
-			if (sim.goalOwner[idx] >= 0) continue;
-			const mask = valveMask(sim.layout.valves[idx]);
-			const need = (1 << 1) | (1 << 3);
-			const curQ = G.quarterOf(sim.target[idx]);
-			const wantQ = bestQuarterForMask(mask, curQ, need);
-			if (wantQ >= 0 && wantQ !== curQ) {
-				const delta = ((wantQ - curQ + 4) & 3) === 3 ? -1 : 1;
-				return S.turn(sim, idx, delta);
-			}
+		let state = findAirRoute(sim, goalIdx, wantHigh, playerId);
+		if (state < 0) return false;
+		let q = airQuarter[state];
+		while (state >= 0) {
+			const cell = state >> 2;
+			const cur = G.quarterOf(sim.target[cell]);
+			if (cell !== goalIdx && q !== cur) return S.turn(sim, cell, ((q - cur + 4) & 3) === 3 ? -1 : 1);
+			const parent = airParent[state];
+			if (parent < 0) break;
+			const need = (1 << (parent & 3)) | (1 << (((state & 3) + 2) & 3));
+			const v = sim.layout.valves[parent >> 2];
+			q = bestQuarterForMask(valveMask(v), G.quarterOf(sim.target[parent >> 2]), need);
+			state = parent;
 		}
 		return false;
 	}

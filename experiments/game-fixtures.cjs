@@ -364,102 +364,83 @@ function testQuestLifecycle() {
 	conserved(sim, "after timer expiry");
 }
 
-// 6. Pressure quest: auto-enables Grid gas, places its bottle at a random column
-// whose opened shaft reaches a pocket the signer's own mouths can press, and
-// starts uncommitted. Sealing the mouths conserves the trapped air.
-function testPressureQuest() {
+// Pressure is local: a remote open rival reservoir cannot charge a sealed goal.
+// Connecting a bent route across columns completes either fixed polarity target.
+function pressureRoutingCase(wantHigh) {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
-	assert.equal(sim.pressureMode, "off");
 	const game = Game.create(sim, { mode: "game", botControl: false });
-
-	const pq = game.quests[0];
-	pq.kind = "pressure";
-	pq.op = ">";
-	pq.threshold = 0.72;
-	pq.bottles = 1;
-	pq.timeLimit = 0;
-	pq.holdNeed = Game.HOLD_EXACT;
-	pq.title = "High air > 0.72";
-
-	assert.equal(Game.signQuest(game, pq.id, 0), true);
-	assert.equal(sim.pressureMode, "grid", "signing a pressure quest enables Grid gas");
-	const cell = pq.cells[0];
-	const col = cell % G.N;
-	assert.equal(G.typeOf(layout.valves[cell]).id, "hollow-cross", "a pressure bottle is open on all four faces");
-	for (let j = 0; j < G.N; j++) {
-		if (j * G.N + col === cell) continue;
-		assert.equal(G.typeOf(layout.valves[j * G.N + col]).id, "solid-cross", "the goal column is an open air shaft");
+	S.setAutoRotate(sim, 0);
+	const q = game.quests[0];
+	q.kind = "pressure";
+	q.op = wantHigh ? ">" : "<";
+	q.threshold = wantHigh ? 0.95 : 0.05;
+	q.bottles = 1;
+	q.timeLimit = 0;
+	q.holdNeed = Game.HOLD_EXACT;
+	const before = layout.valves.map(v => [G.typeOf(v).id, v.angle]);
+	const mouthsBefore = Array.from(sim.inlets.open);
+	assert.equal(Game.signQuest(game, q.id, 0), true);
+	assert.equal(sim.pressureMode, "grid");
+	assert.deepEqual(Array.from(sim.inlets.open), mouthsBefore, "signing does not operate mouths");
+	assert.equal(q.threshold, wantHigh ? 0.95 : 0.05, "signing preserves advertised target");
+	assert.equal(q.op, wantHigh ? ">" : "<", "signing preserves polarity");
+	const goal = q.cells[0];
+	for (let k = 0; k < before.length; k++) {
+		if (k === goal) continue;
+		assert.deepEqual([G.typeOf(layout.valves[k]).id, layout.valves[k].angle], before[k], "signing changes only the bottle");
 	}
-	assert.ok(pq.threshold > 0 && pq.threshold < 1, "the target is fitted to a reachable pressure");
-	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "spawned pressure quest requires player action");
-
-	// Sealing the mouths must not repaint the field or create air. Connected
-	// pockets can still redistribute their existing pressure over time.
-	const beforeSeal = Float32Array.from(sim.pressure.p);
 	sealAllMouths(sim);
-	assert.deepEqual(sim.pressure.p, beforeSeal, "sealing the mouths does not repaint pressure");
+	let mouth = -1;
+	for (let k = 0; k < sim.inlets.count; k++) {
+		if (!sim.inlets.present[k] || sim.inlets.owner[k] === 0) continue;
+		if ((sim.inlets.level[k] === I.HIGH) !== wantHigh || sim.inlets.column[k] === goal % G.N) continue;
+		mouth = k;
+		break;
+	}
+	assert.ok(mouth >= 0, "a rival reservoir in another column is available");
+	for (let k = 0; k < G.N * G.N; k++) {
+		if (k !== goal) S.installValve(sim, k, G.typeById("solid-blank"), 0, undefined, true);
+	}
+	S.rebuildPressure(sim);
 	const net = sim.pressure.net;
-	let beforeAir = 0;
-	for (let n = 0; n < net.count; n++) beforeAir += net.p[net.list[n]];
+	for (let n = 0; n < net.count; n++) net.p[net.list[n]] = wantHigh ? 0 : 1;
 	GAS.refresh(sim);
-	runGame(sim, game, 0.4);
-	let afterAir = 0;
-	for (let n = 0; n < net.count; n++) afterAir += net.p[net.list[n]];
-	assert.equal(sim.pressure.pins, 0, "every mouth is sealed");
-	assert.ok(Math.abs(afterAir - beforeAir) < 0.01, "the sealed network conserves its air");
-	assert.equal(game.players[0].completed, 0, "the quest cannot finish before its hold time");
-
-	// An unfavorable uniform sealed field is stable without assuming that a
-	// nonuniform sealed gradient must freeze. It must not satisfy the quest even
-	// after the full hold interval.
-	const unfavorable = pq.op === ">" ? 0 : 1;
-	for (let n = 0; n < net.count; n++) net.p[net.list[n]] = unfavorable;
-	GAS.refresh(sim);
-	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "unfavorable pressure does not meet the target");
-	runGame(sim, game, pq.holdNeed + 0.2);
-	assert.equal(Game.evaluateCell(sim, cell, pq).ok, false, "a uniform sealed field stays unfavorable");
-	assert.equal(game.players[0].completed, 0, "unfavorable pressure held past the window cannot finish the quest");
-	assert.equal(game.players[0].questId, pq.id, "the pressure quest remains active");
-
-	// The owner's whole mouth policy: open the pair that feeds the wanted
-	// polarity, keep the other pair sealed. The front then reaches the bottle.
-	setPressureMouths(sim, 0, pq.op === ">");
-	assert.ok(sim.pressure.pins > 0, "the policy opens constant-pressure mouths");
-	runGame(sim, game, 0.5);
-	assert.equal(game.players[0].completed, 0, "an arriving front cannot skip the hold window");
-	runGame(sim, game, 1.9);
-	assert.equal(game.players[0].completed, 1, "pressure quest completes once the front arrives and holds");
-	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "pressure bottle seals to solid blank");
-	conserved(sim, "pressure quest");
+	S.toggleInlet(sim, mouth, false, sim.inlets.owner[mouth]);
+	runGame(sim, game, q.holdNeed + 0.3);
+	assert.equal(game.players[0].completed, 0, "open reservoir cannot cross closed valves");
+	assert.equal(Game.evaluateCell(sim, goal, q).ok, false);
+	const col = sim.inlets.column[mouth];
+	const row = (goal / G.N) | 0;
+	const cross = G.typeById("solid-cross");
+	for (let x = Math.min(col, goal % G.N); x <= Math.max(col, goal % G.N); x++) {
+		const k = row * G.N + x;
+		if (k !== goal) S.installValve(sim, k, cross, 0, undefined, true);
+	}
+	for (let y = wantHigh ? row + 1 : 0; y <= (wantHigh ? G.N - 1 : row - 1); y++) {
+		S.installValve(sim, y * G.N + col, cross, 0, undefined, true);
+	}
+	S.rebuildPressure(sim);
+	runGame(sim, game, 8);
+	assert.equal(game.players[0].completed, 1, "bent route from a rival reservoir completes the quest");
+	assert.equal(G.typeOf(layout.valves[goal]).id, "solid-blank");
+	conserved(sim, "routed pressure quest");
 }
 
-// 6b. A pressure quest is fitted to what the signer's own mouths can reach, so
-// an impossible request is refitted and the owned-mouth policy completes it.
+function testPressureQuest() { pressureRoutingCase(true); }
 function testPressureReach() {
-	const layout = G.createLayout(11);
-	const sim = S.create(layout, { turning: false });
-	S.setPressure(sim, "grid");
+	pressureRoutingCase(false);
+	const sim = S.create(G.createLayout(11), { turning: false });
 	const game = Game.create(sim, { mode: "game", botControl: false });
+	for (let k = 0; k < G.N * G.N; k++) S.installValve(sim, k, G.typeById("solid-blank"), 0, undefined, true);
 	const q = game.quests[0];
 	q.kind = "pressure";
 	q.op = ">";
 	q.threshold = 0.95;
 	q.bottles = 1;
-	q.timeLimit = 0;
-	q.holdNeed = Game.HOLD_EXACT;
-	q.title = "High air > 0.95";
-	assert.equal(Game.signQuest(game, q.id, 0), true, "an over-tight pressure request still signs");
-	const cell = q.cells[0];
-	assert.ok(q.threshold < 0.95, `the threshold is refitted to the reachable range (${q.threshold})`);
-	assert.equal(Game.evaluateCell(sim, cell, q).ok, false, "the fitted target starts uncommitted");
-
-	setPressureMouths(sim, 0, q.op === ">");
-	runGame(sim, game, 2.4);
-	assert.ok(sim.pressure.pins > 0, "the owner's mouths keep a constant-pressure boundary");
-	assert.equal(game.players[0].completed, 1, `the fitted pressure quest completes (${q.threshold})`);
-	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "the fitted bottle seals to solid blank");
-	conserved(sim, "fitted pressure quest");
+	assert.equal(Game.signQuest(game, q.id, 0), false, "no possible route refuses signing instead of softening target");
+	assert.equal(q.threshold, 0.95);
+	assert.equal(q.owner, -1);
 }
 
 // 7. Bot competitors: inactive when botControl is off, autonomous completion when on.

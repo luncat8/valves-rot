@@ -1484,53 +1484,6 @@ const ValveGas = (() => {
 		}
 	}
 
-	// Solve a mouth set into pTarget. With no owner the whole favourable band is
-	// open, with one far mouth of the other band as the reference. A player-owned
-	// probe instead uses only the dealt mouths — the signer's favourable pair
-	// open and opposing pair sealed, every other owner's mouth as it stands —
-	// because that is the range a signing player can actually reach. A column
-	// with no dealt mouth has no boundary at all in that probe: pinning an empty
-	// band slot would invent a source the player cannot press.
-	function probeMouths(sim, wantHigh, column, owner) {
-		const gas = sim.pressure;
-		if (!gas || gas.kind !== "grid" || !gas.count) return false;
-		const net = gas.net;
-		const inlets = sim.inlets;
-		const mine = owner === undefined ? INL.UNOWNED : owner;
-		const far = column <= G.N / 2 ? G.N - 1 : 0;
-		const farSide = wantHigh ? 0 : 1;
-		let pins = 0;
-		net.pin.fill(0);
-		gas.pin.fill(0);
-		for (let n = 0; n < gas.bandCount; n++) {
-			const k = gas.band[n];
-			const favourable = (gas.bandSide[n] === 1) === wantHigh;
-			const inlet = gas.bandSide[n] * G.N + gas.bandColumn[n];
-			let pin = 0;
-			if (mine !== INL.UNOWNED) {
-				if (inlets.owner[inlet] === INL.UNOWNED) continue;
-				if (inlets.owner[inlet] === mine) {
-					if (favourable) pin = wantHigh ? 2 : 1;
-				} else if (inlets.open[inlet]) {
-					pin = inlets.level[inlet] === INL.HIGH ? 2 : 1;
-				}
-			} else if (favourable || (gas.bandSide[n] === farSide && gas.bandColumn[n] === far)) {
-				pin = wantHigh ? (favourable ? 2 : 1) : (favourable ? 1 : 2);
-			}
-			if (!pin) continue;
-			gas.pin[k] = pin;
-			const node = gas.map[k];
-			if (node >= 0) net.pin[node] = pin;
-			pins++;
-		}
-		// A fitted target has to be a real bound, so the hypothetical set gets a
-		// converged solve; the 12-iteration live cadence would undershoot a
-		// handful of owned pins enough to make an easy quest look unreachable.
-		steady(gas, gas.pTarget, false);
-		applyPins(sim, gas);
-		return pins > 0;
-	}
-
 	function refresh(sim, snap) {
 		const gas = sim.pressure;
 		rebuild(sim, gas);
@@ -1539,29 +1492,6 @@ const ValveGas = (() => {
 		velocity(sim, gas, !!snap);
 		gas.updates++;
 		gas.maskClock = gas.clock;
-	}
-
-	// Settle the live field into its exact steady state with the pins as they
-	// stand. Signing a pressure quest uses this: the threshold is fitted against
-	// converged probes, so the field the player starts from has to be the same
-	// solved state, not a half-relaxed front that could already sit past it.
-	function snapSteady(sim) {
-		const gas = sim.pressure;
-		if (!gas || gas.kind !== "grid") return;
-		const net = gas.net;
-		syncConductance(net);
-		markActive(net);
-		warmHarmonic(net, net.work);
-		solve(net, net.work, 1, 0, PCG_STEADY_ITERS);
-		net.p.set(net.work);
-		projectP(gas, net.p, gas.p);
-		velocity(sim, gas, true);
-		gas.solves = net.solves;
-		gas.pcgIters = net.pcgIters;
-		gas.pcgResidual = net.pcgResidual;
-		gas.updates++;
-		gas.settled = true;
-		gas.fastPending = false;
 	}
 
 	// Only the boundary changed: schedule a first transient step without
@@ -1592,8 +1522,6 @@ const ValveGas = (() => {
 		settle,
 		refresh,
 		repin,
-		snapSteady,
-		probeMouths,
 		index,
 		sampleCell,
 		openFace,
