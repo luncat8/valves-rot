@@ -77,6 +77,7 @@
 	S.seed(sim);
 	S.setAutoRotate(sim, readAutoPercent() / 100);
 	S.setAirForce(sim, +$("force").value);
+	S.setLubricant(sim, +$("lube").value);
 	S.setPressure(sim, readMode());
 
 	function readSeed() {
@@ -114,6 +115,7 @@
 		S.setSpeed(sim, +$("speed").value);
 		S.setAutoRotate(sim, readAutoPercent() / 100);
 		S.setAirForce(sim, +$("force").value);
+		S.setLubricant(sim, +$("lube").value);
 		S.seed(sim);
 		S.setPressure(sim, readMode());
 		Game.resetMatch(game, sim);
@@ -129,6 +131,7 @@
 		S.setSpeed(sim, +$("speed").value);
 		S.setAutoRotate(sim, readAutoPercent() / 100);
 		S.setAirForce(sim, +$("force").value);
+		S.setLubricant(sim, +$("lube").value);
 		S.seed(sim);
 		if (game.mode === "game") {
 			Game.resetMatch(game, sim);
@@ -352,6 +355,11 @@
 	$("force").oninput = () => {
 		S.setAirForce(sim, +$("force").value);
 		$("force-value").value = $("force").value;
+		if (paused) drawFrame(false);
+	};
+	$("lube").oninput = () => {
+		S.setLubricant(sim, +$("lube").value);
+		$("lube-value").value = $("lube").value;
 		if (paused) drawFrame(false);
 	};
 	$("air").onchange = () => {

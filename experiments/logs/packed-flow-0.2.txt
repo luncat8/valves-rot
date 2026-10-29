@@ -1,0 +1,16 @@
+packed passages by lubricant (poured 12 s, simulated 60 s)
+  lubricant 0    jog  never first     0/120  drained   long  never first     0/240  drained
+  lubricant 0.5  jog   4.0s first    21/120  drained   long  13.3s first    40/240  drained
+  lubricant 1    jog   3.9s first    23/120  drained   long  21.8s first   167/240  drained
+  lubricant 2    jog   4.2s first    33/120  drained   long  12.6s first   167/240  drained
+
+settled goal bottle after a 6 s pour and 10 s of rest
+  lubricant 0     80 grains  chamber 66  in the neck 14  mean speed 36 px/s
+  lubricant 0.5   80 grains  chamber 65  in the neck 15  mean speed 16 px/s
+  lubricant 1     80 grains  chamber 64  in the neck 16  mean speed 18 px/s
+  lubricant 2     80 grains  chamber 64  in the neck 16  mean speed 23 px/s
+
+match effect (node experiments/game-balance.cjs 120 7 11 42, three seeds, 120 s)
+  before lubrication   9 signed  6 done  3 expired (33%)  bots 45 / 85 / 0 pts
+  after  lubrication  19 signed 18 done  1 expired (5%)   bots 90 / 160 / 195 pts
+  game fixtures bots   4 completed (70 pts)  ->  7 completed (140 pts)

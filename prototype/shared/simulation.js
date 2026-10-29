@@ -43,6 +43,16 @@ const ValveSimulation = (() => {
 	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
 	// so a pile cannot creep into itself one substep at a time.
 	const TOUCH = 1e-3;
+	// Lubrication. Positional contacts alone cannot carry the weight of a bed, so
+	// an arch spanning a full passage never yields and a packed pipe stops instead
+	// of flowing. Resting grains get a rare deterministic knock sideways instead:
+	// the granular temperature a shaker would add, so a saturated passage creeps,
+	// a bend lets its grains through, and air or a lower outlet can move the bed.
+	const CONTACT_MARGIN = 0.4;
+	const LUBE_RATE = 60;
+	const LUBE_SPEED = 60;
+	const LUBE_KICK = 160;
+	const LUBE_DROP = 0.3;
 	const TURN_DWELL_MIN = 0.35;
 	const STALL_LIMIT = 0.4;
 	// How far a closing rim may shove a grain to clear its mouth before the valve
@@ -148,6 +158,7 @@ const ValveSimulation = (() => {
 			airForce: 1,
 			inlets: INL.create(),
 			turning: o.turning !== false,
+			lubricant: o.lubricant === undefined ? 1 : clamp(o.lubricant, 0, 2),
 			autoRotate: o.autoRotate === undefined ? 1 : clamp(o.autoRotate, 0, 1),
 			speed: o.speed === undefined ? 1 : o.speed,
 			capacity,
@@ -160,6 +171,9 @@ const ValveSimulation = (() => {
 			vy: new Float64Array(capacity),
 			r: new Float64Array(capacity),
 			color: new Uint8Array(capacity),
+			// 1 when the grain touched another grain in the previous step: only a
+			// bed that can arch needs lubricating, a lone grain does not.
+			contact: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
 			reach,
 			goalFeed: new Uint8Array(N),
@@ -619,11 +633,28 @@ const ValveSimulation = (() => {
 		sim.y[k] = sweepOut.y;
 	}
 
+	// The knock rate is per second, so a 30 Hz and a 120 Hz run add the same
+	// granular temperature, and both hashes come from the step and the grain
+	// index, so a replay of the same steps is identical.
+	function agitate(sim, k, gate) {
+		if (!sim.contact[k]) return;
+		const vx = sim.vx[k];
+		const vy = sim.vy[k];
+		if (vx * vx + vy * vy >= LUBE_SPEED * LUBE_SPEED) return;
+		if (G.hashUnit(0x51bd, sim.steps, k) >= gate) return;
+		const kick = (G.hashUnit(0x2f37, sim.steps, k + 7) - 0.5) * LUBE_KICK;
+		sim.vx[k] = vx + kick;
+		sim.vy[k] = vy + kick * LUBE_DROP;
+	}
+
 	function integrate(sim, h) {
 		const damp = 1 - DAMPING * h;
+		const gate = sim.lubricant * LUBE_RATE * h;
+		const shake = gate < 1 ? gate : 1;
 		for (let k = 0; k < sim.count; k++) {
 			sim.vx[k] *= damp;
 			sim.vy[k] = (sim.vy[k] + GRAVITY * h) * damp;
+			if (shake > 0) agitate(sim, k, shake);
 			clampSpeed(sim, k);
 			target.x = sim.origX[k] + sim.vx[k] * h;
 			target.y = sim.origY[k] + sim.vy[k] * h;
@@ -684,6 +715,12 @@ const ValveSimulation = (() => {
 		const dy = sim.y[j] - sim.y[i];
 		const minD = sim.r[i] + sim.r[j];
 		const d2 = dx * dx + dy * dy;
+		// A resolved bed is exactly touching, so a contact counts inside a small
+		// margin rather than only while the pair actually overlaps.
+		const reach = minD + CONTACT_MARGIN;
+		if (d2 >= reach * reach) return;
+		sim.contact[i] = 1;
+		sim.contact[j] = 1;
 		if (d2 >= minD * minD) return;
 		let nx;
 		let ny;
@@ -735,6 +772,7 @@ const ValveSimulation = (() => {
 	function resolvePairs(sim) {
 		const order = sim.order;
 		const starts = sim.binStart;
+		sim.contact.fill(0, 0, sim.count);
 		for (let oi = 0; oi < sim.count; oi++) {
 			const k = order[oi];
 			const kx = binX(sim.x[k]);
@@ -1118,6 +1156,12 @@ const ValveSimulation = (() => {
 		return added;
 	}
 
+	// 0 leaves a packed passage locked the way friction alone would; 1 is the
+	// default and 2 an obvious shake.
+	function setLubricant(sim, value) {
+		sim.lubricant = clamp(value, 0, 2);
+	}
+
 	function setAirForce(sim, force) {
 		sim.airForce = force > 0 ? force : 0;
 	}
@@ -1198,6 +1242,7 @@ const ValveSimulation = (() => {
 		setGoalFeed,
 		setSpeed,
 		setAirForce,
+		setLubricant,
 		setPressure,
 		toggleInlet,
 		canPressInlet,
