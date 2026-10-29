@@ -45,7 +45,7 @@
 		<span id="brush-summary">Double-click places: random valve type · keep current direction</span>
 	</div>
 	<div class="play-stage">
-		<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click, press-drag, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P in Lab mode, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it."></canvas>
+		<canvas id="c" tabindex="0" aria-label="10 by 10 rotary valve field. Click, press-drag, or use arrow keys and Enter or Space to rotate a selected valve. Double-click a valve, or press P in Lab mode, to place the valve brush from the Place valve drawer. Click an inlet mouth in the bands to toggle it; in Game mode each competitor owns two in and two out mouths in their color and only the owner can press them."></canvas>
 		<section id="game-panel" class="game-panel" hidden aria-labelledby="game-panel-title">
 			<div class="game-head">
 				<h2 id="game-panel-title">Game goals <small>v0.2</small></h2>
@@ -55,6 +55,7 @@
 				</div>
 			</div>
 			<p id="game-status" class="game-status" role="status" aria-live="polite"></p>
+			<p class="hint" id="mouth-hint">Each competitor is dealt <strong>2 in</strong> (source) and <strong>2 out</strong> (vent) mouths — one of each at the two ends of two random columns, drawn in their color. Press your own mouths to open or seal them; dealt mouths keep their in/out role, and rivals cannot press yours.</p>
 			<h3>Competitors</h3>
 			<div id="player-list" class="player-list"></div>
 			<h3>Quests <small>(1 sign per goal)</small></h3>
@@ -101,17 +102,17 @@
 			<button id="close-help" type="button">Close ×</button>
 		</div>
 		<h3>Playing</h3>
-		<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click or <strong>press-drag</strong> a valve — or focus the field and use arrow keys plus Enter/Space — to turn a rotor. <strong>Auto-rotate</strong> sets the share of valves that turn automatically on their schedule (90% default in Lab mode, 20% in Game mode).</p>
-		<p>In <strong>Game mode</strong> (<kbd>G</kbd>), sign an open quest to spawn one or two upright <code>hollow single · direction ↑ N · 270° (ports N)</code> goal bottles tinted in your player color (a pressure quest uses a four-way bottle and opens a vertical air shaft in its column). Build a route with the valves, press <strong>Pour</strong> for more grains or toggle air mouths, and hold the target count or pressure to score. A pressure target is fitted to what its cell can reach when you sign: open the band that feeds the required polarity, then shut the opposing band mouth by mouth, nearest first, and leave the farthest one open as the field's reference. Finished goal bottles turn into <code>solid blank</code> plugs and a new random quest replaces the completed one.</p>
-		<p>The mouths in the pour and drain bands are constant-pressure boundary cells outside the 10×10 field: bottom rows hold high (1), top rows low (0). Click a mouth to seal or open it, Shift-click to swap its polarity. Air only travels through open valve faces, so a shut port traps the pressure behind it.</p>
+		<p>One geometry layer drives drawing and collision, and one fixed-step conservative solver drives the grains. Click or <strong>press-drag</strong> a valve — or focus the field and use arrow keys plus Enter/Space — to turn a rotor. A press-drag dials one 90° detent per quarter turn of the hand: its arc shows the pull, its bold notch the detent the rotor is committed to, and a short wobble never turns it. Pressing near the hub pulls horizontally instead, one detent per 52 px. <strong>Auto-rotate</strong> sets the share of valves that turn automatically on their schedule (90% default in Lab mode, 20% in Game mode).</p>
+		<p>In <strong>Game mode</strong> (<kbd>G</kbd>), sign an open quest to spawn one or two upright <code>hollow single · direction ↑ N · 270° (ports N)</code> goal bottles tinted in your player color (a pressure quest uses a four-way bottle and opens a vertical air shaft in its column). Build a route with the valves, press <strong>Pour</strong> for more grains or toggle air mouths, and hold the target count or pressure to score. A pressure target is fitted to what your own mouths can reach when you sign: open the two mouths that feed the required polarity and seal the opposing pair. Other players' open mouths are part of the field you play around, not yours to touch. Finished goal bottles turn into <code>solid blank</code> plugs and a new random quest replaces the completed one.</p>
+		<p>The mouths in the pour and drain bands are constant-pressure boundary cells outside the 10×10 field: bottom rows hold high (1), top rows low (0). In Lab mode every column has a mouth: click one to seal or open it, Shift-click to swap its polarity. In Game mode the bands are dealt to the competitors instead — two columns per player, each with an in (source) at the bottom and an out (vent) at the top, tinted in the owner's color — and only the owner can press them. A pressure bottle is therefore placed in one of the signer's own columns, where sealing the out mouth charges the column and sealing the in mouth drains it. Air only travels through open valve faces, so a shut port traps the pressure behind it.</p>
 		<h3>Shortcuts</h3>
 		<dl class="shortcuts">
 			<dt>Click valve</dt><dd>Turn it +90° (<kbd>Shift</kbd>-click for −90°)</dd>
-			<dt>Press-drag valve</dt><dd>Dial its target angle across 90° detents</dd>
+			<dt>Press-drag valve</dt><dd>Dial its target across 90° detents — one quarter turn of the hand per detent, or 52 px across the hub</dd>
 			<dt>Double-click valve</dt><dd>Place the valve brush (Lab mode)</dd>
 			<dt><kbd>Ctrl</kbd>-click valve</dt><dd>Fill it with one random color (Lab mode)</dd>
-			<dt>Click mouth</dt><dd>Seal or open the air inlet</dd>
-			<dt><kbd>Shift</kbd>-click mouth</dt><dd>Swap its polarity (source ⇄ vent)</dd>
+			<dt>Click mouth</dt><dd>Seal or open your mouth (any mouth in Lab mode)</dd>
+			<dt><kbd>Shift</kbd>-click mouth</dt><dd>Swap its polarity (source ⇄ vent, Lab mode)</dd>
 			<dt>Arrow keys</dt><dd>Move the valve selection (field focused)</dd>
 			<dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Turn the selected valve +90° (<kbd>Shift</kbd> for −90°)</dd>
 			<dt><kbd>G</kbd></dt><dd>Switch between Lab mode and Game mode</dd>

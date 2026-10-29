@@ -1134,10 +1134,22 @@ const ValveSimulation = (() => {
 		return true;
 	}
 
-	function toggleInlet(sim, index, flip) {
-		const changed = INL.press(sim.inlets, index, flip);
+	// `actor` is the player asking; a mouth dealt in Game mode answers only to
+	// its owner, while an unowned Lab mouth takes anyone's press.
+	function toggleInlet(sim, index, flip, actor) {
+		const changed = INL.press(sim.inlets, index, flip, actor === undefined ? INL.UNOWNED : actor);
 		if (changed && sim.pressureMode === "grid") GAS.repin(sim);
 		return changed;
+	}
+
+	function canPressInlet(sim, index, actor) {
+		return INL.canPress(sim.inlets, index, actor === undefined ? INL.UNOWNED : actor);
+	}
+
+	// Game mode deals and returns whole mouth sets; keep the pressure pins in
+	// step so a new deal repaints on the next tick.
+	function setInletOwnership(sim) {
+		if (sim.pressureMode === "grid") GAS.repin(sim);
 	}
 
 	// A paused page still lets the air field settle, so a mouth click or a rotor
@@ -1179,6 +1191,8 @@ const ValveSimulation = (() => {
 		setAirForce,
 		setPressure,
 		toggleInlet,
+		canPressInlet,
+		setInletOwnership,
 		settlePressure,
 		placeValve,
 		replaceValve,

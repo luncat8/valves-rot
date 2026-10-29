@@ -379,6 +379,43 @@ frames.shift()((now += 16.7));
 const draggedText = element("selected-valve").textContent;
 assert.ok(draggedText.includes("ports S,W"), "orbital press-drag stepped +90° once without extra click turn, got: " + draggedText);
 
+// A short wobble must not step the dial: one quarter turn of the hand (plus the
+// grip slack and the half-notch snap) is what buys a detent, so 25° of orbit is
+// not enough. The old mapping stepped after 33°.
+const wobble = (cellX + 22 * Math.sin(0.44)).toFixed(2);
+const wobbleY = (cellY - 22 * Math.cos(0.44)).toFixed(2);
+c.onpointerdown({ clientX: cellX, clientY: cellY - 22, button: 0, pointerId: 2 });
+c.onpointermove({ clientX: Number(wobble), clientY: Number(wobbleY), pointerId: 2 });
+c.onpointerup({ pointerId: 2 });
+c.onclick({ clientX: Number(wobble), clientY: Number(wobbleY), shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.equal(element("selected-valve").textContent, draggedText, "a 25° wobble must not turn the valve");
+
+// Half a turn of the hand is two detents, in two steps around the rim.
+c.onpointerdown({ clientX: cellX, clientY: cellY - 22, button: 0, pointerId: 3 });
+c.onpointermove({ clientX: cellX + 22, clientY: cellY, pointerId: 3 });
+c.onpointermove({ clientX: cellX, clientY: cellY + 22, pointerId: 3 });
+c.onpointerup({ pointerId: 3 });
+c.onclick({ clientX: cellX, clientY: cellY + 22, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("ports E,N"), "half a turn of the hand gives two detents, got: " + element("selected-valve").textContent);
+
+// A press near the hub pulls horizontally: 35 px (9 px of grip + half a step)
+// is the first detent, so 30 px must still be inert.
+const hubText = element("selected-valve").textContent;
+c.onpointerdown({ clientX: cellX, clientY: cellY, button: 0, pointerId: 4 });
+c.onpointermove({ clientX: cellX + 30, clientY: cellY, pointerId: 4 });
+c.onpointerup({ pointerId: 4 });
+c.onclick({ clientX: cellX + 30, clientY: cellY, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.equal(element("selected-valve").textContent, hubText, "a 30 px hub pull must not turn the valve");
+c.onpointerdown({ clientX: cellX, clientY: cellY, button: 0, pointerId: 5 });
+c.onpointermove({ clientX: cellX + 40, clientY: cellY, pointerId: 5 });
+c.onpointerup({ pointerId: 5 });
+c.onclick({ clientX: cellX + 40, clientY: cellY, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("ports E,S"), "a 40 px hub pull steps one detent, got: " + element("selected-valve").textContent);
+
 // Case tint brush in Lab mode repaints the background without allocating canvases.
 const canvasesPreTint = calls.canvases;
 element("tint-picker").onclick({ target: { closest: () => ({ dataset: { tint: "0" } }) } });

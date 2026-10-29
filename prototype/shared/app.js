@@ -18,6 +18,14 @@
 	const stats = { frames: 0, clock: 0 };
 	const point = { x: 0, y: 0 };
 	const at = { inlet: -1, cell: -1 };
+	// Press-drag tuning: a gesture has to travel before it does anything, and one
+	// quarter turn costs a quarter turn of the hand (plus the grip slack and the
+	// half-notch snap), so the rotor tracks the hand instead of outrunning it.
+	const DRAG_ARM = 6;
+	const DRAG_GRIP = 0.22;
+	const DRAG_HUB_RADIUS = 12;
+	const DRAG_HUB_GRIP = 9;
+	const DRAG_HUB_STEP = 52;
 	const drag = {
 		pointerId: -1,
 		cell: -1,
@@ -28,6 +36,11 @@
 		r0: 0,
 		baseTarget: 0,
 		orbitAcc: 0,
+		sweep: 0,
+		quarters: 0,
+		pull: 0,
+		tick: 0,
+		hub: false,
 		active: false,
 		suppressClick: false,
 	};
@@ -268,6 +281,9 @@
 				shownIndex = -2;
 				syncGameUI();
 				if (paused) drawFrame(true);
+			} else {
+				Game.notice(game, "Could not sign that goal — its bottle has no free cell.");
+				syncGameUI();
 			}
 			return;
 		}
@@ -657,6 +673,31 @@
 	}
 
 	// ---- press-drag rotation + pointer gestures ------------------------------
+	// The hand drives a dial around the rotor: a quarter turn of travel buys one
+	// detent, with a little grip slack before it moves and a half-notch snap
+	// before it steps, so a small wobble never flips the target. A press close to
+	// the hub pulls horizontally across detents instead of orbiting.
+	//
+	// Signed detent pull for the current pointer x: + clockwise, - the other way.
+	// The orbital hand is measured in radians, the hub pull in pixels, so each
+	// mode carries its own slack and its own distance per detent.
+	function dragPull(x) {
+		const travel = drag.hub ? x - drag.downX : drag.orbitAcc;
+		const slack = drag.hub ? DRAG_HUB_GRIP : DRAG_GRIP;
+		const unit = drag.hub ? DRAG_HUB_STEP : G.HALF_PI;
+		const mag = Math.max(0, Math.abs(travel) - slack) / unit;
+		drag.pull = drag.hub ? travel : 0;
+		drag.sweep = (travel < 0 ? -mag : mag) * G.HALF_PI;
+		return travel < 0 ? -mag : mag;
+	}
+
+	function cursorFor() {
+		if (drag.active) return "grabbing";
+		if (at.inlet >= 0) return S.canPressInlet(sim, at.inlet, 0) ? "pointer" : "not-allowed";
+		if (at.cell >= 0 && canPlayerTurn(at.cell)) return "grab";
+		return "default";
+	}
+
 	canvas.onpointerdown = event => {
 		if (event.button && event.button !== 0) return;
 		if (event.ctrlKey) return;
@@ -671,6 +712,13 @@
 		drag.r0 = Math.hypot(point.x - v.cx, point.y - v.cy);
 		drag.baseTarget = Math.round(sim.target[at.cell] / G.HALF_PI) * G.HALF_PI;
 		drag.orbitAcc = 0;
+		drag.sweep = 0;
+		drag.quarters = 0;
+		drag.pull = 0;
+		drag.tick = DRAG_HUB_STEP;
+		// The mode is fixed where the press landed: near the hub it is a
+		// horizontal pull, on the rim it is an orbit, and it cannot flip halfway.
+		drag.hub = drag.r0 < DRAG_HUB_RADIUS;
 		drag.active = false;
 	};
 
@@ -679,8 +727,9 @@
 			const w = worldFromPointer(event);
 			if (!w) return;
 			const moved = Math.hypot(w.x - drag.downX, w.y - drag.downY);
-			if (!drag.active && moved >= 6) {
+			if (!drag.active && moved >= DRAG_ARM) {
 				drag.active = true;
+				canvas.style.cursor = "grabbing";
 				if (canvas.setPointerCapture && event.pointerId !== undefined) canvas.setPointerCapture(event.pointerId);
 			}
 			if (drag.active) {
@@ -692,11 +741,11 @@
 					else if (da < -Math.PI) da += G.TAU;
 					drag.orbitAcc += da;
 				}
-				const quarters =
-					drag.r0 < 10 && Math.abs(drag.orbitAcc) < 0.45
-						? Math.round((w.x - drag.downX) / 26)
-						: Math.trunc(drag.orbitAcc / G.HALF_PI + Math.sign(drag.orbitAcc) * 0.42);
-				if (S.setTarget(sim, drag.cell, drag.baseTarget + quarters * G.HALF_PI)) {
+				const quarters = Math.round(dragPull(w.x));
+				// A short tick as the dial crosses a detent: the gesture's only non-visual cue.
+				if (quarters !== drag.quarters && navigator.vibrate) navigator.vibrate(6);
+				drag.quarters = quarters;
+				if (S.setTarget(sim, drag.cell, drag.baseTarget + drag.quarters * G.HALF_PI)) {
 					overlayDirty = true;
 					shownIndex = -2;
 				}
@@ -709,6 +758,7 @@
 		pointerState(event);
 		setHover(at.inlet);
 		selected = at.inlet >= 0 ? -1 : at.cell;
+		canvas.style.cursor = cursorFor();
 		if (paused) drawFrame(false);
 	};
 
@@ -724,7 +774,12 @@
 		}
 		drag.cell = -1;
 		drag.active = false;
+		drag.hub = false;
+		drag.sweep = 0;
+		drag.pull = 0;
+		drag.quarters = 0;
 		drag.pointerId = -1;
+		canvas.style.cursor = "default";
 		if (paused) drawFrame(false);
 	}
 
@@ -734,6 +789,7 @@
 		if (drag.active) return;
 		drag.cell = -1;
 		if (document.activeElement === canvas) return;
+		canvas.style.cursor = "default";
 		selected = -1;
 		setHover(-1);
 		if (paused) drawFrame(false);
@@ -741,6 +797,7 @@
 	canvas.onblur = () => {
 		drag.cell = -1;
 		drag.active = false;
+		drag.hub = false;
 		selected = -1;
 		setHover(-1);
 		if (paused) drawFrame(false);
@@ -752,8 +809,15 @@
 		}
 		pointerState(event);
 		if (at.inlet >= 0) {
-			S.toggleInlet(sim, at.inlet, event.shiftKey);
-			if (paused) drawFrame(true);
+			// Owned mouths answer only to their owner; a dealt mouth keeps its in/out
+			// role, so the shift-click swap is a Lab-mode move.
+			const pressed = S.toggleInlet(sim, at.inlet, event.shiftKey, 0);
+			if (!pressed && game.mode === "game") {
+				const owner = sim.inlets.owner[at.inlet];
+				Game.notice(game, owner >= 0 ? "That mouth belongs to " + game.players[owner].name + "." : "No mouth was dealt in that slot.");
+				syncGameUI();
+			}
+			if (paused) drawFrame(pressed);
 			return;
 		}
 		selected = at.cell;
@@ -876,9 +940,11 @@
 			if (pressure.kind === "grid") drawPressureGrid();
 			else R.renderPressure(ctx, pressure);
 		}
-		// Mouths sit under the grain piles that share the bands.
+		// Mouths sit under the grain piles that share the bands; the ownership
+		// tabs are redrawn above them so a player's own mouths never get buried.
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
 		R.renderGrains(ctx, sim, scene);
+		R.renderInletBadges(ctx, sim.inlets, hoverInlet);
 		R.renderGoals(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
 		R.renderDrag(ctx, layout, sim, drag);

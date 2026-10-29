@@ -1484,12 +1484,17 @@ const ValveGas = (() => {
 		}
 	}
 
-	// Solve the standard quest mouth set into pTarget: the whole favourable band
-	// is open, with one far mouth of the other band as the reference.
-	function probeMouths(sim, wantHigh, column) {
+	// Solve a mouth set into pTarget. With no owner the whole favourable band is
+	// open, with one far mouth of the other band as the reference. A player-owned
+	// probe instead uses only that player's dealt mouths — favourable open,
+	// opposing sealed — and leaves every other owner's mouths where they are,
+	// because that is the range a signing player can actually reach.
+	function probeMouths(sim, wantHigh, column, owner) {
 		const gas = sim.pressure;
 		if (!gas || gas.kind !== "grid" || !gas.count) return false;
 		const net = gas.net;
+		const inlets = sim.inlets;
+		const mine = owner === undefined ? INL.UNOWNED : owner;
 		const far = column <= G.N / 2 ? G.N - 1 : 0;
 		const farSide = wantHigh ? 0 : 1;
 		let pins = 0;
@@ -1498,14 +1503,27 @@ const ValveGas = (() => {
 		for (let n = 0; n < gas.bandCount; n++) {
 			const k = gas.band[n];
 			const favourable = (gas.bandSide[n] === 1) === wantHigh;
-			if (!favourable && !(gas.bandSide[n] === farSide && gas.bandColumn[n] === far)) continue;
-			const pin = wantHigh ? (favourable ? 2 : 1) : (favourable ? 1 : 2);
+			const inlet = gas.bandSide[n] * G.N + gas.bandColumn[n];
+			let pin = 0;
+			if (mine !== INL.UNOWNED && inlets.owner[inlet] !== INL.UNOWNED) {
+				if (inlets.owner[inlet] === mine) {
+					if (favourable) pin = wantHigh ? 2 : 1;
+				} else if (inlets.open[inlet]) {
+					pin = inlets.level[inlet] === INL.HIGH ? 2 : 1;
+				}
+			} else if (favourable || (gas.bandSide[n] === farSide && gas.bandColumn[n] === far)) {
+				pin = wantHigh ? (favourable ? 2 : 1) : (favourable ? 1 : 2);
+			}
+			if (!pin) continue;
 			gas.pin[k] = pin;
 			const node = gas.map[k];
 			if (node >= 0) net.pin[node] = pin;
 			pins++;
 		}
-		steady(gas, gas.pTarget, true);
+		// A fitted target has to be a real bound, so the hypothetical set gets a
+		// converged solve; the 12-iteration live cadence would undershoot a
+		// handful of owned pins enough to make an easy quest look unreachable.
+		steady(gas, gas.pTarget, false);
 		applyPins(sim, gas);
 		return pins > 0;
 	}

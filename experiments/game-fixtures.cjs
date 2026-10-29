@@ -21,6 +21,30 @@ function runGame(sim, game, seconds) {
 	}
 }
 
+// A player's whole pressure policy: their in mouths open for a high charge,
+// their out mouths open for a drain, the other pair sealed.
+function setPressureMouths(sim, playerId, wantHigh) {
+	for (let k = 0; k < sim.inlets.count; k++) {
+		if (!I.ownedBy(sim.inlets, k, playerId)) continue;
+		const wantOpen = (sim.inlets.level[k] === I.HIGH) === wantHigh;
+		if (!!sim.inlets.open[k] === wantOpen) continue;
+		assert.equal(S.toggleInlet(sim, k, false, playerId), true, "the owner can set their own mouth");
+	}
+}
+
+function sealAllMouths(sim) {
+	for (let k = 0; k < sim.inlets.count; k++) {
+		if (!sim.inlets.present[k] || !sim.inlets.open[k]) continue;
+		assert.equal(S.toggleInlet(sim, k, false, sim.inlets.owner[k]), true, "every present mouth has its owner");
+	}
+}
+
+function mouthColumns(sim, playerId) {
+	const cols = [];
+	for (let c = 0; c < G.N; c++) if (I.ownedBy(sim.inlets, c, playerId)) cols.push(c);
+	return cols;
+}
+
 // 1. Auto-rotate percentage: exact subset counts, monotonicity, manual turns
 // at 0%, and goal-bottle auto-lock.
 function testAutoRotate() {
@@ -101,7 +125,63 @@ function testCaseTints() {
 	}
 }
 
-// 3. Procedural quest generator: tier balance, property axes, determinism.
+// 3. Owned mouths: Game mode deals two in and two out per player, paired by
+// column, and only the owner may press them without flipping their polarity.
+function testOwnedMouths() {
+	const sim = S.create(G.createLayout(23), { turning: false });
+	const game = Game.create(sim, { mode: "game", botControl: false });
+	const inl = sim.inlets;
+	let present = 0;
+	const sources = [0, 0, 0, 0];
+	const vents = [0, 0, 0, 0];
+	for (let k = 0; k < inl.count; k++) {
+		if (!inl.present[k]) continue;
+		present++;
+		if (inl.side[k] === I.TOP) {
+			assert.equal(inl.level[k], I.LOW, "an out mouth is a low vent");
+			vents[inl.owner[k]]++;
+		} else {
+			assert.equal(inl.level[k], I.HIGH, "an in mouth is a high source");
+			sources[inl.owner[k]]++;
+		}
+	}
+	assert.equal(present, 4 * I.PER_PLAYER * 2, "four mouths per player, nothing else in the bands");
+	const dealt = [];
+	for (let p = 0; p < 4; p++) {
+		assert.equal(sources[p], 2, "two in mouths per player");
+		assert.equal(vents[p], 2, "two out mouths per player");
+		const cols = mouthColumns(sim, p);
+		assert.equal(cols.length, 2, "in and out share the player's two columns");
+		for (const c of cols) {
+			assert.equal(I.ownedBy(inl, c, p) && I.ownedBy(inl, G.N + c, p), true, "each owned column has both polarities");
+			for (const q of dealt) assert.notEqual(q, c, "players never share a column");
+			dealt.push(c);
+		}
+	}
+
+	const mouth = dealt[0];
+	assert.equal(S.toggleInlet(sim, mouth, false, 1), false, "a rival cannot press my mouth");
+	assert.equal(S.toggleInlet(sim, mouth, false, 0), true, "the owner seals it");
+	assert.equal(inl.open[mouth], 0);
+	assert.equal(S.toggleInlet(sim, mouth, false, 0), true, "the owner opens it again");
+	assert.equal(S.toggleInlet(sim, mouth, true, 0), false, "a dealt mouth keeps its in/out role");
+	assert.equal(inl.level[mouth], I.LOW);
+	let empty = -1;
+	for (let c = 0; c < G.N && empty < 0; c++) if (!inl.present[c] && !inl.present[G.N + c]) empty = c;
+	if (empty >= 0) assert.equal(S.toggleInlet(sim, empty, false, 0), false, "an undealt slot is not a mouth");
+
+	Game.setMode(game, "lab");
+	for (let k = 0; k < inl.count; k++) {
+		assert.equal(inl.present[k], 1, "Lab mode restores the full band");
+		assert.equal(inl.owner[k], I.UNOWNED);
+	}
+	Game.setMode(game, "game");
+	present = 0;
+	for (let k = 0; k < inl.count; k++) if (inl.present[k]) present++;
+	assert.equal(present, 16, "returning to Game mode deals a fresh set");
+}
+
+// 4. Procedural quest generator: tier balance, property axes, determinism.
 function testQuestGenerator() {
 	const a = Game.create(S.create(G.createLayout(19)));
 	const b = Game.create(S.create(G.createLayout(19)));
@@ -277,8 +357,9 @@ function testQuestLifecycle() {
 	conserved(sim, "after timer expiry");
 }
 
-// 6. Pressure quest: auto-enables Grid gas, opens an air route to both mouth
-// bands, and starts uncommitted. Sealing the mouths conserves the trapped air.
+// 6. Pressure quest: auto-enables Grid gas, places its bottle in one of the
+// signer's own mouth columns (so the shaft meets both of that player's mouths),
+// and starts uncommitted. Sealing the mouths conserves the trapped air.
 function testPressureQuest() {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
@@ -297,8 +378,9 @@ function testPressureQuest() {
 	assert.equal(Game.signQuest(game, pq.id, 0), true);
 	assert.equal(sim.pressureMode, "grid", "signing a pressure quest enables Grid gas");
 	const cell = pq.cells[0];
-	assert.equal(G.typeOf(layout.valves[cell]).id, "hollow-cross", "a pressure bottle is open on all four faces");
 	const col = cell % G.N;
+	assert.ok(I.ownedBy(sim.inlets, col, 0) && I.ownedBy(sim.inlets, G.N + col, 0), "the bottle lands in a column the signer owns");
+	assert.equal(G.typeOf(layout.valves[cell]).id, "hollow-cross", "a pressure bottle is open on all four faces");
 	for (let j = 0; j < G.N; j++) {
 		if (j * G.N + col === cell) continue;
 		assert.equal(G.typeOf(layout.valves[j * G.N + col]).id, "solid-cross", "the goal column is an open air shaft");
@@ -309,7 +391,7 @@ function testPressureQuest() {
 	// Sealing the mouths must not repaint the field or create air. Connected
 	// pockets can still redistribute their existing pressure over time.
 	const beforeSeal = Float32Array.from(sim.pressure.p);
-	for (let k = 0; k < 2 * G.N; k++) if (sim.inlets.open[k]) S.toggleInlet(sim, k, false);
+	sealAllMouths(sim);
 	assert.deepEqual(sim.pressure.p, beforeSeal, "sealing the mouths does not repaint pressure");
 	const net = sim.pressure.net;
 	let beforeAir = 0;
@@ -334,19 +416,10 @@ function testPressureQuest() {
 	assert.equal(game.players[0].completed, 0, "unfavorable pressure held past the window cannot finish the quest");
 	assert.equal(game.players[0].questId, pq.id, "the pressure quest remains active");
 
-	// The bots' recipe: open the favourable band, keep one far mouth of the other
-	// band open as a reference. The pressure front then reaches the bottle.
-	const wantHigh = pq.op === ">";
-	const favourable = wantHigh ? I.BOTTOM : I.TOP;
-	const opposite = wantHigh ? I.TOP : I.BOTTOM;
-	const far = col <= G.N / 2 ? G.N - 1 : 0;
-	for (let c = 0; c < G.N; c++) {
-		const fav = favourable * G.N + c;
-		const opp = opposite * G.N + c;
-		if (!sim.inlets.open[fav]) S.toggleInlet(sim, fav, false);
-		if (!!sim.inlets.open[opp] !== (c === far)) S.toggleInlet(sim, opp, false);
-	}
-	assert.ok(sim.pressure.pins > 0, "the recipe reopens constant-pressure mouths");
+	// The owner's whole mouth policy: open the pair that feeds the wanted
+	// polarity, keep the other pair sealed. The front then reaches the bottle.
+	setPressureMouths(sim, 0, pq.op === ">");
+	assert.ok(sim.pressure.pins > 0, "the policy opens constant-pressure mouths");
 	runGame(sim, game, 0.5);
 	assert.equal(game.players[0].completed, 0, "an arriving front cannot skip the hold window");
 	runGame(sim, game, 1.9);
@@ -355,8 +428,8 @@ function testPressureQuest() {
 	conserved(sim, "pressure quest");
 }
 
-// 6b. A pressure quest is fitted to what the cell can reach, so an impossible
-// request is refitted and the standard mouth recipe completes it.
+// 6b. A pressure quest is fitted to what the signer's own mouths can reach, so
+// an impossible request is refitted and the owned-mouth policy completes it.
 function testPressureReach() {
 	const layout = G.createLayout(11);
 	const sim = S.create(layout, { turning: false });
@@ -373,20 +446,11 @@ function testPressureReach() {
 	assert.equal(Game.signQuest(game, q.id, 0), true, "an over-tight pressure request still signs");
 	const cell = q.cells[0];
 	assert.ok(q.threshold < 0.95, `the threshold is refitted to the reachable range (${q.threshold})`);
-	const wantHigh = q.op === ">";
 	assert.equal(Game.evaluateCell(sim, cell, q).ok, false, "the fitted target starts uncommitted");
 
-	// The recipe the bots use: open the favourable band, keep one far mouth of the
-	// other band as the reference and shut the rest.
-	const col = cell % G.N;
-	const far = col <= G.N / 2 ? G.N - 1 : 0;
-	const side = wantHigh ? I.TOP : I.BOTTOM;
-	for (let c = 0; c < G.N; c++) {
-		const idx = side * G.N + c;
-		if (c !== far && sim.inlets.open[idx]) S.toggleInlet(sim, idx, false);
-	}
+	setPressureMouths(sim, 0, q.op === ">");
 	runGame(sim, game, 2.4);
-	assert.ok(sim.pressure.pins > 0, "the reference mouth keeps a constant-pressure boundary");
+	assert.ok(sim.pressure.pins > 0, "the owner's mouths keep a constant-pressure boundary");
 	assert.equal(game.players[0].completed, 1, `the fitted pressure quest completes (${q.threshold})`);
 	assert.equal(G.typeOf(layout.valves[cell]).id, "solid-blank", "the fitted bottle seals to solid blank");
 	conserved(sim, "fitted pressure quest");
@@ -426,6 +490,7 @@ function testBots() {
 const t0 = process.hrtime.bigint();
 testAutoRotate();
 testCaseTints();
+testOwnedMouths();
 const gen = testQuestGenerator();
 testHueMatching();
 testQuestLifecycle();

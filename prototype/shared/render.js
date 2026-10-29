@@ -411,23 +411,82 @@ const ValveRender = (() => {
 		ctx.stroke();
 	}
 
+	// Drag dial. The rotor keeps quarter-turn detents, so the gesture is drawn as
+	// an arc the hand winds around a fixed ring, a bold notch on the detent the
+	// rotor is committed to, and a dot where the hand grips the rim; a wobble is
+	// a short arc and never a turn. A hub pull shows its own horizontal rail
+	// instead, with one tick per detent and a knob under the hand.
 	function renderDrag(ctx, layout, sim, drag) {
 		if (!drag || !drag.active || drag.cell < 0 || drag.cell >= layout.valves.length) return;
 		const v = layout.valves[drag.cell];
+		const base = drag.baseTarget;
 		const target = sim.target[drag.cell];
 		ctx.save();
-		ctx.beginPath();
-		ctx.arc(v.cx, v.cy, RV + 3.2, 0, TAU);
-		ctx.strokeStyle = "rgba(239,193,121,0.55)";
-		ctx.lineWidth = 1.4;
-		ctx.stroke();
-		const ux = Math.cos(target - Math.PI / 2);
-		const uy = Math.sin(target - Math.PI / 2);
+		if (drag.hub) {
+			const rail = S / 2 - 5;
+			ctx.beginPath();
+			ctx.moveTo(v.cx - rail, v.cy);
+			ctx.lineTo(v.cx + rail, v.cy);
+			ctx.strokeStyle = "rgba(239,193,121,0.3)";
+			ctx.lineWidth = 1;
+			ctx.stroke();
+			for (let n = -3; n <= 3; n++) {
+				const tx = v.cx + n * drag.tick;
+				if (n === 0 || Math.abs(tx - v.cx) > rail) continue;
+				ctx.beginPath();
+				ctx.moveTo(tx, v.cy - 2.6);
+				ctx.lineTo(tx, v.cy + 2.6);
+				ctx.strokeStyle = "rgba(239,193,121,0.4)";
+				ctx.lineWidth = 1;
+				ctx.stroke();
+			}
+			const pull = Math.max(-rail, Math.min(rail, drag.pull));
+			ctx.beginPath();
+			ctx.arc(v.cx + pull, v.cy, 2.6, 0, TAU);
+			ctx.fillStyle = "#fff6e4";
+			ctx.fill();
+		} else {
+			const radius = RV + 4.6;
+			ctx.beginPath();
+			ctx.arc(v.cx, v.cy, radius, 0, TAU);
+			ctx.strokeStyle = "rgba(239,193,121,0.26)";
+			ctx.lineWidth = 1;
+			ctx.stroke();
+			for (let q = 0; q < 4; q++) {
+				const a = q * G.HALF_PI;
+				const ax = Math.cos(a);
+				const ay = Math.sin(a);
+				ctx.beginPath();
+				ctx.moveTo(v.cx + ax * (radius + 1.2), v.cy + ay * (radius + 1.2));
+				ctx.lineTo(v.cx + ax * (radius + 3.4), v.cy + ay * (radius + 3.4));
+				ctx.strokeStyle = "rgba(239,193,121,0.38)";
+				ctx.lineWidth = 1.1;
+				ctx.stroke();
+			}
+			if (Math.abs(drag.sweep) > 0.004) {
+				ctx.beginPath();
+				ctx.arc(v.cx, v.cy, radius, base, base + drag.sweep, drag.sweep < 0);
+				ctx.strokeStyle = "rgba(239,193,121,0.82)";
+				ctx.lineWidth = 3;
+				ctx.stroke();
+			}
+			const hx = drag.lastX - v.cx;
+			const hy = drag.lastY - v.cy;
+			const reach = Math.hypot(hx, hy);
+			if (reach > 1) {
+				ctx.beginPath();
+				ctx.arc(v.cx + (hx / reach) * radius, v.cy + (hy / reach) * radius, 2.4, 0, TAU);
+				ctx.fillStyle = "#fff6e4";
+				ctx.fill();
+			}
+		}
+		const ux = Math.cos(target);
+		const uy = Math.sin(target);
 		ctx.beginPath();
 		ctx.moveTo(v.cx + ux * (RV - 3), v.cy + uy * (RV - 3));
-		ctx.lineTo(v.cx + ux * (RV + 5.5), v.cy + uy * (RV + 5.5));
+		ctx.lineTo(v.cx + ux * (RV + 5.4), v.cy + uy * (RV + 5.4));
 		ctx.strokeStyle = SELECT_C;
-		ctx.lineWidth = 2.4;
+		ctx.lineWidth = 2.6;
 		ctx.stroke();
 		ctx.restore();
 	}
@@ -620,26 +679,52 @@ const ValveRender = (() => {
 		ctx.restore();
 	}
 
-	// One mouth marker per column: an arrow pointing into the field for a source
-	// and out of it for a vent, with sealed mouths dimmed.
+	// One marker per mouth: an arrow into the field while it is open, a cross while
+	// sealed, and the hover ring names it. A dealt Game-mode mouth wears its
+	// owner's casing — tinted disc, accent ring and a wide stem down to the field
+	// edge — so each player can read their two in and two out at a glance even
+	// before `renderInletBadges` brackets the column ends.
 	function renderInlets(ctx, inlets, hover) {
 		for (let k = 0; k < inlets.count; k++) {
+			if (!inlets.present[k]) continue;
 			const x = inlets.x[k];
 			const y = inlets.y[k];
 			const active = k === hover;
 			const open = inlets.open[k] === 1;
-			const inward = inlets.side[k] === I.TOP ? 1 : -1;
+			const top = inlets.side[k] === I.TOP;
+			const inward = top ? 1 : -1;
+			const owner = inlets.owner[k];
+			const player = owner >= 0 ? PLAYERS[owner] : null;
+			if (player) {
+				ctx.beginPath();
+				ctx.moveTo(x, y + inward * 5.5);
+				ctx.lineTo(x, top ? 0 : SIZE);
+				ctx.strokeStyle = player.accent;
+				ctx.globalAlpha = open ? 0.34 : 0.12;
+				ctx.lineWidth = 7;
+				ctx.stroke();
+				ctx.globalAlpha = 1;
+			}
 			ctx.beginPath();
 			ctx.arc(x, y, 6.2, 0, TAU);
-			ctx.fillStyle = active ? "rgba(240,248,255,0.34)" : "rgba(8,12,18,0.46)";
+			ctx.fillStyle = player ? player.hex : active ? "rgba(240,248,255,0.34)" : "rgba(8,12,18,0.46)";
+			ctx.globalAlpha = player ? (open ? 0.72 : 0.3) : 1;
 			ctx.fill();
+			ctx.globalAlpha = 1;
+			if (player) {
+				ctx.beginPath();
+				ctx.arc(x, y, 6.2, 0, TAU);
+				ctx.strokeStyle = player.accent;
+				ctx.lineWidth = active ? 2.2 : 1.4;
+				ctx.stroke();
+			}
 			if (open) {
 				ctx.beginPath();
 				ctx.moveTo(x, y + inward * 4.2);
 				ctx.lineTo(x - 3.3, y - inward * 2.2);
 				ctx.lineTo(x + 3.3, y - inward * 2.2);
 				ctx.closePath();
-				ctx.fillStyle = inlets.level[k] === I.HIGH ? "#ff8a5c" : "#5cc8ff";
+				ctx.fillStyle = player ? player.accent : inlets.level[k] === I.HIGH ? "#ff8a5c" : "#5cc8ff";
 				ctx.fill();
 			} else {
 				ctx.beginPath();
@@ -648,8 +733,10 @@ const ValveRender = (() => {
 				ctx.moveTo(x + 2.6, y - 2.6);
 				ctx.lineTo(x - 2.6, y + 2.6);
 				ctx.lineWidth = 1.4;
-				ctx.strokeStyle = "rgba(190,202,214,0.6)";
+				ctx.strokeStyle = player ? player.accent : "rgba(190,202,214,0.6)";
+				ctx.globalAlpha = player ? 0.7 : 1;
 				ctx.stroke();
+				ctx.globalAlpha = 1;
 			}
 			if (!active) continue;
 			ctx.beginPath();
@@ -657,9 +744,10 @@ const ValveRender = (() => {
 			ctx.lineWidth = 1.2;
 			ctx.strokeStyle = SELECT_C;
 			ctx.stroke();
-			// Hovering names the mouth: polarity and whether it holds the field.
+			// Hovering names the mouth: whose it is, its in/out role and whether it
+			// is holding the field.
 			const source = inlets.level[k] === I.HIGH;
-			const label = (source ? "source" : "vent") + (open ? "" : " sealed");
+			const label = (player ? player.name + " " : "") + (source ? "in" : "out") + (open ? "" : " sealed");
 			ctx.font = "7px system-ui, sans-serif";
 			ctx.textBaseline = "middle";
 			ctx.textAlign = x > SIZE - 90 ? "right" : "left";
@@ -669,8 +757,32 @@ const ValveRender = (() => {
 			roundRect(ctx, ctx.textAlign === "right" ? tx - width - 3 : tx - 3, y - 6, width + 6, 12, 3);
 			ctx.fillStyle = "rgba(10,14,20,0.72)";
 			ctx.fill();
-			ctx.fillStyle = source ? "#ffb08c" : "#a8e2ff";
+			ctx.fillStyle = player ? player.accent : source ? "#ffb08c" : "#a8e2ff";
 			ctx.fillText(label, tx, y);
+		}
+	}
+
+	// A dealt mouth is bracketed by owner-coloured plates on both band edges,
+	// above the grain piles that share the band, so a player always finds their
+	// own two in and two out mouths even under a pile.
+	function renderInletBadges(ctx, inlets, hover) {
+		ctx.globalAlpha = 1;
+		for (let k = 0; k < inlets.count; k++) {
+			const owner = inlets.owner[k];
+			if (owner < 0 || !inlets.present[k]) continue;
+			const player = PLAYERS[owner];
+			const top = inlets.side[k] === I.TOP;
+			const x = inlets.x[k];
+			ctx.fillStyle = "rgba(8,12,18,0.72)";
+			roundRect(ctx, x - 7, top ? -G.POUR + 0.6 : SIZE + G.POUR - 4.6, 14, 4, 1.6);
+			ctx.fill();
+			ctx.globalAlpha = inlets.open[k] === 1 ? 1 : 0.4;
+			ctx.fillStyle = k === hover ? SELECT_C : player.accent;
+			roundRect(ctx, x - 6, top ? -G.POUR + 1.2 : SIZE + G.POUR - 4, 12, 2.8, 1.3);
+			ctx.fill();
+			roundRect(ctx, x - 6, top ? -4 : SIZE + 1.2, 12, 2.8, 1.3);
+			ctx.fill();
+			ctx.globalAlpha = 1;
 		}
 	}
 
@@ -703,6 +815,7 @@ const ValveRender = (() => {
 		renderField,
 		renderPressureLegend,
 		renderInlets,
+		renderInletBadges,
 		makeCanvas,
 	};
 })();
