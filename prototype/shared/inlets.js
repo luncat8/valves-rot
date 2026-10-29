@@ -5,10 +5,12 @@
 // between the reservoirs instead of relaxing to a uniform cloud.
 //
 // In Lab mode every mouth exists and anyone may press it. Game mode deals each
-// competitor four owned mouths — two sources (in) and two vents (out), as the
-// two ends of two random columns — and leaves the rest of the bands empty, so
-// there is nothing to grind at: only an owner can press their own mouth, and an
-// owned mouth keeps the polarity it was dealt.
+// competitor four owned mouths — two sources (in) and two vents (out) — at
+// independent random columns of the two bands and leaves the rest of the bands
+// empty, so there is nothing to grind at: only an owner can press their own
+// mouth, and an owned mouth keeps the polarity it was dealt. The bands are dealt
+// separately, so a player's own in and out mouths never share an x; one column
+// can still carry a source for one player and a vent for another.
 const ValveInlets = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -76,27 +78,73 @@ const ValveInlets = (() => {
 	}
 
 	const dealColumns = new Uint8Array(G.N);
+	const inColumns = new Uint8Array(G.N);
+	const outColumns = new Uint8Array(G.N);
+	const columnSlot = new Int8Array(G.N);
+	const columnVisited = new Uint8Array(G.N);
 
-	// Game mode: two source (in) and two vent (out) mouths per player, dealt as
-	// two random columns that each hold one in and one out. A player therefore
-	// owns a small pressure station they can charge or drain, the colour marks
-	// both ends of the column, and no two players share a column.
+	// Game mode: two source (in) mouths at the bottom and two vent (out) mouths
+	// at the top per player. The two bands are dealt separately, so a player's
+	// in and out mouths sit at different x, and a column carries at most one
+	// mouth per band. The in columns come from one shuffled deck, so no two
+	// players share one; the out slots are matched onto distinct columns that
+	// skip each player's own in columns, so a column owned in one band never
+	// holds the same player's mouth in the other.
 	function deal(inlets, players, rnd) {
 		for (let k = 0; k < inlets.count; k++) {
 			inlets.present[k] = 0;
 			inlets.owner[k] = UNOWNED;
 			inlets.open[k] = 0;
 		}
-		shuffleColumns(dealColumns, rnd);
 		const dealt = Math.min(players, (G.N / PER_PLAYER) | 0);
+		const mouths = dealt * PER_PLAYER;
+		shuffleColumns(dealColumns, rnd);
+		for (let s = 0; s < mouths; s++) inColumns[s] = dealColumns[s];
+		assignOutColumns(mouths, rnd);
 		for (let p = 0; p < dealt; p++) {
 			for (let n = 0; n < PER_PLAYER; n++) {
-				const col = dealColumns[p * PER_PLAYER + n];
-				claim(inlets, TOP * G.N + col, p, LOW);
-				claim(inlets, BOTTOM * G.N + col, p, HIGH);
+				const s = p * PER_PLAYER + n;
+				claim(inlets, BOTTOM * G.N + inColumns[s], p, HIGH);
+				claim(inlets, TOP * G.N + outColumns[s], p, LOW);
 			}
 		}
 		inlets.version++;
+	}
+
+	// Kuhn's augmenting-path matching of the out slots onto columns. Every slot
+	// of a player allows the same eight columns (all but that player's two in
+	// columns), so a complete assignment always exists and this never fails.
+	function assignOutColumns(mouths, rnd) {
+		for (let c = 0; c < G.N; c++) columnSlot[c] = -1;
+		for (let s = 0; s < mouths; s++) {
+			columnVisited.fill(0);
+			matchOutSlot(s, (rnd() * G.N) | 0);
+		}
+		for (let s = 0; s < mouths; s++) outColumns[s] = 0;
+		for (let c = 0; c < G.N; c++) {
+			if (columnSlot[c] >= 0) outColumns[columnSlot[c]] = c;
+		}
+	}
+
+	function matchOutSlot(slot, offset) {
+		const player = (slot / PER_PLAYER) | 0;
+		for (let k = 0; k < G.N; k++) {
+			const col = (offset + k) % G.N;
+			if (columnVisited[col]) continue;
+			if (isInColumn(player, col)) continue;
+			columnVisited[col] = 1;
+			const holder = columnSlot[col];
+			if (holder < 0 || matchOutSlot(holder, offset)) {
+				columnSlot[col] = slot;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	function isInColumn(player, col) {
+		for (let n = 0; n < PER_PLAYER; n++) if (inColumns[player * PER_PLAYER + n] === col) return true;
+		return false;
 	}
 
 	function claim(inlets, index, owner, level) {

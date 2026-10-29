@@ -39,9 +39,13 @@ function sealAllMouths(sim) {
 	}
 }
 
+// Every column where the player owns a mouth, in or out, without repeats.
 function mouthColumns(sim, playerId) {
 	const cols = [];
-	for (let c = 0; c < G.N; c++) if (I.ownedBy(sim.inlets, c, playerId)) cols.push(c);
+	for (let k = 0; k < sim.inlets.count; k++) {
+		if (!I.ownedBy(sim.inlets, k, playerId)) continue;
+		if (cols.indexOf(sim.inlets.column[k]) < 0) cols.push(sim.inlets.column[k]);
+	}
 	return cols;
 }
 
@@ -125,8 +129,8 @@ function testCaseTints() {
 	}
 }
 
-// 3. Owned mouths: Game mode deals two in and two out per player, paired by
-// column, and only the owner may press them without flipping their polarity.
+// 3. Owned mouths: Game mode deals two in and two out per player at independent
+// random columns, and only the owner may press them without flipping polarity.
 function testOwnedMouths() {
 	const sim = S.create(G.createLayout(23), { turning: false });
 	const game = Game.create(sim, { mode: "game", botControl: false });
@@ -134,9 +138,14 @@ function testOwnedMouths() {
 	let present = 0;
 	const sources = [0, 0, 0, 0];
 	const vents = [0, 0, 0, 0];
+	const topCols = new Set();
+	const bottomCols = new Set();
 	for (let k = 0; k < inl.count; k++) {
 		if (!inl.present[k]) continue;
 		present++;
+		const bandCols = inl.side[k] === I.TOP ? topCols : bottomCols;
+		assert.equal(bandCols.has(inl.column[k]), false, "one mouth per column in each band");
+		bandCols.add(inl.column[k]);
 		if (inl.side[k] === I.TOP) {
 			assert.equal(inl.level[k], I.LOW, "an out mouth is a low vent");
 			vents[inl.owner[k]]++;
@@ -146,26 +155,24 @@ function testOwnedMouths() {
 		}
 	}
 	assert.equal(present, 4 * I.PER_PLAYER * 2, "four mouths per player, nothing else in the bands");
-	const dealt = [];
 	for (let p = 0; p < 4; p++) {
 		assert.equal(sources[p], 2, "two in mouths per player");
 		assert.equal(vents[p], 2, "two out mouths per player");
 		const cols = mouthColumns(sim, p);
-		assert.equal(cols.length, 2, "in and out share the player's two columns");
-		for (const c of cols) {
-			assert.equal(I.ownedBy(inl, c, p) && I.ownedBy(inl, G.N + c, p), true, "each owned column has both polarities");
-			for (const q of dealt) assert.notEqual(q, c, "players never share a column");
-			dealt.push(c);
-		}
+		assert.equal(cols.length, I.PER_PLAYER * 2, "a player's in and out mouths never share a column");
 	}
 
-	const mouth = dealt[0];
-	assert.equal(S.toggleInlet(sim, mouth, false, 1), false, "a rival cannot press my mouth");
+	let mouth = -1;
+	for (let k = 0; k < inl.count && mouth < 0; k++) if (I.ownedBy(inl, k, 0)) mouth = k;
+	let rival = -1;
+	for (let k = 0; k < inl.count && rival < 0; k++) if (I.ownedBy(inl, k, 1)) rival = k;
+	assert.equal(S.toggleInlet(sim, rival, false, 0), false, "a rival cannot press my mouth");
 	assert.equal(S.toggleInlet(sim, mouth, false, 0), true, "the owner seals it");
 	assert.equal(inl.open[mouth], 0);
 	assert.equal(S.toggleInlet(sim, mouth, false, 0), true, "the owner opens it again");
+	const levelBefore = inl.level[mouth];
 	assert.equal(S.toggleInlet(sim, mouth, true, 0), false, "a dealt mouth keeps its in/out role");
-	assert.equal(inl.level[mouth], I.LOW);
+	assert.equal(inl.level[mouth], levelBefore);
 	let empty = -1;
 	for (let c = 0; c < G.N && empty < 0; c++) if (!inl.present[c] && !inl.present[G.N + c]) empty = c;
 	if (empty >= 0) assert.equal(S.toggleInlet(sim, empty, false, 0), false, "an undealt slot is not a mouth");
@@ -286,7 +293,7 @@ function testQuestLifecycle() {
 	assert.ok(Math.abs(sim.autoRotate - 0.9) < 1e-9, "Lab mode default is 90%");
 
 	Game.setMode(game, "game");
-	assert.ok(Math.abs(sim.autoRotate - 0.2) < 1e-9, "Game mode default is 20%");
+	assert.ok(Math.abs(sim.autoRotate - 0.07) < 1e-9, "Game mode default is 7%");
 
 	// Inject a controlled Hard exact-3 quest onto the board.
 	const exactQuest = game.quests[0];
@@ -357,9 +364,9 @@ function testQuestLifecycle() {
 	conserved(sim, "after timer expiry");
 }
 
-// 6. Pressure quest: auto-enables Grid gas, places its bottle in one of the
-// signer's own mouth columns (so the shaft meets both of that player's mouths),
-// and starts uncommitted. Sealing the mouths conserves the trapped air.
+// 6. Pressure quest: auto-enables Grid gas, places its bottle at a random column
+// whose opened shaft reaches a pocket the signer's own mouths can press, and
+// starts uncommitted. Sealing the mouths conserves the trapped air.
 function testPressureQuest() {
 	const layout = G.createLayout(7);
 	const sim = S.create(layout, { turning: false });
@@ -379,7 +386,6 @@ function testPressureQuest() {
 	assert.equal(sim.pressureMode, "grid", "signing a pressure quest enables Grid gas");
 	const cell = pq.cells[0];
 	const col = cell % G.N;
-	assert.ok(I.ownedBy(sim.inlets, col, 0) && I.ownedBy(sim.inlets, G.N + col, 0), "the bottle lands in a column the signer owns");
 	assert.equal(G.typeOf(layout.valves[cell]).id, "hollow-cross", "a pressure bottle is open on all four faces");
 	for (let j = 0; j < G.N; j++) {
 		if (j * G.N + col === cell) continue;
@@ -500,5 +506,5 @@ const bots = testBots();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
 console.log(
-	`OK game v0.2: auto-rotate 0/20/90/100%, case tints (0 alloc rebuilds), quest gen (easy ${gen.easy} med ${gen.med} hard ${gen.hard}, bands 2/3/6 ${gen.band2}/${gen.band3}/${gen.band6}, exact ${gen.exact}, timed ${gen.timed}, 2-bottle ${gen.multi}, pressure ${gen.pHi + gen.pLo}), average-hue + band count, hold & solid-blank seal, bots completed ${bots.totalCompleted} (${bots.totalScore} pts) in ${ms.toFixed(0)} ms`,
+	`OK game v0.2: auto-rotate exact subset counts, case tints (0 alloc rebuilds), quest gen (easy ${gen.easy} med ${gen.med} hard ${gen.hard}, bands 2/3/6 ${gen.band2}/${gen.band3}/${gen.band6}, exact ${gen.exact}, timed ${gen.timed}, 2-bottle ${gen.multi}, pressure ${gen.pHi + gen.pLo}), average-hue + band count, hold & solid-blank seal, bots completed ${bots.totalCompleted} (${bots.totalScore} pts) in ${ms.toFixed(0)} ms`,
 );

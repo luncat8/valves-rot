@@ -1486,9 +1486,11 @@ const ValveGas = (() => {
 
 	// Solve a mouth set into pTarget. With no owner the whole favourable band is
 	// open, with one far mouth of the other band as the reference. A player-owned
-	// probe instead uses only that player's dealt mouths — favourable open,
-	// opposing sealed — and leaves every other owner's mouths where they are,
-	// because that is the range a signing player can actually reach.
+	// probe instead uses only the dealt mouths — the signer's favourable pair
+	// open and opposing pair sealed, every other owner's mouth as it stands —
+	// because that is the range a signing player can actually reach. A column
+	// with no dealt mouth has no boundary at all in that probe: pinning an empty
+	// band slot would invent a source the player cannot press.
 	function probeMouths(sim, wantHigh, column, owner) {
 		const gas = sim.pressure;
 		if (!gas || gas.kind !== "grid" || !gas.count) return false;
@@ -1505,7 +1507,8 @@ const ValveGas = (() => {
 			const favourable = (gas.bandSide[n] === 1) === wantHigh;
 			const inlet = gas.bandSide[n] * G.N + gas.bandColumn[n];
 			let pin = 0;
-			if (mine !== INL.UNOWNED && inlets.owner[inlet] !== INL.UNOWNED) {
+			if (mine !== INL.UNOWNED) {
+				if (inlets.owner[inlet] === INL.UNOWNED) continue;
 				if (inlets.owner[inlet] === mine) {
 					if (favourable) pin = wantHigh ? 2 : 1;
 				} else if (inlets.open[inlet]) {
@@ -1538,6 +1541,29 @@ const ValveGas = (() => {
 		gas.maskClock = gas.clock;
 	}
 
+	// Settle the live field into its exact steady state with the pins as they
+	// stand. Signing a pressure quest uses this: the threshold is fitted against
+	// converged probes, so the field the player starts from has to be the same
+	// solved state, not a half-relaxed front that could already sit past it.
+	function snapSteady(sim) {
+		const gas = sim.pressure;
+		if (!gas || gas.kind !== "grid") return;
+		const net = gas.net;
+		syncConductance(net);
+		markActive(net);
+		warmHarmonic(net, net.work);
+		solve(net, net.work, 1, 0, PCG_STEADY_ITERS);
+		net.p.set(net.work);
+		projectP(gas, net.p, gas.p);
+		velocity(sim, gas, true);
+		gas.solves = net.solves;
+		gas.pcgIters = net.pcgIters;
+		gas.pcgResidual = net.pcgResidual;
+		gas.updates++;
+		gas.settled = true;
+		gas.fastPending = false;
+	}
+
 	// Only the boundary changed: schedule a first transient step without
 	// rebuilding the graph or solving synchronously inside the UI event.
 	function repin(sim) {
@@ -1566,6 +1592,7 @@ const ValveGas = (() => {
 		settle,
 		refresh,
 		repin,
+		snapSteady,
 		probeMouths,
 		index,
 		sampleCell,

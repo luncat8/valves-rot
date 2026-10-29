@@ -1025,7 +1025,9 @@ const ValveSimulation = (() => {
 	// Rebuilds the valve in a cell as a catalogue type facing direction
 	// `quarter`. Only a type change rebuilds (and clears that cell's grains);
 	// a hollow replacement keeps the old chamber size unless `chamberR` is given.
-	function installValve(sim, index, type, quarter, chamberR) {
+	// `quiet` defers the pressure rebuild so a batch of installs (a quest shaft)
+	// pays for one refresh instead of one per cell.
+	function installValve(sim, index, type, quarter, chamberR, quiet) {
 		const old = sim.layout.valves[index];
 		clearValve(sim, index);
 		let chamber = 0;
@@ -1043,6 +1045,12 @@ const ValveSimulation = (() => {
 		sim.dwell[index] = 1;
 		sim.reach = G.drainReach(sim.layout);
 		buildSpoutMask(sim);
+		if (!quiet) rebuildPressure(sim);
+	}
+
+	// Rebuild the selected air backend after the layout changed. A batch of
+	// installs defers this call and pays for one rebuild instead of one per cell.
+	function rebuildPressure(sim) {
 		if (sim.pressureMode === "grid" && sim.pressure) GAS.refresh(sim);
 		else sim.pressure = pressureFor(sim, sim.pressureMode);
 	}
@@ -1186,6 +1194,7 @@ const ValveSimulation = (() => {
 		canAutoRotate,
 		setCaseTint,
 		installValve,
+		rebuildPressure,
 		setGoalFeed,
 		setSpeed,
 		setAirForce,

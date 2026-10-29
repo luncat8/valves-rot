@@ -1,7 +1,9 @@
-// Owned-mouth pressure probe: with the bands dealt per player, a pressure
-// quest's bottle lands in one of the signer's own columns, so two presses of
-// that player's mouths (favourable pair open, opposing pair sealed) must be
-// enough to charge or drain the chamber to the fitted target.
+// Owned-mouth pressure probe: the bands are dealt independently per player, so
+// a pressure bottle lands in a column whose pocket the signer's own mouths
+// reach (not necessarily a column the signer owns). One press of that player's
+// mouths (favourable pair open, opposing pair sealed) must be enough to charge
+// or drain the chamber to the fitted target. The row tag counts the signer's
+// own mouths sharing the bottle's column.
 // Run: node experiments/mouth-quest-probe.cjs [rounds] [seeds...]
 const G = require("../prototype/shared/geometry.js");
 const S = require("../prototype/shared/simulation.js");
@@ -11,7 +13,9 @@ const Game = require("../prototype/shared/game.js");
 const ROUNDS = Number(process.argv[2] || 5);
 const EXTRA = process.argv.slice(3).map(Number);
 const SEEDS = EXTRA.length ? EXTRA : [7, 11, 15, 19, 23, 42, 55, 77, 91, 104];
-const HOLD = 4;
+// Time the player gets to set their mouths and hold: a pressure front reaches
+// a fitted target in a few seconds on a wide board, so this is generous.
+const HOLD = 8;
 
 function setOwnMouths(sim, playerId, wantHigh) {
 	for (let k = 0; k < sim.inlets.count; k++) {
@@ -55,17 +59,19 @@ for (const seed of SEEDS) {
 		}
 		signed++;
 		const cell = q.cells[0];
-		const own = I.ownedBy(sim.inlets, cell % G.N, 0) && I.ownedBy(sim.inlets, G.N + (cell % G.N), 0);
+		const col = cell % G.N;
+		const own = `${I.ownedBy(sim.inlets, col, 0) ? 1 : 0}i${I.ownedBy(sim.inlets, G.N + col, 0) ? 1 : 0}o`;
 		setOwnMouths(sim, 0, q.op === ">");
 		let won = false;
+		const doneBefore = game.players[0].completed;
 		const steps = Math.round((HOLD / S.STEP));
 		for (let k = 0; k < steps && !won; k++) {
 			S.step(sim, S.STEP);
 			Game.step(game, S.STEP);
-			won = game.players[0].completed > 0;
+			won = game.players[0].completed > doneBefore;
 		}
 		if (won) done++;
-		rows.push(`${seed} ${round} ${q.op} ${q.threshold.toFixed(2)} col ${cell % G.N} ${own ? "own" : "FOREIGN"} ${won ? "done" : "FAIL"} ${ms.toFixed(0)}ms`);
+		rows.push(`${seed} ${round} ${q.op} ${q.threshold.toFixed(2)} col ${col} ${own} ${won ? "done" : "FAIL"} ${ms.toFixed(0)}ms`);
 		if (game.players[0].questId >= 0) Game.dropQuest(game, 0);
 		for (let k = 0; k < Math.round(0.2 / S.STEP); k++) {
 			S.step(sim, S.STEP);

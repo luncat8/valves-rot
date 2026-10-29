@@ -426,13 +426,13 @@ assert.equal(calls.canvases, canvasesPreTint, "case tint brush allocates zero ex
 assert.ok(element("selected-valve").textContent.includes("You case"), "case tint shown in valve readout");
 element("tint-picker").onclick({ target: { closest: () => ({ dataset: { tint: "0" } }) } });
 
-// Lab mode defaults auto-rotate to 90%; switching to Game mode sets 20%,
+// Lab mode defaults auto-rotate to 90%; switching to Game mode sets 7%,
 // shows the game panel, lets the user sign a goal, and returns to 90% in Lab.
 assert.equal(element("auto-rotate").value, "90", "Lab mode auto-rotate default is 90%");
 element("mode-lab").checked = false;
 element("mode-game").checked = true;
 element("mode-game").onchange();
-assert.equal(element("auto-rotate").value, "20", "Game mode auto-rotate default is 20%");
+assert.equal(element("auto-rotate").value, "7", "Game mode auto-rotate default is 7%");
 assert.equal(element("game-panel").hidden, false, "Game panel opens in Game mode");
 assert.ok(element("player-list").innerHTML.includes("You") && element("player-list").innerHTML.includes("Ada"), "Competitors list rendered");
 const signMatch = element("quest-list").innerHTML.match(/data-sign="(\d+)"/);
