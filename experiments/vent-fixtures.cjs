@@ -1,5 +1,5 @@
 // Fixtures for random-map Vent mode: existing-valve routes, single-port
-// collectors, mouth-only input, scoring and exact teardown.
+// collectors, turn-based valve rotation, mouth ownership and exact teardown.
 // Run: node experiments/vent-fixtures.cjs
 const assert = require("node:assert/strict");
 const G = require("../prototype/shared/geometry.js");
@@ -64,6 +64,19 @@ function stableReach(sim, seat) {
 		}
 	}
 	return seen;
+}
+
+function stepSeconds(sim, game, seconds) {
+	for (let k = 0; k < Math.round(seconds / S.STEP); k++) {
+		S.step(sim, S.STEP);
+		Game.step(game, S.STEP);
+	}
+}
+
+// The lowest unlocked valve: a cell the seat on turn may rotate.
+function unlockedCell(game) {
+	for (let k = 0; k < SLOTS; k++) if (!game.sim.autoLocked[k] && game.sim.goalOwner[k] < 0) return k;
+	return -1;
 }
 
 function mouthCount(sim) {
@@ -172,8 +185,87 @@ function mouthCount(sim) {
 	for (const mouth of [...rival.inMouths, ...rival.outMouths]) assert.equal(Game.pressActor(game, mouth), -1, "a bot seat's mouths refuse a human click");
 	Game.setPlayerBot(game, 1, false);
 	for (const mouth of [...rival.inMouths, ...rival.outMouths]) assert.equal(Game.pressActor(game, mouth), 1, "handed-over mouths answer their human");
-	for (let k = 0; k < SLOTS; k++) assert.equal(Game.canTurn(game, k), false, "players never turn valves in Vent mode");
+	// Turn-based valve play: route valves and collectors stay locked, every other
+	// valve answers the seat that holds the turn.
+	for (const seat of game.vent.seats) assert.equal(Game.canTurn(game, seat.bottle), false, "a collector never turns");
+	for (let k = 0; k < SLOTS; k++) if (game.vent.used[k]) assert.equal(Game.canTurn(game, k), false, "a route valve never turns");
+	assert.ok(Game.canTurn(game, unlockedCell(game)), "an unlocked valve answers the seat on turn");
 	for (const mouth of [...mine.inMouths, ...mine.outMouths]) assert.equal(sim.inlets.open[mouth], 1);
+}
+
+// ---- unlinked mouths are dealt as owner marks ------------------------------
+{
+	const { sim, game } = ventGame(7, 2);
+	for (let s = 0; s < game.vent.count; s++) {
+		const seat = game.vent.seats[s];
+		assert.equal(sim.inlets.linked[seat.inMouths[0]], 1, "the routed source reads as a pipe");
+		assert.equal(sim.inlets.linked[seat.outMouths[0]], 1, "the routed vent reads as a pipe");
+		for (let k = 0; k < 2; k++) {
+			assert.equal(sim.inlets.linked[seat.inMouths[k]], seat.inLinked[k], "a source mouth is marked when it has no route");
+			assert.equal(sim.inlets.linked[seat.outMouths[k]], seat.outLinked[k], "a vent mouth is marked when it has no route");
+		}
+	}
+	Game.setMode(game, "lab");
+	for (let k = 0; k < sim.inlets.count; k++) assert.equal(sim.inlets.linked[k], 1, "Lab mode restores every pipe");
+}
+
+// ---- turn-based valve rotation --------------------------------------------
+{
+	const { sim, game } = ventGame(7, 2);
+	Game.setPlayerBot(game, 1, false);
+	const vent = game.vent;
+	assert.equal(vent.turn, 0, "the first seat opens the match");
+	assert.equal(Game.ventCanRotate(game), true, "a person may rotate on their turn");
+	const cell = unlockedCell(game);
+	const collector = game.vent.seats[vent.turn].bottle;
+	const before = G.quarterOf(sim.target[cell]);
+	assert.equal(Game.ventTurn(game, collector, 1), false, "the collector stays fixed");
+	assert.equal(Game.ventTurn(game, cell, -1), true, "one quarter turn spends the turn");
+	assert.equal(G.quarterOf(sim.target[cell]), (before + 3) & 3, "the rotation is exactly 90 degrees");
+	assert.equal(vent.turn, 1, "the turn passes to the other seat");
+	assert.equal(Game.ventTurn(game, cell, 1), false, "the hand-off clock refuses an immediate second rotation");
+	assert.ok(Game.ventRefusal(game, cell).length > 0, "a refused click explains itself");
+	stepSeconds(sim, game, 1.2);
+	assert.equal(Game.canTurn(game, cell), true, "after the hand-off the other person may rotate");
+	// A bot seat spends or passes its turn by itself, so a person is never stuck.
+	Game.setPlayerBot(game, 1, true);
+	stepSeconds(sim, game, 4);
+	assert.equal(vent.turn, 0, "a bot hands the turn back to the person");
+	assert.equal(Game.passVentTurn(game), true, "a person may pass the turn");
+	assert.equal(vent.turn, 1, "passing hands the turn on");
+	Game.setMode(game, "lab");
+	Game.setMode(game, "vent");
+	assert.equal(game.vent.turn, 0, "a fresh rig opens with the first seat");
+}
+
+// ---- an idle turn passes on its own ---------------------------------------
+{
+	const { sim, game } = ventGame(7, 2);
+	Game.setPlayerBot(game, 1, false);
+	assert.equal(game.vent.turn, 0, "the first seat opens the match");
+	stepSeconds(sim, game, Game.VENT_TURN_TIME + 2);
+	assert.equal(game.vent.turn, 1, "a seat that does nothing loses the turn to the clock");
+}
+
+// ---- a bot spends or passes its turn by itself ----------------------------
+{
+	const { sim, game } = ventGame(7, 2);
+	Game.setPlayerBot(game, 0, true);
+	const seat = game.vent.seats[1];
+	// An unreachable band keeps the seat out of regulation, so it spends turns.
+	seat.lo = 0.9;
+	seat.hi = 0.95;
+	let rotations = 0;
+	const turn = S.turn;
+	S.turn = (...args) => {
+		const done = turn(...args);
+		if (done) rotations++;
+		return done;
+	};
+	stepSeconds(sim, game, 25);
+	S.turn = turn;
+	assert.ok(rotations > 0, "a bot out of its band rotates a valve on its turn");
+	assert.ok(rotations <= 25 / 1.6, "a bot turn stays on the turn cadence, got " + rotations);
 }
 
 // ---- bot control works on the same four mouths a person can operate --------
@@ -240,4 +332,4 @@ function mouthCount(sim) {
 	assert.equal(game.vent.count, 2);
 }
 
-console.log("OK  Vent mode: random-map routes, hollow-single targets, mouth-only control, deterministic setup, roster changes and exact restore");
+console.log("OK  Vent mode: random-map routes, hollow-single targets, turn-based rotation, deterministic setup, roster changes and exact restore");

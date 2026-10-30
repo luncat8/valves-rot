@@ -566,6 +566,18 @@ const ValveRender = (() => {
 		ctx.stroke();
 	}
 
+	// The seat that holds the turn wears a wider ring on its collector, so the
+	// turn is visible on the field without reading the panel.
+	function drawTurnRing(ctx, v, player) {
+		ctx.beginPath();
+		ctx.arc(v.cx, v.cy, RV + 7, 0, TAU);
+		ctx.strokeStyle = player.accent;
+		ctx.globalAlpha = 0.7;
+		ctx.lineWidth = 1.2;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+	}
+
 	function renderVents(ctx, layout, game) {
 		if (!game || game.mode !== "vent") return;
 		const vent = game.vent;
@@ -577,6 +589,7 @@ const ValveRender = (() => {
 			const v = layout.valves[seat.bottle];
 			drawHoldArc(ctx, v, seat.holdRatio, player);
 			drawGauge(ctx, v, seat, player);
+			if (s === vent.turn) drawTurnRing(ctx, v, player);
 		}
 		ctx.restore();
 	}
@@ -728,11 +741,89 @@ const ValveRender = (() => {
 		ctx.restore();
 	}
 
+	// A dealt mouth that opens onto a mapped route wears the owner's casing — a
+	// wide stem down to the field edge and a tinted disc — so each player can read
+	// their two in and two out at a glance even before `renderInletBadges`
+	// brackets the column ends.
+	function drawMouthStem(ctx, x, y, top, open, player) {
+		ctx.beginPath();
+		ctx.moveTo(x, y + (top ? 5.5 : -5.5));
+		ctx.lineTo(x, top ? 0 : SIZE);
+		ctx.strokeStyle = player.accent;
+		ctx.globalAlpha = open ? 0.34 : 0.12;
+		ctx.lineWidth = 7;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+	}
+
+	function drawMouthDisc(ctx, x, y, k, inlets, active, open, inward, player) {
+		ctx.beginPath();
+		ctx.arc(x, y, 6.2, 0, TAU);
+		ctx.fillStyle = player ? player.hex : active ? "rgba(240,248,255,0.34)" : "rgba(8,12,18,0.46)";
+		ctx.globalAlpha = player ? (open ? 0.72 : 0.3) : 1;
+		ctx.fill();
+		ctx.globalAlpha = 1;
+		if (player) {
+			ctx.beginPath();
+			ctx.arc(x, y, 6.2, 0, TAU);
+			ctx.strokeStyle = player.accent;
+			ctx.lineWidth = active ? 2.2 : 1.4;
+			ctx.stroke();
+		}
+		if (open) {
+			ctx.beginPath();
+			ctx.moveTo(x, y + inward * 4.2);
+			ctx.lineTo(x - 3.3, y - inward * 2.2);
+			ctx.lineTo(x + 3.3, y - inward * 2.2);
+			ctx.closePath();
+			ctx.fillStyle = player ? player.accent : inlets.level[k] === I.HIGH ? "#ff8a5c" : "#5cc8ff";
+			ctx.fill();
+			return;
+		}
+		ctx.beginPath();
+		ctx.moveTo(x - 2.6, y - 2.6);
+		ctx.lineTo(x + 2.6, y + 2.6);
+		ctx.moveTo(x + 2.6, y - 2.6);
+		ctx.lineTo(x - 2.6, y + 2.6);
+		ctx.lineWidth = 1.4;
+		ctx.strokeStyle = player ? player.accent : "rgba(190,202,214,0.6)";
+		ctx.globalAlpha = player ? 0.7 : 1;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+	}
+
+	// A mouth with no route to a collector is a passive boundary hole: an owner
+	// ring only. A stem or a flow arrow there would promise a control the field
+	// does not follow.
+	function drawMouthMark(ctx, x, y, active, player) {
+		ctx.beginPath();
+		ctx.arc(x, y, 4.6, 0, TAU);
+		ctx.lineWidth = active ? 1.8 : 1.2;
+		ctx.strokeStyle = player.accent;
+		ctx.globalAlpha = 0.55;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+	}
+
+	// Hovering names the mouth: whose it is, its in/out role, whether it holds the
+	// field and, when it has no route, that it cannot move the collector.
+	function drawMouthLabel(ctx, x, y, player, source, open, linked) {
+		const label = (player ? player.name + " " : "") + (source ? "in" : "out") + (open ? "" : " sealed") + (linked ? "" : " · no route");
+		ctx.font = "7px system-ui, sans-serif";
+		ctx.textBaseline = "middle";
+		ctx.textAlign = x > SIZE - 90 ? "right" : "left";
+		const tx = x > SIZE - 90 ? x - 10 : x + 10;
+		// Fixed estimate instead of measureText: no per-frame allocation.
+		const width = label.length * 3.9;
+		roundRect(ctx, ctx.textAlign === "right" ? tx - width - 3 : tx - 3, y - 6, width + 6, 12, 3);
+		ctx.fillStyle = "rgba(10,14,20,0.72)";
+		ctx.fill();
+		ctx.fillStyle = player ? player.accent : source ? "#ffb08c" : "#a8e2ff";
+		ctx.fillText(label, tx, y);
+	}
+
 	// One marker per mouth: an arrow into the field while it is open, a cross while
-	// sealed, and the hover ring names it. A dealt Game-mode mouth wears its
-	// owner's casing — tinted disc, accent ring and a wide stem down to the field
-	// edge — so each player can read their two in and two out at a glance even
-	// before `renderInletBadges` brackets the column ends.
+	// sealed, and the hover ring names it.
 	function renderInlets(ctx, inlets, hover) {
 		for (let k = 0; k < inlets.count; k++) {
 			if (!inlets.present[k]) continue;
@@ -744,76 +835,24 @@ const ValveRender = (() => {
 			const inward = top ? 1 : -1;
 			const owner = inlets.owner[k];
 			const player = owner >= 0 ? PLAYERS[owner] : null;
-			if (player) {
-				ctx.beginPath();
-				ctx.moveTo(x, y + inward * 5.5);
-				ctx.lineTo(x, top ? 0 : SIZE);
-				ctx.strokeStyle = player.accent;
-				ctx.globalAlpha = open ? 0.34 : 0.12;
-				ctx.lineWidth = 7;
-				ctx.stroke();
-				ctx.globalAlpha = 1;
-			}
-			ctx.beginPath();
-			ctx.arc(x, y, 6.2, 0, TAU);
-			ctx.fillStyle = player ? player.hex : active ? "rgba(240,248,255,0.34)" : "rgba(8,12,18,0.46)";
-			ctx.globalAlpha = player ? (open ? 0.72 : 0.3) : 1;
-			ctx.fill();
-			ctx.globalAlpha = 1;
-			if (player) {
-				ctx.beginPath();
-				ctx.arc(x, y, 6.2, 0, TAU);
-				ctx.strokeStyle = player.accent;
-				ctx.lineWidth = active ? 2.2 : 1.4;
-				ctx.stroke();
-			}
-			if (open) {
-				ctx.beginPath();
-				ctx.moveTo(x, y + inward * 4.2);
-				ctx.lineTo(x - 3.3, y - inward * 2.2);
-				ctx.lineTo(x + 3.3, y - inward * 2.2);
-				ctx.closePath();
-				ctx.fillStyle = player ? player.accent : inlets.level[k] === I.HIGH ? "#ff8a5c" : "#5cc8ff";
-				ctx.fill();
-			} else {
-				ctx.beginPath();
-				ctx.moveTo(x - 2.6, y - 2.6);
-				ctx.lineTo(x + 2.6, y + 2.6);
-				ctx.moveTo(x + 2.6, y - 2.6);
-				ctx.lineTo(x - 2.6, y + 2.6);
-				ctx.lineWidth = 1.4;
-				ctx.strokeStyle = player ? player.accent : "rgba(190,202,214,0.6)";
-				ctx.globalAlpha = player ? 0.7 : 1;
-				ctx.stroke();
-				ctx.globalAlpha = 1;
-			}
+			const linked = inlets.linked[k] === 1;
+			if (player && linked) drawMouthStem(ctx, x, y, top, open, player);
+			if (player && !linked) drawMouthMark(ctx, x, y, active, player);
+			else drawMouthDisc(ctx, x, y, k, inlets, active, open, inward, player);
 			if (!active) continue;
 			ctx.beginPath();
 			ctx.arc(x, y, 7.6, 0, TAU);
 			ctx.lineWidth = 1.2;
 			ctx.strokeStyle = SELECT_C;
 			ctx.stroke();
-			// Hovering names the mouth: whose it is, its in/out role and whether it
-			// is holding the field.
-			const source = inlets.level[k] === I.HIGH;
-			const label = (player ? player.name + " " : "") + (source ? "in" : "out") + (open ? "" : " sealed");
-			ctx.font = "7px system-ui, sans-serif";
-			ctx.textBaseline = "middle";
-			ctx.textAlign = x > SIZE - 90 ? "right" : "left";
-			const tx = x > SIZE - 90 ? x - 10 : x + 10;
-			// Fixed estimate instead of measureText: no per-frame allocation.
-			const width = label.length * 3.9;
-			roundRect(ctx, ctx.textAlign === "right" ? tx - width - 3 : tx - 3, y - 6, width + 6, 12, 3);
-			ctx.fillStyle = "rgba(10,14,20,0.72)";
-			ctx.fill();
-			ctx.fillStyle = player ? player.accent : source ? "#ffb08c" : "#a8e2ff";
-			ctx.fillText(label, tx, y);
+			drawMouthLabel(ctx, x, y, player, inlets.level[k] === I.HIGH, open, linked);
 		}
 	}
 
 	// A dealt mouth is bracketed by owner-coloured plates on both band edges,
 	// above the grain piles that share the band, so a player always finds their
-	// own two in and two out mouths even under a pile.
+	// own two in and two out mouths even under a pile. An unlinked mouth keeps
+	// only the band-edge plate: the field-edge tab would draw a pipe it lacks.
 	function renderInletBadges(ctx, inlets, hover) {
 		ctx.globalAlpha = 1;
 		for (let k = 0; k < inlets.count; k++) {
@@ -829,8 +868,10 @@ const ValveRender = (() => {
 			ctx.fillStyle = k === hover ? SELECT_C : player.accent;
 			roundRect(ctx, x - 6, top ? -G.POUR + 1.2 : SIZE + G.POUR - 4, 12, 2.8, 1.3);
 			ctx.fill();
-			roundRect(ctx, x - 6, top ? -4 : SIZE + 1.2, 12, 2.8, 1.3);
-			ctx.fill();
+			if (inlets.linked[k] === 1) {
+				roundRect(ctx, x - 6, top ? -4 : SIZE + 1.2, 12, 2.8, 1.3);
+				ctx.fill();
+			}
 			ctx.globalAlpha = 1;
 		}
 	}

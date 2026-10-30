@@ -117,3 +117,31 @@
 - Do not derive a rate from one sample of a diffusive solver to feed a predictive lead. `(p - prev) / EVAL_DT` turned solver noise into a `0.045` prediction error and made every seat chatter; the structural fixes above removed the need for it.
 - Restore a borrowed field by its **world** state. `installValve` re-bases `v.ports` onto the canonical type and moves the rotation into `v.angle`, so a byte-exact port comparison reported 17 broken cells that faced exactly the same directions; compare `G.worldPorts(v)`. And save `G.orientationOf(v)` — the orientation the cell faces the world with — not `quarterOf(sim.target)`, or the column comes back already turned to where its auto-rotate schedule was heading.
 - A green check that never ran is worse than no check. `sim.count` is the **grain** count, so a teardown comparison looping `for (k < sim.count)` over a drained field compared zero cells and printed "0 diffs"; `G.describe()` has no `.type`, so a "type mismatch" count compared `undefined` with `undefined`. Assert the loop bound, and print the count of things compared next to the count of things that differed.
+
+# Drawing controls, pacing bots, and turn-based modes (2026-10-30)
+
+- A control that cannot move anything must not be drawn as machinery. A fallback
+  mouth in Vent mode pins pressure in its own column but has no route to any
+  collector; drawing the same owner stem and flow arrow as a routed mouth made
+  players press it expecting the gauge to move. Mark the owner — a ring, no stem,
+  no arrow, no field-edge plate — and leave the machinery to the mouths that
+  actually reach a bottle. The label can stay: hovering still has to say why.
+- Derive "where is this valve?" from the solver's own graph, not from the display
+  field. `GAS.index(x, y)` is the 6 px display texel; the live network indexes
+  `t * SLOTS + rotor cell` and `casingNode(...)`, so a component lookup through
+  the display index returned `-1` or `undefined` while a fully connected valve
+  sat in a real component. The network already stores each node's valve in
+  `net.owner`, so one sweep of `net.list` labels every valve's pocket.
+- Pace a bot per seat, not per frame. A cooldown of `1 / rate` decremented by the
+  frame `dt` and refilled at the action is a hard ceiling — a long frame still
+  buys exactly one map change — while a cooldown drawn from a range lets the rate
+  drift with `dt` and with how often a frame lands. Keep the jitter on the slow
+  side so the advertised number is the maximum.
+- A turn-based loop needs an expiry even when the rule says "the turn ends when
+  it is spent". A person who does nothing keeps the turn, and a bot behind that
+  seat never plays. Ten seconds per turn plus a pass button keeps the order
+  moving without making the human fight a clock during a two-second decision.
+- A one-detent turn means the press-drag dial has to be off in that mode. The
+  dial's whole point is that one gesture buys several detents; leaving it on
+  turns a single "turn" into a multi-quarter-turn move and quietly breaks the
+  rule the HUD states.

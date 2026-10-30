@@ -1,0 +1,25 @@
+Turn-based vent play, inert-mouth rendering, and bot pace
+node v22.22.3 Intel(R) Xeon(R) Processor @ 2.60GHz (2 cpus)
+node experiments/bot-pacing.cjs  /  node experiments/vent-balance.cjs
+
+bot pace (one map change per interval, jitter only slows it)
+  level            rate    actions in 40 s   measured gap
+  Calm 1 Hz        1.0 Hz      35            1.01..1.17 s
+  Brisk 1.5 Hz     1.5 Hz      53            0.67..0.79 s
+  Quick 2 Hz       2.0 Hz      71            0.51..0.59 s
+  a person's seat keeps no bot clock; a long frame still buys one action
+
+vent turns (two bots, 60 s, seeds 7 / 21 / 2024)
+  turns taken per seat     10..12 (seat 0) 11 (seat 1)
+  passes per seat          4 (seat 0, stuck band) / 0
+  hand-off cadence         2.63 s = 1.6 s think + 1.0 s gap + one rotation
+  band held                0..13% with turns, 0..13% with rotation disabled
+  (identical on the pre-0.2.5 build, so the turn rule does not move the seat's
+   regulation either way; see the open item below)
+
+open item found while measuring (pre-existing, reproduces on main)
+  one bot seat, seed 7: the first band (0.41..0.57) is held and scored, then the
+  next band is fitted at 0.59..0.75 while the pocket sits at 0.538 and does not
+  move however long both in mouths stay open and both out mouths stay sealed. The
+  seat drives "charge" forever, so 7% held / 1 round per minute. A turn is the
+  only new lever that could open the pocket further, which is the next step.

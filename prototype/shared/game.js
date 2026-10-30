@@ -54,7 +54,20 @@ const ValveGame = (() => {
 	const VENT_BAND_STEP = 0.22;
 	// Outside the band by this much counts once as a lost regulation.
 	const VENT_ALARM = 0.18;
+	// Vent seats rotate in turn: one 90 degree turn of one unlocked valve, and
+	// the turn ends by itself. A silent seat loses the turn after the clock, the
+	// hand-off gap keeps a solo seat from grinding rotations, and a bot gets a
+	// short think before it spends or passes its turn.
+	const VENT_TURN_GAP = 1;
+	const VENT_TURN_TIME = 10;
+	const VENT_TURN_THINK = 1.6;
 	const MAX_SEATS = Math.min(R.PLAYERS.length, I.MAX_PLAYERS);
+
+	// Bot map changes are paced, not spammed: one action per interval, with the
+	// rate set by the seat's difficulty so a hard bot reads as quick and a calm
+	// one as deliberate. Difficulty 1..2 Hz is the whole allowed range.
+	const BOT_RATES = [1, 1.5, 2];
+	const BOT_LEVEL_NAMES = ["Calm 1 Hz", "Brisk 1.5 Hz", "Quick 2 Hz"];
 
 	// Grain palette hues in degrees for GRAIN_COLORS[0..5]:
 	// 0 coral, 1 amber, 2 cyan, 3 cobalt, 4 magenta, 5 lime.
@@ -149,6 +162,8 @@ const ValveGame = (() => {
 			id,
 			name: p.name,
 			bot: id > 0,
+			// Difficulty picks the pace: level 0..2 maps onto BOT_RATES.
+			botLevel: 1,
 			hex: p.hex,
 			accent: p.accent,
 			score: 0,
@@ -418,9 +433,13 @@ const ValveGame = (() => {
 		return game;
 	}
 
-	// Bots act out of phase so two rigs do not reach for the same goal together.
+	// Bots act out of phase so two rigs do not reach for the same goal together,
+	// and the first action already waits the seat's own pace.
 	function staggerBots(game) {
-		for (let p = 0; p < game.botCooldown.length; p++) game.botCooldown[p] = p === 0 ? 0 : 0.3 + p * 0.8;
+		for (let p = 0; p < game.botCooldown.length; p++) {
+			const player = game.players[p];
+			game.botCooldown[p] = player && player.bot ? botInterval(game, player) + p * 0.35 : 0;
+		}
 	}
 
 	function seedBoard(game) {
@@ -513,6 +532,28 @@ const ValveGame = (() => {
 		game.botControl = !!enabled;
 		game.version++;
 		game.rosterVersion++;
+	}
+
+	// Difficulty is the bot's pace: a harder seat may change the map more often,
+	// never more than two changes a second.
+	function setPlayerLevel(game, playerId, level) {
+		const player = game.players[playerId];
+		if (!player) return false;
+		const next = Math.max(0, Math.min(BOT_RATES.length - 1, level | 0));
+		if (player.botLevel === next) return false;
+		player.botLevel = next;
+		game.botCooldown[playerId] = botInterval(game, player);
+		game.rosterVersion++;
+		return true;
+	}
+
+	function botRate(player) {
+		return BOT_RATES[player.botLevel] || BOT_RATES[1];
+	}
+
+	// Jitter only ever slows a bot down, so the pace stays a hard ceiling.
+	function botInterval(game, player) {
+		return (1 + game.random() * 0.18) / botRate(player);
 	}
 
 	function setPlayerBot(game, playerId, bot) {
@@ -1102,6 +1143,10 @@ const ValveGame = (() => {
 			bottle: -1,
 			inMouths: new Int16Array(2).fill(-1),
 			outMouths: new Int16Array(2).fill(-1),
+			// A mouth the route search could not join is a passive boundary hole.
+			inLinked: new Uint8Array(2),
+			outLinked: new Uint8Array(2),
+			think: 0,
 			spanLo: 0,
 			spanHi: 1,
 			lo: 0,
@@ -1127,6 +1172,11 @@ const ValveGame = (() => {
 		return {
 			count: 0,
 			seats,
+			// Whose turn may rotate one valve, the hand-off clock and the time left
+			// in the turn, both in seconds.
+			turn: 0,
+			turnClock: 0,
+			turnLeft: 0,
 			used: new Uint8Array(SLOTS),
 			savedCount: new Uint8Array(VENT_MAX),
 			savedCell: new Int16Array(VENT_MAX * SLOTS).fill(-1),
@@ -1235,6 +1285,9 @@ const ValveGame = (() => {
 		seat.bottle = -1;
 		seat.inMouths.fill(-1);
 		seat.outMouths.fill(-1);
+		seat.inLinked.fill(0);
+		seat.outLinked.fill(0);
+		seat.think = 0;
 		seat.lo = 0;
 		seat.hi = 1;
 		seat.hold = 0;
@@ -1557,13 +1610,25 @@ const ValveGame = (() => {
 						if (routeMouthBlocked[ventMouth] || routeColumnBlocked[I.TOP * N + ventEnd % N]) continue;
 						routeMouthBlocked[ventMouth] = 1;
 						routeColumnBlocked[I.TOP * N + ventEnd % N] = 1;
+						// The second pair only joins the collector when a branch fits; a
+						// fallback hole is dealt but flagged as unlinked, so the field
+						// draws it as an owner mark and not as a control.
 						let secondSource = slot + 1 < game.vent.count ? -1 : extendRouteToMouth(game, raw, I.BOTTOM, offset);
+						const sourceLinked = secondSource >= 0 ? 1 : 0;
 						if (secondSource < 0) secondSource = randomFreeMouth(game, I.BOTTOM);
 						if (secondSource < 0) continue;
 						let secondVent = slot + 1 < game.vent.count ? -1 : extendRouteToMouth(game, raw, I.TOP, offset + 1);
+						const ventLinked = secondVent >= 0 ? 1 : 0;
 						if (secondVent < 0) secondVent = randomFreeMouth(game, I.TOP);
 						if (secondVent < 0) continue;
-						return { target: raw, targetQuarter, inMouths: [sourceMouth, secondSource], outMouths: [ventMouth, secondVent] };
+						return {
+							target: raw,
+							targetQuarter,
+							inMouths: [sourceMouth, secondSource],
+							outMouths: [ventMouth, secondVent],
+							inLinked: [1, sourceLinked],
+							outLinked: [1, ventLinked],
+						};
 					}
 			}
 			}
@@ -1578,7 +1643,13 @@ const ValveGame = (() => {
 		saveRoute(game, slot, plan.target, plan.targetQuarter);
 		seat.inMouths.set(plan.inMouths);
 		seat.outMouths.set(plan.outMouths);
-		for (let k = 0; k < 2; k++) I.claimPair(game.sim.inlets, seat.inMouths[k], seat.outMouths[k], slot);
+		seat.inLinked.set(plan.inLinked);
+		seat.outLinked.set(plan.outLinked);
+		for (let k = 0; k < 2; k++) {
+			I.claimPair(game.sim.inlets, seat.inMouths[k], seat.outMouths[k], slot);
+			I.setLinked(game.sim.inlets, seat.inMouths[k], seat.inLinked[k]);
+			I.setLinked(game.sim.inlets, seat.outMouths[k], seat.outLinked[k]);
+		}
 		S.setInletOwnership(game.sim);
 		if (measureVentSpan(game, seat) <= 0.02) return false;
 		for (let s = 0; s < slot; s++) {
@@ -1629,6 +1700,7 @@ const ValveGame = (() => {
 			if (vent.seats[s].bottle < 0) continue;
 			fitVentBand(game, vent.seats[s], true);
 		}
+		resetVentTurn(game);
 		GAS.refresh(sim, true);
 		return built;
 	}
@@ -1641,6 +1713,9 @@ const ValveGame = (() => {
 			clearSeat(vent.seats[s]);
 		}
 		vent.count = 0;
+		vent.turn = 0;
+		vent.turnClock = 0;
+		vent.turnLeft = 0;
 		S.rebuildPressure(game.sim);
 	}
 
@@ -1651,6 +1726,9 @@ const ValveGame = (() => {
 		vent.savedCount.fill(0);
 		vent.savedCell.fill(-1);
 		vent.count = 0;
+		vent.turn = 0;
+		vent.turnClock = 0;
+		vent.turnLeft = 0;
 	}
 
 	// One seat's whole policy is two switches, pulsed like a hand would: an edge of
@@ -1689,6 +1767,165 @@ const ValveGame = (() => {
 			if (inlets.open[seat.inMouths[k]] !== wantIn) S.toggleInlet(sim, seat.inMouths[k], false, seat.player);
 			if (inlets.open[seat.outMouths[k]] !== wantOut) S.toggleInlet(sim, seat.outMouths[k], false, seat.player);
 		}
+	}
+
+	// ---- Vent turns ----------------------------------------------------------
+	// Registration alone decides pressure here, so valve play is turn based: a
+	// seat rotates one unlocked valve by 90 degrees and its turn ends at once.
+	// Both seats keep full mouth control the whole time.
+
+	function firstVentSeat(vent) {
+		for (let s = 0; s < vent.count; s++) if (vent.seats[s].bottle >= 0) return s;
+		return 0;
+	}
+
+	function nextVentSeat(vent, from) {
+		for (let k = 1; k <= vent.count; k++) {
+			const s = (from + k) % vent.count;
+			if (vent.seats[s].bottle >= 0) return s;
+		}
+		return from;
+	}
+
+	// A rebuilt rig hands the first turn to the first seat with a collector.
+	function resetVentTurn(game) {
+		const vent = game.vent;
+		vent.turnClock = 0;
+		vent.turnLeft = VENT_TURN_TIME;
+		vent.turn = firstVentSeat(vent);
+		for (let s = 0; s < VENT_MAX; s++) vent.seats[s].think = 0;
+	}
+
+	function endVentTurn(game) {
+		const vent = game.vent;
+		vent.turn = nextVentSeat(vent, vent.turn);
+		vent.turnClock = VENT_TURN_GAP;
+		vent.turnLeft = VENT_TURN_TIME;
+		vent.seats[vent.turn].think = VENT_TURN_THINK;
+		game.version++;
+	}
+
+	// True while a person holds the current turn and may rotate one valve.
+	function ventCanRotate(game) {
+		const vent = game.vent;
+		if (vent.count === 0 || vent.turnClock > 0) return false;
+		const seat = vent.seats[vent.turn];
+		if (!seat || seat.bottle < 0) return false;
+		const player = game.players[seat.player];
+		return !!player && !player.bot;
+	}
+
+	// A rotated valve only touches its own seat's air pocket, so a bot aims at a
+	// valve in the pocket its collector sits in and leaves the rest alone.
+	// The gas network indexes its nodes by valve, so one sweep labels them all.
+	const pocketOf = new Int32Array(SLOTS);
+
+	function valvePockets(gas) {
+		const net = gas.net;
+		pocketOf.fill(-1);
+		for (let n = 0; n < net.count; n++) {
+			const k = net.list[n];
+			const owner = net.owner[k];
+			if (owner < 0 || owner >= SLOTS || pocketOf[owner] >= 0) continue;
+			pocketOf[owner] = net.comp[k];
+		}
+	}
+
+	function ventTurnFits(game, index, pocket) {
+		const sim = game.sim;
+		if (sim.autoLocked[index] || sim.goalOwner[index] >= 0) return false;
+		return pocketOf[index] === pocket;
+	}
+
+	function ventTurnPick(game, seat) {
+		if (seat.ok) return -1;
+		const gas = game.sim.pressure;
+		if (!gas || gas.kind !== "grid" || !gas.net) return -1;
+		valvePockets(gas);
+		const pocket = pocketOf[seat.bottle];
+		if (pocket < 0) return -1;
+		let total = 0;
+		for (let k = 0; k < SLOTS; k++) if (ventTurnFits(game, k, pocket)) total++;
+		if (total === 0) return -1;
+		let pick = (game.random() * total) | 0;
+		for (let k = 0; k < SLOTS; k++) {
+			if (!ventTurnFits(game, k, pocket)) continue;
+			if (pick-- === 0) return k;
+		}
+		return -1;
+	}
+
+	function stepVentTurn(game, dt) {
+		const vent = game.vent;
+		if (vent.count === 0) return;
+		if (vent.turnClock > 0) {
+			vent.turnClock -= dt;
+			// The hand-off ends once: the panel flips to the seat that may act.
+			if (vent.turnClock <= 0) game.version++;
+			return;
+		}
+		const seat = vent.seats[vent.turn];
+		if (!seat || seat.bottle < 0) {
+			endVentTurn(game);
+			return;
+		}
+		const player = game.players[seat.player];
+		if (!player) return;
+		if (!player.bot) {
+			// A silent seat cannot hold the field forever: the turn clock passes it on.
+			vent.turnLeft -= dt;
+			if (vent.turnLeft > 0) return;
+			game.lastEvent = player.name + " let the turn pass.";
+			endVentTurn(game);
+			return;
+		}
+		if (seat.think > 0) {
+			seat.think -= dt;
+			return;
+		}
+		// A paused bot control still hands the turn on, so a person is stuck
+		// behind a seat nobody is playing for at most one think.
+		const index = game.botControl ? ventTurnPick(game, seat) : -1;
+		if (index >= 0) S.turn(game.sim, index, 1);
+		endVentTurn(game);
+		game.lastEvent = player.name + (index >= 0 ? " turned a valve." : " passed the turn.");
+	}
+
+	// Why a click cannot rotate, phrased for the status line.
+	function ventRefusal(game, index) {
+		const vent = game.vent;
+		if (vent.count === 0) return "No seat has a route in this seed.";
+		if (vent.turnClock > 0) return "The turn is being handed to the next seat.";
+		const seat = vent.seats[vent.turn];
+		if (!seat || seat.bottle < 0) return "No seat has a route in this seed.";
+		const player = game.players[seat.player];
+		if (!player) return "That seat is empty.";
+		if (player.bot) return player.name + " is playing its turn.";
+		if (index < 0 || index >= SLOTS) return "Select one valve to turn.";
+		if (game.sim.autoLocked[index] || game.sim.goalOwner[index] >= 0) return "Route valves and collectors stay fixed — turn another valve.";
+		return "";
+	}
+
+	// One rotation spends the turn and passes it on, as the mode promises.
+	function ventTurn(game, index, quarters) {
+		if (game.mode !== "vent" || index < 0 || index >= SLOTS || !ventCanRotate(game)) return false;
+		if (game.sim.autoLocked[index] || game.sim.goalOwner[index] >= 0) return false;
+		S.turn(game.sim, index, quarters < 0 ? -1 : 1);
+		const player = game.players[game.vent.seats[game.vent.turn].player];
+		const column = (index % N) + 1;
+		const row = ((index / N) | 0) + 1;
+		endVentTurn(game);
+		game.lastEvent = player.name + " turned cell (" + column + "," + row + ") — turn ends.";
+		return true;
+	}
+
+	function passVentTurn(game) {
+		const vent = game.vent;
+		if (game.mode !== "vent" || !ventCanRotate(game)) return false;
+		const player = game.players[vent.seats[vent.turn].player];
+		endVentTurn(game);
+		game.lastEvent = player.name + " passed the turn.";
+		return true;
 	}
 
 	// The field tag is the band, which only changes per round; the gauge needle
@@ -1751,6 +1988,7 @@ const ValveGame = (() => {
 				holdSeat(game, seat, slice);
 			}
 		}
+		stepVentTurn(game, dt);
 		game.evalClock += dt;
 		if (game.evalClock < EVAL_DT) return;
 		game.evalClock = 0;
@@ -2022,8 +2260,10 @@ const ValveGame = (() => {
 			if (!game.players[p].bot) continue;
 			game.botCooldown[p] -= dt;
 			if (game.botCooldown[p] > 0) continue;
-			game.botCooldown[p] = 0.48 + game.random() * 0.42;
 			const player = game.players[p];
+			// One action per paced interval: a bot cannot grind the map faster
+			// than its difficulty allows, whatever a frame hands it.
+			game.botCooldown[p] = botInterval(game, player);
 			if (player.questId < 0) {
 				const pick = botSignChoice(game, p);
 				if (pick >= 0) signQuest(game, pick, p);
@@ -2097,9 +2337,13 @@ const ValveGame = (() => {
 	}
 
 	// A rotor belongs to the hand when nobody owns it or when its owner is a seat a
-	// person plays. Vent mode locks the whole field: only mouths move there.
+	// person plays. Vent mode allows one rotation on the seat's own turn and never
+	// on a route valve or collector, which has to stay aligned.
 	function canTurn(game, index) {
-		if (index < 0 || index >= SLOTS || game.mode === "vent") return false;
+		if (index < 0 || index >= SLOTS) return false;
+		if (game.mode === "vent") {
+			return ventCanRotate(game) && !game.sim.autoLocked[index] && game.sim.goalOwner[index] < 0;
+		}
 		const owner = game.sim.goalOwner[index];
 		if (owner < 0) return true;
 		const player = game.players[owner];
@@ -2111,6 +2355,9 @@ const ValveGame = (() => {
 		GAME_AUTO,
 		VENT_AUTO,
 		VENT_MAX,
+		VENT_TURN_TIME,
+		BOT_RATES,
+		BOT_LEVEL_NAMES,
 		VENT_HOLD,
 		VENT_ALARM,
 		MAX_SEATS,
@@ -2133,6 +2380,13 @@ const ValveGame = (() => {
 		removePlayer,
 		pressActor,
 		canTurn,
+		setPlayerLevel,
+		botRate,
+		botInterval,
+		ventTurn,
+		passVentTurn,
+		ventRefusal,
+		ventCanRotate,
 		notice,
 		resetMatch,
 		generateQuest,

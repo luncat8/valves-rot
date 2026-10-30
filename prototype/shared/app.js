@@ -179,10 +179,19 @@
 	}
 
 	function turnSelected(quarters) {
-		if (!canPlayerTurn(selected)) {
-			if (game.mode === "vent") Game.notice(game, "Vent mode is mouth-only control; valves still rotate on their automatic schedule.");
+		if (game.mode === "vent") {
+			if (Game.ventTurn(game, selected, quarters)) {
+				overlayDirty = true;
+				shownIndex = -2;
+				syncGameUI();
+				if (paused) drawFrame(true);
+				return;
+			}
+			Game.notice(game, Game.ventRefusal(game, selected));
+			syncGameUI();
 			return;
 		}
+		if (!canPlayerTurn(selected)) return;
 		S.turn(sim, selected, quarters);
 		overlayDirty = true;
 		if (paused) drawFrame(true);
@@ -274,6 +283,15 @@
 		return player.score + " pts · " + player.completed + " held · " + player.failed + " lost";
 	}
 
+	// A bot's difficulty is its pace, so the row carries the level it plays at.
+	function levelOptions(level) {
+		let out = "";
+		for (let k = 0; k < Game.BOT_RATES.length; k++) {
+			out += '<option value="' + k + '"' + (k === level ? " selected" : "") + ">" + Game.BOT_LEVEL_NAMES[k] + "</option>";
+		}
+		return out;
+	}
+
 	function syncRosterUI() {
 		if (game.rosterVersion === shownRosterVersion) return;
 		shownRosterVersion = game.rosterVersion;
@@ -289,6 +307,7 @@
 				'<span class="player-task">' + rosterTask(pl) + "</span>" +
 				'<span class="player-score">' + rosterScore(pl) + "</span>" +
 				'<label class="player-bot"><input type="checkbox" data-bot="' + p + '"' + (pl.bot ? " checked" : "") + "> bot</label>" +
+				'<select class="player-level" data-level="' + p + '" title="Bot pace: map changes per second">' + levelOptions(pl.botLevel) + "</select>" +
 				'<button type="button" data-remove="' + p + '"' + (p === 0 ? " disabled" : "") + ">Remove</button>" +
 				"</div>";
 		}
@@ -305,11 +324,13 @@
 				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span>no route fits this seed</span></div>';
 				continue;
 			}
+			const turn = s === game.vent.turn;
+			const pass = turn && !pl.bot ? '<button type="button" data-pass="' + s + '">Pass</button>' : "";
 			const targetLeft = Math.max(0, Math.min(100, seat.lo * 100));
 			const targetWidth = Math.max(0, Math.min(100 - targetLeft, (seat.hi - seat.lo) * 100));
 			const current = Math.max(0, Math.min(100, seat.pressure * 100));
 			html +=
-				'<div class="vent-row' + (seat.ok ? " in" : " out") + '" data-seat="' + s + '" title="Select the collector on the field" style="--seat-accent:' + pl.accent + '">' +
+				'<div class="vent-row' + (seat.ok ? " in" : " out") + (turn ? " turn" : "") + '" data-seat="' + s + '" title="Select the collector on the field" style="--seat-accent:' + pl.accent + '">' +
 				'<div class="vent-readout-head"><strong>' + pl.name + '</strong><span>' + seat.points + ' pts · ' + seat.rounds + ' held</span></div>' +
 				'<div class="vent-readout-values"><span><small>LIVE PRESSURE</small><strong class="vent-current">' + seat.pressure.toFixed(2) + '</strong></span>' +
 				'<span><small>REQUESTED RANGE</small><strong>' + seat.lo.toFixed(2) + '–' + seat.hi.toFixed(2) + '</strong></span></div>' +
@@ -318,6 +339,7 @@
 				'<i class="vent-current-marker' + (seat.ok ? "" : " outside") + '" style="left:' + current.toFixed(2) + '%"></i></div>' +
 				'<div class="vent-scale-labels"><span>0</span><span>1</span></div>' +
 				'<div class="vent-hold-row"><span>4 s hold</span><span class="vent-hold"><i style="width:' + Math.round(seat.holdRatio * 100) + '%"></i></span></div>' +
+				(turn ? '<div class="vent-turn"><span>' + (pl.bot ? "Bot turn — one valve" : "Your turn — turn one valve") + "</span>" + pass + "</div>" : "") +
 				"</div>";
 		}
 		$("vent-list").innerHTML = html;
@@ -373,6 +395,12 @@
 	};
 
 	$("player-list").onchange = event => {
+		const level = event.target.closest("[data-level]");
+		if (level) {
+			Game.setPlayerLevel(game, Number(level.dataset.level), Number(level.value));
+			afterRosterChange();
+			return;
+		}
 		const box = event.target.closest("[data-bot]");
 		if (!box) return;
 		Game.setPlayerBot(game, Number(box.dataset.bot), box.checked);
@@ -382,6 +410,11 @@
 	// A vent row is the seat's locate button: the bottle is the only cell of the
 	// rig a seat ever needs to look at.
 	$("vent-list").onclick = event => {
+		if (event.target.closest("[data-pass]")) {
+			if (Game.passVentTurn(game)) syncGameUI();
+			if (paused) drawFrame(true);
+			return;
+		}
 		const row = event.target.closest("[data-seat]");
 		if (!row) return;
 		const seat = game.vent.seats[Number(row.dataset.seat)];
@@ -839,6 +872,8 @@
 		pointerState(event);
 		if (at.inlet >= 0 || !canPlayerTurn(at.cell)) return;
 		selected = at.cell;
+		// A Vent turn buys exactly one detent, so the press-drag dial is off there.
+		if (game.mode === "vent") return;
 		const v = layout.valves[at.cell];
 		drag.pointerId = event.pointerId === undefined ? 1 : event.pointerId;
 		drag.cell = at.cell;

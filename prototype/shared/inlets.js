@@ -13,7 +13,9 @@
 // can still carry a source for one player and a vent for another.
 //
 // Vent mode deals two random source and two random vent mouths per player with
-// `claimPair`; setup routes them toward that player's collector.
+// `claimPair`; setup routes them toward that player's collector. A mouth the
+// route search could not join stays in the band as a passive boundary hole, so
+// it is marked `linked = 0` and drawn as an owner mark instead of a pipe.
 const ValveInlets = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -40,6 +42,8 @@ const ValveInlets = (() => {
 			open: new Uint8Array(count),
 			present: new Uint8Array(count),
 			owner: new Int8Array(count),
+			// 1 when the mouth opens onto a mapped route, 0 for a passive hole.
+			linked: new Uint8Array(count),
 			x: new Float64Array(count),
 			y: new Float64Array(count),
 		};
@@ -59,6 +63,7 @@ const ValveInlets = (() => {
 		inlets.open[index] = 1;
 		inlets.present[index] = 1;
 		inlets.owner[index] = UNOWNED;
+		inlets.linked[index] = 1;
 	}
 
 	// Back to the sandbox band: every mouth present, unowned and open.
@@ -67,6 +72,7 @@ const ValveInlets = (() => {
 			inlets.open[k] = 1;
 			inlets.present[k] = 1;
 			inlets.owner[k] = UNOWNED;
+			inlets.linked[k] = 1;
 			inlets.level[k] = inlets.side[k] === TOP ? LOW : HIGH;
 		}
 		inlets.version++;
@@ -151,6 +157,7 @@ const ValveInlets = (() => {
 	function claim(inlets, index, owner, level) {
 		inlets.present[index] = 1;
 		inlets.owner[index] = owner;
+		inlets.linked[index] = 1;
 		inlets.level[index] = level;
 		inlets.open[index] = 1;
 		inlets.version++;
@@ -162,6 +169,7 @@ const ValveInlets = (() => {
 			inlets.present[k] = 0;
 			inlets.owner[k] = UNOWNED;
 			inlets.open[k] = 0;
+			inlets.linked[k] = 0;
 		}
 		inlets.version++;
 	}
@@ -177,7 +185,15 @@ const ValveInlets = (() => {
 		inlets.present[index] = 0;
 		inlets.owner[index] = UNOWNED;
 		inlets.open[index] = 0;
+		inlets.linked[index] = 0;
 		inlets.version++;
+	}
+
+	// `linked` is a label for the renderer, not a boundary value: it never
+	// changes the pressure pins, so it does not bump the version.
+	function setLinked(inlets, index, linked) {
+		if (index < 0 || index >= inlets.count) return;
+		inlets.linked[index] = linked ? 1 : 0;
 	}
 
 	function releasePair(inlets, sourceIndex, ventIndex) {
@@ -230,6 +246,6 @@ const ValveInlets = (() => {
 		return side * G.N + column;
 	}
 
-	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, MAX_PLAYERS, create, reset, deal, clearAll, claimPair, releasePair, press, canPress, ownedBy, count, hit };
+	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, MAX_PLAYERS, create, reset, deal, clearAll, claimPair, releasePair, setLinked, press, canPress, ownedBy, count, hit };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveInlets;

@@ -39,6 +39,11 @@ in the frame hot path.
   route branches from each pair to its collector; use existing random-map valve
   ports only. Clear other mouths on entry. A person can press only their own
   four; a bot can drive its own set.
+- Flag every mouth the route search actually joined (`linked`). A fallback mouth
+  is still a boundary hole the owner may press, but it has no path to the
+  collector, so the field draws it as an owner ring alone — no stem, no flow
+  arrow and no field-edge plate, which would otherwise read as a pipe that can
+  steer the collector.
 - Drain grains and enable the grid-gas backend. Keep the collector in the same
   routed orientation along with each planned path; other valves can still rotate.
 - Save each modified cell's original valve type, world orientation, chamber,
@@ -60,8 +65,18 @@ policy available to a person; it does not operate any valve.
 - Vent mode supports one or two seats because mouths pin a shared gas field and
   additional players would be dominated by its pressure average.
 - The existing roster and per-seat human/bot controls remain available.
-- In Vent mode `canTurn` rejects every valve, including automatic route valves;
-  automatic rotation remains simulation behavior only.
+- Valve play is turn based. Seats take the turn in order and a seat may rotate
+  exactly one unlocked valve by 90°, spending the turn the moment it lands; the
+  next seat then takes over after a one second hand-off. A turn that is not
+  spent expires after ten seconds, and a person may also pass it. Route cells
+  and collectors stay locked, so the prebuilt paths cannot be dismantled; every
+  other valve answers the seat on turn. Press-drag is off because it would buy
+  more than one detent per turn.
+- A bot spends its turn only when its band is slipping, and only on a valve in
+  the same air pocket as its collector; otherwise it passes. A seat nobody plays
+  still hands the turn on, so a person is never blocked behind it.
+- Automatic rotation of the `5%` selection continues in parallel and never
+  touches a route cell.
 - Clicking a seat row selects its collector. An adjacent large readout labels
   live pressure and requested range, with a scale showing the band as a colored
   segment and live pressure as a high-contrast line. The field retains its local
@@ -71,8 +86,9 @@ policy available to a person; it does not operate any valve.
 
 `node experiments/vent-fixtures.cjs` checks the collector type and random
 orientation, preserved map valve types, route reachability and mouth ownership,
-`5%` auto-rotation, player input restrictions, deterministic setup, band fit,
-seat add/remove and exact restoration. `node experiments/vent-balance.cjs`
+linked-mouth flags, `5%` auto-rotation, turn order, one rotation per turn, the
+turn clock, bot turns, deterministic setup, band fit, seat add/remove and exact
+restoration. `node experiments/vent-balance.cjs`
 surveys one- and two-seat route coverage, pressure reach and teardown across
 seeds. `node experiments/render-smoke.cjs` checks mode UI, input ownership and
 restore. The other game, pressure and geometry fixtures protect shared modes.

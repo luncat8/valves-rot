@@ -470,6 +470,8 @@ assert.ok(ventRows.includes("LIVE PRESSURE") && ventRows.includes("REQUESTED RAN
 assert.ok(ventRows.includes("vent-target-range") && ventRows.includes("vent-current-marker"), "a readable scale shows the target band and live pressure line");
 const ventRoster = element("player-list").innerHTML;
 assert.ok(ventRoster.includes('data-bot="0"') && ventRoster.includes('data-bot="1"'), "every seat has its own bot box");
+assert.ok(ventRoster.includes('data-level="0"') && ventRoster.includes('data-level="1"'), "every seat carries its bot pace");
+assert.ok(ventRows.includes("Your turn"), "the seat on turn is named in the panel");
 assert.ok(ventRoster.includes('data-remove="0" disabled'), "your own seat cannot be removed");
 assert.equal(element("add-seat").disabled, true, "vent mode caps the seat list at two");
 
@@ -484,13 +486,29 @@ const mine = seatCell(0);
 const rival = seatCell(1);
 assert.notDeepEqual(mine, rival, "each seat has a distinct collector");
 
-// Clicking a collector cannot turn it: automatic valve rotation is the only
-// rotation in this mode.
+// A collector is a locked route cell: it never turns, even on the seat's turn.
 const collectorText = element("selected-valve").textContent;
 c.onclick({ clientX: (rival.column + 0.5) * G.S, clientY: G.POUR + (rival.row + 0.5) * G.S, shiftKey: false, detail: 1 });
 frames.shift()((now += 16.7));
-assert.equal(element("selected-valve").textContent, collectorText, "a vent-mode valve does not turn from a click");
-assert.ok(element("game-status").textContent.includes("mouth-only control"), "the status line explains valve input is unavailable");
+assert.equal(element("selected-valve").textContent, collectorText, "a vent-mode collector does not turn from a click");
+assert.ok(element("game-status").textContent.includes("stay fixed"), "the status line explains the locked route");
+
+// Turn-based rotation: the seat on turn turns one unlocked valve by 90 degrees
+// and the turn ends by itself.
+let turnedCell = null;
+for (let k = 0; k < 100 && turnedCell === null; k++) {
+	const col = k % G.N;
+	const row = (k / G.N) | 0;
+	c.onclick({ clientX: (col + 0.5) * G.S, clientY: G.POUR + (row + 0.5) * G.S, shiftKey: false, detail: 1 });
+	frames.shift()((now += 16.7));
+	if (element("game-status").textContent.includes("turn ends")) turnedCell = { col, row };
+}
+assert.ok(turnedCell, "the seat on turn rotates one unlocked valve");
+const turnedText = element("selected-valve").textContent;
+c.onclick({ clientX: (turnedCell.col + 0.5) * G.S, clientY: G.POUR + (turnedCell.row + 0.5) * G.S, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.equal(element("selected-valve").textContent, turnedText, "the same turn cannot rotate a second valve");
+assert.ok(/handed|its turn/.test(element("game-status").textContent), "the turn passed to the other seat");
 
 function findMouth(predicate) {
 	for (let side = 0; side < 2; side++) {
