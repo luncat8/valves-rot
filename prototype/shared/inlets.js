@@ -12,9 +12,8 @@
 // separately, so a player's own in and out mouths never share an x; one column
 // can still carry a source for one player and a vent for another.
 //
-// Vent mode deals one in and one out per player instead, both in that player's
-// own prebuilt shaft column (`claimColumn`), because the field there is a
-// regulator rig: two switches per seat and nothing to sweep.
+// Vent mode deals one source and one vent per player with `claimPair`; setup
+// routes each pair through existing map valves to that player's collector.
 const ValveInlets = (() => {
 	"use strict";
 	const G = typeof ValveGeometry !== "undefined" ? ValveGeometry : require("./geometry.js");
@@ -167,13 +166,12 @@ const ValveInlets = (() => {
 		inlets.version++;
 	}
 
-	// Vent mode: one seat's pair, a source below and a vent above its own prebuilt
-	// shaft column, so the whole mouth policy is two switches. A rejected rig hands
-	// the pair back with `releaseColumn`.
-	function claimColumn(inlets, column, owner) {
-		claim(inlets, BOTTOM * G.N + column, owner, HIGH);
-		claim(inlets, TOP * G.N + column, owner, LOW);
+	// Vent mode assigns one independently routed source and vent to each seat.
+	function claimPair(inlets, sourceIndex, ventIndex, owner) {
+		claim(inlets, sourceIndex, owner, HIGH);
+		claim(inlets, ventIndex, owner, LOW);
 	}
+
 
 	function release(inlets, index) {
 		inlets.present[index] = 0;
@@ -182,10 +180,11 @@ const ValveInlets = (() => {
 		inlets.version++;
 	}
 
-	function releaseColumn(inlets, column) {
-		release(inlets, BOTTOM * G.N + column);
-		release(inlets, TOP * G.N + column);
+	function releasePair(inlets, sourceIndex, ventIndex) {
+		if (sourceIndex >= 0) release(inlets, sourceIndex);
+		if (ventIndex >= 0) release(inlets, ventIndex);
 	}
+
 
 	// A click toggles a mouth between open and sealed; a flipped mouth swaps its
 	// source/vent polarity instead. `actor` is the player acting: a dealt mouth
@@ -231,6 +230,6 @@ const ValveInlets = (() => {
 		return side * G.N + column;
 	}
 
-	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, MAX_PLAYERS, create, reset, deal, clearAll, claimColumn, releaseColumn, press, canPress, ownedBy, count, hit };
+	return { LOW, HIGH, TOP, BOTTOM, MOUTH, UNOWNED, PER_PLAYER, MAX_PLAYERS, create, reset, deal, clearAll, claimPair, releasePair, press, canPress, ownedBy, count, hit };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveInlets;

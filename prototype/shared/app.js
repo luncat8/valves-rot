@@ -180,7 +180,7 @@
 
 	function turnSelected(quarters) {
 		if (!canPlayerTurn(selected)) {
-			if (game.mode === "vent") Game.notice(game, "Vent mode is played at the mouths — every valve is locked.");
+			if (game.mode === "vent") Game.notice(game, "Vent mode is mouth-only control; valves still rotate on their automatic schedule.");
 			return;
 		}
 		S.turn(sim, selected, quarters);
@@ -260,7 +260,7 @@
 	function rosterTask(player) {
 		if (game.mode === "vent") {
 			const seat = game.vent.seats[player.id];
-			return seat && seat.bottle >= 0 ? "band " + seat.tag : "no rig";
+			return seat && seat.bottle >= 0 ? "band " + seat.tag : "no route";
 		}
 		if (player.questId < 0) return "idle";
 		for (let q = 0; q < game.quests.length; q++) {
@@ -302,7 +302,7 @@
 			const seat = game.vent.seats[s];
 			const pl = game.players[seat.player];
 			if (seat.bottle < 0) {
-				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span class="vent-band">no rig fits this seed</span></div>';
+				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span class="vent-band">no route fits this seed</span></div>';
 				continue;
 			}
 			html +=
@@ -350,7 +350,7 @@
 		$("quest-list").innerHTML = qHtml;
 	}
 
-	// A seat that came, went, or changed hands moves mouths and rigs, so the scene
+	// A seat that came, went, or changed hands moves mouths and routes, so the scene
 	// and the air overlay are rebuilt around the new seat list.
 	function afterRosterChange() {
 		Game.consumeDirty(game, scene);
@@ -968,7 +968,7 @@
 		const owner = sim.inlets.owner[inlet];
 		const player = owner >= 0 ? game.players[owner] : null;
 		if (!player) {
-			Game.notice(game, game.mode === "vent" ? "Only the rigs' own mouths are in the bands here." : "No mouth was dealt in that slot.");
+			Game.notice(game, game.mode === "vent" ? "Only your source and vent mouths are in the bands here." : "No mouth was dealt in that slot.");
 		} else if (player.bot) {
 			Game.notice(game, player.name + " is bot controlled — untick its bot box to play that seat.");
 		} else {
