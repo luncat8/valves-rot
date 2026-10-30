@@ -199,45 +199,103 @@ select {
 /* The row is the seat's own gauge: the edge color says whether the pocket is
    inside its band right now, the bar how much of the hold is done. */
 .vent-row {
-	display: grid;
-	grid-template-columns: 12px minmax(56px, auto) minmax(0, 1fr) auto 54px auto;
-	align-items: center;
-	gap: 8px;
-	padding: 5px 8px;
+	padding: 10px 12px;
 	background: #1f2833;
-	border-left: 3px solid #3c4856;
-	border-radius: 4px;
+	border-left: 4px solid #3c4856;
+	border-radius: 5px;
 	font-size: 13px;
+	--seat-accent: #efc179;
 }
 .vent-row[data-seat] { cursor: pointer; }
 .vent-row[data-seat]:hover { background: #26313e; }
 .vent-row.in { border-left-color: #5ce8b0; }
 .vent-row.out { border-left-color: #ff7d6b; }
-.vent-band,
-.vent-rounds {
+.vent-readout-head,
+.vent-readout-values,
+.vent-scale-labels,
+.vent-hold-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 10px;
+}
+.vent-readout-head strong {
+	font-size: 15px;
+}
+.vent-readout-values {
+	justify-content: flex-start;
+	gap: 24px;
+	margin: 8px 0 7px;
+}
+.vent-readout-values span {
+	display: grid;
+	gap: 1px;
+}
+.vent-readout-values small {
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.07em;
 	color: #aeb9c5;
-	font-size: 12px;
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
 }
-.vent-press {
+.vent-readout-values strong {
+	font-size: 19px;
 	font-variant-numeric: tabular-nums;
-	font-weight: 600;
+	line-height: 1.15;
 }
-.vent-row.in .vent-press { color: #5ce8b0; }
-.vent-row.out .vent-press { color: #ff9d94; }
-.vent-gauge {
-	height: 7px;
+.vent-readout-values .vent-current { color: var(--seat-accent); }
+.vent-scale {
+	position: relative;
+	height: 16px;
+	background: #0e141b;
+	border: 1px solid #536172;
+	border-radius: 4px;
+	box-sizing: border-box;
+}
+.vent-target-range {
+	position: absolute;
+	top: 2px;
+	bottom: 2px;
+	min-width: 2px;
+	background: var(--seat-accent);
+	border-radius: 2px;
+	box-shadow: 0 0 5px color-mix(in srgb, var(--seat-accent) 70%, transparent);
+}
+.vent-current-marker {
+	position: absolute;
+	top: -4px;
+	bottom: -4px;
+	width: 3px;
+	margin-left: -1px;
+	background: #fff;
+	border-radius: 2px;
+	box-shadow: 0 0 0 1px #10151a, 0 0 6px rgba(255,255,255,.8);
+}
+.vent-current-marker.outside { background: #ff7d6b; }
+.vent-scale-labels {
+	font-size: 10px;
+	color: #8d9baa;
+	font-variant-numeric: tabular-nums;
+	margin-top: 3px;
+}
+.vent-hold-row {
+	margin-top: 7px;
+	font-size: 11px;
+	color: #aeb9c5;
+}
+.vent-hold {
+	flex: 1;
+	height: 6px;
 	background: #10161d;
 	border: 1px solid #3c4856;
 	border-radius: 4px;
 	overflow: hidden;
 }
-.vent-gauge i {
+.vent-hold i {
 	display: block;
 	height: 100%;
-	background: #efc179;
+	background: var(--seat-accent);
 }
+
 .quest-list {
 	display: grid;
 	gap: 7px;

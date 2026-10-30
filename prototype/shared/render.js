@@ -570,9 +570,6 @@ const ValveRender = (() => {
 		if (!game || game.mode !== "vent") return;
 		const vent = game.vent;
 		ctx.save();
-		ctx.font = "bold 8px system-ui, sans-serif";
-		ctx.textBaseline = "middle";
-		ctx.textAlign = "left";
 		for (let s = 0; s < vent.count; s++) {
 			const seat = vent.seats[s];
 			if (seat.bottle < 0) continue;
@@ -580,7 +577,6 @@ const ValveRender = (() => {
 			const v = layout.valves[seat.bottle];
 			drawHoldArc(ctx, v, seat.holdRatio, player);
 			drawGauge(ctx, v, seat, player);
-			drawCellTag(ctx, v, seat.tag, player);
 		}
 		ctx.restore();
 	}

@@ -37,42 +37,21 @@ const ValveGame = (() => {
 	const EVAL_DT = 1 / 15;
 
 	// ---- Vent mode ------------------------------------------------------------
-	// A regulator rig instead of a quest board: every seat gets a prebuilt shaft of
-	// locked valves from its own source mouth below to its own vent above, with a
-	// bottle chamber in the middle. Nobody turns a valve — the only controls are
-	// that seat's two mouths, and the task is to hold the bottle's pressure inside a
-	// target band while `5%` of the field still turns on its own schedule. Two seats
-	// is the limit: every mouth pins the same corridor mesh, so a third rig would
-	// pull each bottle toward the field average and leave nobody a lever of their
-	// own.
+	// A pressure-regulation mode on the same random valve map: setup orients
+	// existing valves into source/vent routes to hollow-single collectors, while
+	// `5%` keep their normal automatic turns. Each seat operates two source and
+	// two vent mouths; two seats is the limit because all routes share one field.
 	const VENT_AUTO = 0.05;
 	const VENT_MAX = 2;
 	const VENT_HOLD = 4;
-	// How long a seat waits out the slide a finished pulse leaves behind.
+	// Bot seats wait briefly after a pulse and aim just inside the target band.
 	const VENT_SETTLE = 0.4;
-	// A pulse ends this far into the band from the edge it answers, not at the
-	// center. Sealed, a pocket keeps going the way its pulse was pushing — the
-	// column above it charged further than the pocket did — and that slide carries
-	// it about half a band, so aiming at the center lands it out of the far side.
 	const VENT_AIM_INSET = 0.125;
-	// Charge and drain have to reach far enough apart for a band to mean anything.
-	const VENT_MIN_SPAN = 0.45;
-	// Keep a band this far inside the measured ends so it stays reachable.
+	// Keep target bands away from measured extremes when the route has headroom.
 	const VENT_EDGE_MARGIN = 0.15;
-	// The pocket answers a mouth in about a third of a second, so a band has to be
-	// wide enough for one tap to land inside it: a tap is a nudge of about 0.1.
 	const VENT_HALF_MIN = 0.06;
 	const VENT_HALF_MAX = 0.11;
-	// How far a held round may move the band away from where the pocket is.
 	const VENT_BAND_STEP = 0.22;
-	// The bottle sits mid-column: near a mouth the pocket answers that mouth far
-	// faster than the other one, and a pulse then leaves the column so lopsided
-	// that the pocket slides out of its band again the moment it is sealed.
-	const VENT_ROW_MIN = 4;
-	const VENT_ROW_MAX = 6;
-	// Two rigs side by side would share one pocket through the corridor mesh.
-	const VENT_COL_GAP = 2;
-	const VENT_TRIES = 5;
 	// Outside the band by this much counts once as a lost regulation.
 	const VENT_ALARM = 0.18;
 	const MAX_SEATS = Math.min(R.PLAYERS.length, I.MAX_PLAYERS);
@@ -503,7 +482,7 @@ const ValveGame = (() => {
 		if (mode === "vent") {
 			trimPlayers(game, VENT_MAX);
 			enterVent(game);
-			game.lastEvent = "Vent mode: hold your bottle's pressure inside the band with your two mouths.";
+			game.lastEvent = "Vent mode: hold your bottle's pressure inside the band with your four mouths.";
 		} else if (mode === "game") {
 			dealMouths(game);
 			if (game.quests.length < BOARD_SIZE) seedBoard(game);
@@ -517,14 +496,14 @@ const ValveGame = (() => {
 		return true;
 	}
 
-	// Vent mode keeps its rig for as long as it runs; entering it drains the grains
-	// and clears both bands so only the rigs' own mouths are left to press.
+	// Vent mode keeps its routes for as long as it runs; entering drains grains
+	// and clears both bands so only the seats' own mouths are left to press.
 	function enterVent(game) {
 		const sim = game.sim;
 		if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
 		const built = buildVent(game);
 		if (built > 0) return built;
-		game.lastEvent = "No column left room for a vent rig on this seed.";
+		game.lastEvent = "No complete random-valve route fit this seed.";
 		return 0;
 	}
 
@@ -673,8 +652,8 @@ const ValveGame = (() => {
 		const fresh = !!sim && sim !== game.sim;
 		if (sim) game.sim = sim;
 		if (game.mode === "vent") {
-			// A fresh layout never carried the borrowed columns, so there is nothing
-			// to put back on it.
+			// A fresh layout never carried the previous routes, so there is nothing
+			// to restore onto it.
 			if (fresh) forgetVent(game);
 			else teardownVent(game);
 		}
@@ -695,7 +674,7 @@ const ValveGame = (() => {
 		if (game.mode === "vent") {
 			trimPlayers(game, VENT_MAX);
 			enterVent(game);
-			game.lastEvent = "New rig built — hold the band with your two mouths.";
+			game.lastEvent = "New random-valve routes built — hold the bands with your own mouths.";
 		} else {
 			if (game.mode === "game") dealMouths(game);
 			else restoreMouths(game);
@@ -1121,8 +1100,8 @@ const ValveGame = (() => {
 			column: -1,
 			row: -1,
 			bottle: -1,
-			inMouth: -1,
-			outMouth: -1,
+			inMouths: new Int16Array(2).fill(-1),
+			outMouths: new Int16Array(2).fill(-1),
 			spanLo: 0,
 			spanHi: 1,
 			lo: 0,
@@ -1148,19 +1127,30 @@ const ValveGame = (() => {
 		return {
 			count: 0,
 			seats,
-			columns: new Int8Array(VENT_MAX).fill(-1),
-			// The shaft replaces a whole column, so the column is what gets saved.
-			saved: new Uint8Array(VENT_MAX),
-			savedType: new Int8Array(VENT_MAX * N),
-			savedQuarter: new Int8Array(VENT_MAX * N),
-			savedChamber: new Float64Array(VENT_MAX * N),
-			savedTint: new Int8Array(VENT_MAX * N),
-			savedLock: new Uint8Array(VENT_MAX * N),
-			savedOwner: new Int8Array(VENT_MAX * N),
+			used: new Uint8Array(SLOTS),
+			savedCount: new Uint8Array(VENT_MAX),
+			savedCell: new Int16Array(VENT_MAX * SLOTS).fill(-1),
+			savedType: new Int8Array(VENT_MAX * SLOTS),
+			savedQuarter: new Int8Array(VENT_MAX * SLOTS),
+			savedChamber: new Float64Array(VENT_MAX * SLOTS),
+			savedTint: new Int8Array(VENT_MAX * SLOTS),
+			savedLock: new Uint8Array(VENT_MAX * SLOTS),
+			savedOwner: new Int8Array(VENT_MAX * SLOTS),
 		};
 	}
 
-	const ventTried = new Uint8Array(N);
+	const routeBlocked = new Uint8Array(SLOTS);
+	const routePrev = new Int16Array(SLOTS * 4);
+	const routeQueue = new Int16Array(SLOTS * 4);
+	const routeCells = new Int16Array(SLOTS);
+	const routeQuarters = new Int8Array(SLOTS);
+	const routeMouthBlocked = new Uint8Array(N * 2);
+	const routeColumnBlocked = new Uint8Array(N * 2);
+	const routePlan = new Int16Array(SLOTS * 3);
+	const routePlanQuarters = new Int8Array(SLOTS * 3);
+	const routePlanMasks = new Uint8Array(SLOTS * 3);
+	const routePlanLength = { value: 0 };
+	const savedBase = slot => slot * SLOTS;
 
 	function clamp01(v) {
 		return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -1171,75 +1161,70 @@ const ValveGame = (() => {
 		return type ? G.TYPES.indexOf(type) : 0;
 	}
 
-	function saveColumn(game, slot, column) {
+	function saveRouteCell(game, slot, index) {
 		const vent = game.vent;
-		const sim = game.sim;
-		const base = slot * N;
-		for (let j = 0; j < N; j++) {
-			const idx = j * N + column;
-			const v = sim.layout.valves[idx];
-			vent.savedType[base + j] = typeIndex(v);
-			// The orientation the column faces the world with, not the detent its
-			// schedule is heading for: the lab gets back what it was showing.
-			vent.savedQuarter[base + j] = G.orientationOf(v);
-			vent.savedChamber[base + j] = sim.layout.valves[idx].chamberR;
-			vent.savedTint[base + j] = sim.caseTint[idx];
-			vent.savedLock[base + j] = sim.autoLocked[idx];
-			vent.savedOwner[base + j] = sim.goalOwner[idx];
-		}
-		vent.columns[slot] = column;
-		vent.saved[slot] = 1;
+		const base = savedBase(slot);
+		for (let k = 0; k < vent.savedCount[slot]; k++) if (vent.savedCell[base + k] === index) return;
+		const pos = base + vent.savedCount[slot]++;
+		const v = game.sim.layout.valves[index];
+		vent.savedCell[pos] = index;
+		vent.savedType[pos] = typeIndex(v);
+		vent.savedQuarter[pos] = G.orientationOf(v);
+		vent.savedChamber[pos] = v.chamberR;
+		vent.savedTint[pos] = game.sim.caseTint[index];
+		vent.savedLock[pos] = game.sim.autoLocked[index];
+		vent.savedOwner[pos] = game.sim.goalOwner[index];
 	}
 
-	// Puts a borrowed column back exactly as the seat found it, so leaving Vent
-	// mode never costs a reset.
-	function restoreColumn(game, slot) {
+	function restoreSeatRoute(game, slot) {
 		const vent = game.vent;
-		if (!vent.saved[slot]) return;
 		const sim = game.sim;
-		const base = slot * N;
-		const column = vent.columns[slot];
-		for (let j = 0; j < N; j++) {
-			const idx = j * N + column;
-			S.installValve(sim, idx, G.TYPES[vent.savedType[base + j]], vent.savedQuarter[base + j], vent.savedChamber[base + j], true);
-			S.setCaseTint(sim, idx, vent.savedTint[base + j]);
-			sim.autoLocked[idx] = vent.savedLock[base + j];
-			sim.goalOwner[idx] = vent.savedOwner[base + j];
-			markRotorDirty(game, idx);
+		const base = savedBase(slot);
+		for (let k = vent.savedCount[slot] - 1; k >= 0; k--) {
+			const pos = base + k;
+			const index = vent.savedCell[pos];
+			if (index < 0) continue;
+			S.installValve(sim, index, G.TYPES[vent.savedType[pos]], vent.savedQuarter[pos], vent.savedChamber[pos], true);
+			S.setCaseTint(sim, index, vent.savedTint[pos]);
+			sim.autoLocked[index] = vent.savedLock[pos];
+			sim.goalOwner[index] = vent.savedOwner[pos];
+			markRotorDirty(game, index);
+			vent.used[index] = 0;
+			vent.savedCell[pos] = -1;
 		}
-		I.releaseColumn(sim.inlets, column);
-		vent.saved[slot] = 0;
-		vent.columns[slot] = -1;
+		vent.savedCount[slot] = 0;
+		vent.used.fill(0);
+		for (let s = 0; s < VENT_MAX; s++) {
+			const base = savedBase(s);
+			for (let k = 0; k < vent.savedCount[s]; k++) vent.used[vent.savedCell[base + k]] = 1;
+		}
 		game.dirtyCases = true;
 	}
 
-	// One seat's rig: a tight vertical pipe the whole length of its column, locked
-	// against auto-rotation and cased in the owner's color, with the bottle chamber
-	// in the middle. Every rotor in it is straight, so the pocket talks to its own
-	// two mouths and never to the corridor mesh beside it.
-	function buildShaft(game, slot, column, row) {
+	function saveRoute(game, slot, target, targetQuarter) {
 		const sim = game.sim;
 		const seat = game.vent.seats[slot];
-		const pipe = G.typeById("solid-straight");
-		const bottle = G.typeById("hollow-straight");
-		saveColumn(game, slot, column);
-		seat.player = slot;
-		seat.column = column;
-		seat.row = row;
-		for (let j = 0; j < N; j++) {
-			const idx = j * N + column;
-			const isBottle = j === row;
-			S.installValve(sim, idx, isBottle ? bottle : pipe, 1, isBottle ? GOAL_CHAMBER : undefined, true);
-			sim.autoLocked[idx] = 1;
-			sim.goalOwner[idx] = slot;
-			S.setCaseTint(sim, idx, slot);
-			markRotorDirty(game, idx);
+		const targetType = G.typeById("hollow-single");
+		for (let k = 0; k < routePlanLength.value; k++) {
+			const index = routePlan[k];
+			const v = sim.layout.valves[index];
+			saveRouteCell(game, slot, index);
+			S.installValve(sim, index, G.typeOf(v), routePlanQuarters[k], v.chamberR, true);
+			sim.autoLocked[index] = 1;
+			game.vent.used[index] = 1;
+			markRotorDirty(game, index);
 		}
-		seat.bottle = row * N + column;
-		seat.inMouth = I.BOTTOM * N + column;
-		seat.outMouth = I.TOP * N + column;
-		I.claimColumn(sim.inlets, column, slot);
-		S.setInletOwnership(sim);
+		saveRouteCell(game, slot, target);
+		S.installValve(sim, target, targetType, targetQuarter, GOAL_CHAMBER, true);
+		sim.autoLocked[target] = 1;
+		sim.goalOwner[target] = slot;
+		S.setCaseTint(sim, target, slot);
+		game.vent.used[target] = 1;
+		markRotorDirty(game, target);
+		seat.player = slot;
+		seat.row = (target / N) | 0;
+		seat.column = target % N;
+		seat.bottle = target;
 		game.dirtyCases = true;
 	}
 
@@ -1248,8 +1233,8 @@ const ValveGame = (() => {
 		seat.column = -1;
 		seat.row = -1;
 		seat.bottle = -1;
-		seat.inMouth = -1;
-		seat.outMouth = -1;
+		seat.inMouths.fill(-1);
+		seat.outMouths.fill(-1);
 		seat.lo = 0;
 		seat.hi = 1;
 		seat.hold = 0;
@@ -1264,9 +1249,6 @@ const ValveGame = (() => {
 		seat.shown = -1;
 	}
 
-	// A converged solve into the scratch field. The live field only gets the
-	// 12-iteration snap, which undershoots a mouth pair by up to 0.2, and a
-	// measurement must not repaint what the player is looking at.
 	function measureChamber(sim, index) {
 		const gas = sim.pressure;
 		GAS.steady(gas, gas.pTarget);
@@ -1275,18 +1257,20 @@ const ValveGame = (() => {
 
 	function ventMouths(game, seat, source, vent) {
 		const inlets = game.sim.inlets;
-		inlets.open[seat.inMouth] = source ? 1 : 0;
-		inlets.open[seat.outMouth] = vent ? 1 : 0;
+		for (let k = 0; k < 2; k++) {
+			inlets.open[seat.inMouths[k]] = source ? 1 : 0;
+			inlets.open[seat.outMouths[k]] = vent ? 1 : 0;
+		}
 		inlets.version++;
 		GAS.repin(game.sim);
 	}
 
-	// The seat's own lever, measured with the rival's mouths left exactly as they
-	// stand: charge (source open, vent sealed) against drain (the reverse).
+	function releaseSeatMouths(game, seat) {
+		for (let k = 0; k < 2; k++) I.releasePair(game.sim.inlets, seat.inMouths[k], seat.outMouths[k]);
+	}
+
 	function measureVentSpan(game, seat) {
 		const sim = game.sim;
-		// The rig is installed quietly, so the network has to catch up before a
-		// measurement means anything.
 		GAS.refresh(sim);
 		ventMouths(game, seat, true, false);
 		const charge = measureChamber(sim, seat.bottle);
@@ -1298,22 +1282,19 @@ const ValveGame = (() => {
 		return seat.spanHi - seat.spanLo;
 	}
 
-	// A band inside the measured reach: narrow bands pay more, and the center is
-	// never closer than VENT_EDGE_MARGIN to an end the seat cannot hold.
 	function fitVentBand(game, seat, measure) {
 		const rnd = game.random;
 		const span = measure ? measureVentSpan(game, seat) : seat.spanHi - seat.spanLo;
-		const reach = Math.max(0, span - 2 * VENT_EDGE_MARGIN);
-		const floor = seat.spanLo + VENT_EDGE_MARGIN;
 		let half = VENT_HALF_MIN + rnd() * (VENT_HALF_MAX - VENT_HALF_MIN);
-		if (half > reach / 2) half = Math.max(0.03, reach / 2);
-		// The first band lands anywhere the rig reaches. A held round moves it a
-		// step instead: a long transit is what upsets the other seat's pocket.
-		let center = floor + (reach > 0 ? rnd() * reach : span / 2);
+		if (half * 2 > span) half = Math.max(0.005, span * 0.4);
+		const margin = Math.min(VENT_EDGE_MARGIN, Math.max(0, (span - half * 2) / 2));
+		const centerLo = seat.spanLo + margin + half;
+		const centerHi = seat.spanHi - margin - half;
+		let center = centerLo + rnd() * Math.max(0, centerHi - centerLo);
 		if (seat.rounds > 0) {
 			const from = (seat.lo + seat.hi) / 2;
 			const stepped = from + (rnd() * 2 - 1) * VENT_BAND_STEP;
-			center = stepped < floor ? floor : stepped > floor + reach ? floor + reach : stepped;
+			center = stepped < centerLo ? centerLo : stepped > centerHi ? centerHi : stepped;
 		}
 		center = clamp01(center);
 		seat.half = half;
@@ -1328,88 +1309,282 @@ const ValveGame = (() => {
 		seat.tag = seat.lo.toFixed(2) + "–" + seat.hi.toFixed(2);
 	}
 
-	// Candidate columns already spoken for: another seat's rig, plus the gap that
-	// keeps two bottles from breathing into each other.
-	function markTakenColumns(game, slot) {
-		const vent = game.vent;
-		ventTried.fill(0);
-		for (let s = 0; s < vent.count; s++) {
-			if (s === slot) continue;
-			const other = vent.seats[s].column;
-			if (other < 0) continue;
-			for (let d = 1 - VENT_COL_GAP; d < VENT_COL_GAP; d++) {
-				const x = other + d;
-				if (x >= 0 && x < N) ventTried[x] = 1;
-			}
-		}
+	function quarterForPair(type, first, second) {
+		const need = (1 << first) | (1 << second);
+		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & need) === need) return q;
+		return -1;
 	}
 
-	// The first seat takes any free column, a later one the free column farthest
-	// from the rigs that already stand: two bottles sharing weather pull each
-	// other across their band edges.
-	function freeVentColumn(game, slot) {
-		const start = (game.mouthRandom() * N) | 0;
-		let best = -1;
-		let bestGap = -1;
-		for (let k = 0; k < N; k++) {
-			const column = (start + k) % N;
-			if (ventTried[column]) continue;
-			if (slot === 0) {
-				ventTried[column] = 1;
-				return column;
-			}
-			const gap = rigGap(game, slot, column);
-			if (gap <= bestGap) continue;
-			bestGap = gap;
-			best = column;
+	function quarterForPairAt(game, index, first, second) {
+		const type = G.typeOf(game.sim.layout.valves[index]);
+		if (!type) return -1;
+		if (game.vent.used[index]) {
+			const q = G.orientationOf(game.sim.layout.valves[index]);
+			const mask = (1 << first) | (1 << second);
+			return (rotMask(type.mask, q) & mask) === mask ? q : -1;
 		}
-		if (best >= 0) ventTried[best] = 1;
-		return best;
+		return quarterForPair(type, first, second);
 	}
 
-	function rigGap(game, slot, column) {
-		let gap = N;
+	function supportsTripleAt(game, index, a, b, c) {
+		const type = G.typeOf(game.sim.layout.valves[index]);
+		if (!type) return -1;
+		const need = (1 << a) | (1 << b) | (1 << c);
+		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & need) === need) return q;
+		return -1;
+	}
+
+	function neighbor(cell, direction) {
+		const col = cell % N + G.DX[direction];
+		const row = ((cell / N) | 0) + G.DY[direction];
+		return col < 0 || col >= N || row < 0 || row >= N ? -1 : row * N + col;
+	}
+
+	function findRoute(game, start, entry, side, blocked, rndOffset) {
+		const sim = game.sim;
+		if (start < 0 || blocked[start]) return 0;
+		const startType = G.typeOf(sim.layout.valves[start]);
+		if (!startType) return 0;
+		routePrev.fill(-2);
+		let head = 0;
+		let tail = 0;
+		const startState = start * 4 + entry;
+		routePrev[startState] = -1;
+		routeQueue[tail++] = startState;
+		let found = -1;
+		const mouthDir = side === I.BOTTOM ? 1 : 3;
+		while (head < tail) {
+			const state = routeQueue[head++];
+			const cell = state >> 2;
+			const incoming = state & 3;
+			const type = G.typeOf(sim.layout.valves[cell]);
+			const row = (cell / N) | 0;
+			if ((side === I.BOTTOM ? row === N - 1 : row === 0) && !routeMouthBlocked[side * N + cell % N] && !routeColumnBlocked[side * N + cell % N] && quarterForPairAt(game, cell, incoming, mouthDir) >= 0) {
+				found = state;
+				break;
+			}
+			for (let k = 0; k < 4; k++) {
+				const out = (k + rndOffset) & 3;
+				if (out === incoming || quarterForPairAt(game, cell, incoming, out) < 0) continue;
+				const next = neighbor(cell, out);
+				if (next < 0 || blocked[next]) continue;
+				const nextType = G.typeOf(sim.layout.valves[next]);
+				if (!nextType) continue;
+				const nextState = next * 4 + ((out + 2) & 3);
+				if (routePrev[nextState] !== -2) continue;
+				routePrev[nextState] = state;
+				routeQueue[tail++] = nextState;
+			}
+		}
+		if (found < 0) return 0;
+		let length = 0;
+		for (let state = found; state >= 0; state = routePrev[state]) routeCells[length++] = state >> 2;
+		for (let a = 0, b = length - 1; a < b; a++, b--) {
+			const t = routeCells[a];
+			routeCells[a] = routeCells[b];
+			routeCells[b] = t;
+		}
+		for (let k = 0; k < length; k++) {
+			const cell = routeCells[k];
+			const prevCell = k === 0 ? startParentCell : routeCells[k - 1];
+			const nextCell = k === length - 1 ? -1 : routeCells[k + 1];
+			const inDir = directionBetween(cell, prevCell);
+			const outDir = k === length - 1 ? mouthDir : directionBetween(cell, nextCell);
+			routeQuarters[k] = quarterForPairAt(game, cell, inDir, outDir);
+		}
+		return length;
+	}
+
+	function directionBetween(cell, other) {
+		const dx = other % N - cell % N;
+		const dy = ((other / N) | 0) - ((cell / N) | 0);
+		return dx > 0 ? 0 : dy > 0 ? 1 : dx < 0 ? 2 : 3;
+	}
+
+	let startParentCell = -1;
+	const pathA = new Int16Array(SLOTS);
+	const pathAQ = new Int8Array(SLOTS);
+	const pathB = new Int16Array(SLOTS);
+	const pathBQ = new Int8Array(SLOTS);
+
+	function appendPlanPath(path, quarters, length, parent, side, count) {
+		const mouthDir = side === I.BOTTOM ? 1 : 3;
+		for (let k = 0; k < length; k++) {
+			const cell = path[k];
+			const prev = k === 0 ? parent : path[k - 1];
+			const incoming = directionBetween(cell, prev);
+			const outgoing = k === length - 1 ? mouthDir : directionBetween(cell, path[k + 1]);
+			routePlan[count] = cell;
+			routePlanQuarters[count] = quarters[k];
+			routePlanMasks[count] = (1 << incoming) | (1 << outgoing);
+			count++;
+		}
+		return count;
+	}
+
+	function quarterForMask(type, mask) {
+		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & mask) === mask) return q;
+		return -1;
+	}
+
+	function blockOwnedMouths(game, slot) {
+		routeMouthBlocked.fill(0);
+		routeColumnBlocked.fill(0);
 		for (let s = 0; s < game.vent.count; s++) {
 			if (s === slot) continue;
-			const other = game.vent.seats[s].column;
-			if (other < 0) continue;
-			const along = Math.abs(other - column);
-			const around = along < N - along ? along : N - along;
-			if (around < gap) gap = around;
+			const other = game.vent.seats[s];
+			for (let k = 0; k < 2; k++) {
+				if (other.inMouths[k] >= 0) routeMouthBlocked[other.inMouths[k]] = 1;
+				if (other.outMouths[k] >= 0) routeMouthBlocked[other.outMouths[k]] = 1;
+			}
 		}
-		return gap;
 	}
 
-	// Build the rig and measure it: a pocket that cannot be driven from its own
-	// mouths has no band to hold, so that column is put back and another tried.
-	// The widest of the rejects is played when nothing clears the bar.
-	const ventBest = { span: -1, column: -1, row: -1 };
+	function randomFreeMouth(game, side) {
+		const start = (game.mouthRandom() * N) | 0;
+		for (let k = 0; k < N; k++) {
+			const column = (start + k) % N;
+			const mouth = side * N + column;
+			if (routeMouthBlocked[mouth] || routeColumnBlocked[side * N + column]) continue;
+			routeMouthBlocked[mouth] = 1;
+			routeColumnBlocked[side * N + column] = 1;
+			return mouth;
+		}
+		return -1;
+	}
+
+	function extendRouteToMouth(game, target, side, offset) {
+		const vent = game.vent;
+		const length = routePlanLength.value;
+		for (let k = 0; k < SLOTS; k++) routeBlocked[k] = vent.used[k];
+		for (let k = 0; k < length; k++) routeBlocked[routePlan[k]] = 1;
+		routeBlocked[target] = 1;
+		for (let step = 0; step < length; step++) {
+			const planIndex = (step + offset) % length;
+			const branch = routePlan[planIndex];
+			if (vent.used[branch]) continue;
+			const type = G.typeOf(game.sim.layout.valves[branch]);
+			if (!type || type.ports.length < 3) continue;
+			const preserve = routePlanMasks[planIndex];
+			for (let d = 0; d < 4; d++) {
+				const branchMask = preserve | (1 << d);
+				const quarter = quarterForMask(type, branchMask);
+				if (quarter < 0) continue;
+				const start = neighbor(branch, d);
+				if (start < 0 || routeBlocked[start]) continue;
+				startParentCell = branch;
+				for (let routeOrder = 0; routeOrder < 4; routeOrder++) {
+					const pathLength = findRoute(game, start, (d + 2) & 3, side, routeBlocked, offset + d + routeOrder);
+					if (!pathLength) continue;
+					const end = routeCells[pathLength - 1];
+					const mouth = side * N + end % N;
+					if (routeMouthBlocked[mouth] || routeColumnBlocked[side * N + end % N]) continue;
+					routePlanQuarters[planIndex] = quarter;
+					routePlanMasks[planIndex] = branchMask;
+					routePlanLength.value = appendPlanPath(routeCells, routeQuarters, pathLength, branch, side, length);
+					routeMouthBlocked[mouth] = 1;
+					routeColumnBlocked[side * N + end % N] = 1;
+					return mouth;
+				}
+			}
+		}
+		return -1;
+	}
+
+	function planSeatRoute(game, slot) {
+		const sim = game.sim;
+		const start = (game.mouthRandom() * SLOTS) | 0;
+		const offset = (game.mouthRandom() * 4) | 0;
+		blockOwnedMouths(game, slot);
+		for (let ti = 0; ti < SLOTS; ti++) {
+			const raw = (start + ti) % SLOTS;
+			const targetCol = raw % N;
+			const targetRow = (raw / N) | 0;
+			if (targetCol < 1 || targetCol > N - 2 || targetRow < 1 || targetRow > N - 2) continue;
+			if (game.vent.used[raw] || sim.goalOwner[raw] >= 0) continue;
+			for (let oq = 0; oq < 4; oq++) {
+				const targetQuarter = (oq + offset) & 3;
+				const branch = neighbor(raw, targetQuarter);
+				if (branch < 0 || game.vent.used[branch] || sim.goalOwner[branch] >= 0) continue;
+				const branchType = G.typeOf(sim.layout.valves[branch]);
+				if (!branchType || branchType.ports.length < 3) continue;
+				const targetSide = (targetQuarter + 2) & 3;
+				for (let a = 0; a < 4; a++) {
+					const sourceDir = (a + offset) & 3;
+					if (sourceDir === targetSide) continue;
+					for (let b = 0; b < 4; b++) {
+						const ventDir = (b + offset) & 3;
+						if (ventDir === targetSide || ventDir === sourceDir) continue;
+						const branchQuarter = supportsTripleAt(game, branch, targetSide, sourceDir, ventDir);
+						if (branchQuarter < 0) continue;
+						const sourceStart = neighbor(branch, sourceDir);
+						const ventStart = neighbor(branch, ventDir);
+						if (sourceStart < 0 || ventStart < 0) continue;
+						blockOwnedMouths(game, slot);
+						routeBlocked.fill(0);
+						for (let k = 0; k < SLOTS; k++) if (sim.goalOwner[k] >= 0) routeBlocked[k] = 1;
+						routeBlocked[raw] = 1;
+						routeBlocked[branch] = 1;
+						startParentCell = branch;
+						const routeOrder = (offset + targetQuarter + a + b) & 3;
+						const lenA = findRoute(game, sourceStart, (sourceDir + 2) & 3, I.BOTTOM, routeBlocked, routeOrder);
+						if (!lenA) continue;
+						for (let k = 0; k < lenA; k++) {
+							pathA[k] = routeCells[k];
+							pathAQ[k] = routeQuarters[k];
+							routeBlocked[pathA[k]] = 1;
+						}
+						const sourceEnd = pathA[lenA - 1];
+						const sourceMouth = I.BOTTOM * N + sourceEnd % N;
+						if (routeMouthBlocked[sourceMouth] || routeColumnBlocked[I.BOTTOM * N + sourceEnd % N]) continue;
+						routeMouthBlocked[sourceMouth] = 1;
+						routeColumnBlocked[I.BOTTOM * N + sourceEnd % N] = 1;
+						const lenB = findRoute(game, ventStart, (ventDir + 2) & 3, I.TOP, routeBlocked, routeOrder + 1);
+						if (!lenB) continue;
+						for (let k = 0; k < lenB; k++) {
+							pathB[k] = routeCells[k];
+							pathBQ[k] = routeQuarters[k];
+						}
+						let count = 0;
+						routePlan[count] = branch;
+						routePlanQuarters[count] = branchQuarter;
+						routePlanMasks[count++] = (1 << targetSide) | (1 << sourceDir) | (1 << ventDir);
+						count = appendPlanPath(pathA, pathAQ, lenA, branch, I.BOTTOM, count);
+						count = appendPlanPath(pathB, pathBQ, lenB, branch, I.TOP, count);
+						routePlanLength.value = count;
+						const ventEnd = pathB[lenB - 1];
+						const ventMouth = I.TOP * N + ventEnd % N;
+						if (routeMouthBlocked[ventMouth] || routeColumnBlocked[I.TOP * N + ventEnd % N]) continue;
+						routeMouthBlocked[ventMouth] = 1;
+						routeColumnBlocked[I.TOP * N + ventEnd % N] = 1;
+						let secondSource = slot + 1 < game.vent.count ? -1 : extendRouteToMouth(game, raw, I.BOTTOM, offset);
+						if (secondSource < 0) secondSource = randomFreeMouth(game, I.BOTTOM);
+						if (secondSource < 0) continue;
+						let secondVent = slot + 1 < game.vent.count ? -1 : extendRouteToMouth(game, raw, I.TOP, offset + 1);
+						if (secondVent < 0) secondVent = randomFreeMouth(game, I.TOP);
+						if (secondVent < 0) continue;
+						return { target: raw, targetQuarter, inMouths: [sourceMouth, secondSource], outMouths: [ventMouth, secondVent] };
+					}
+			}
+			}
+		}
+		return null;
+	}
 
 	function buildVentSeat(game, slot) {
 		const seat = game.vent.seats[slot];
-		const best = ventBest;
-		markTakenColumns(game, slot);
-		best.span = -1;
-		best.column = -1;
-		best.row = -1;
-		for (let attempt = 0; attempt < VENT_TRIES; attempt++) {
-			const column = freeVentColumn(game, slot);
-			if (column < 0) break;
-			const row = VENT_ROW_MIN + ((game.mouthRandom() * (VENT_ROW_MAX - VENT_ROW_MIN + 1)) | 0);
-			buildShaft(game, slot, column, row);
-			const span = measureVentSpan(game, seat);
-			if (span >= VENT_MIN_SPAN) return true;
-			if (span > best.span) {
-				best.span = span;
-				best.column = column;
-				best.row = row;
-			}
-			restoreColumn(game, slot);
-			clearSeat(seat);
+		const plan = planSeatRoute(game, slot);
+		if (!plan) return false;
+		saveRoute(game, slot, plan.target, plan.targetQuarter);
+		seat.inMouths.set(plan.inMouths);
+		seat.outMouths.set(plan.outMouths);
+		for (let k = 0; k < 2; k++) I.claimPair(game.sim.inlets, seat.inMouths[k], seat.outMouths[k], slot);
+		S.setInletOwnership(game.sim);
+		if (measureVentSpan(game, seat) <= 0.02) return false;
+		for (let s = 0; s < slot; s++) {
+			const other = game.vent.seats[s];
+			if (other.bottle >= 0 && measureVentSpan(game, other) <= 0.02) return false;
 		}
-		if (best.column < 0) return false;
-		buildShaft(game, slot, best.column, best.row);
-		measureVentSpan(game, seat);
 		return true;
 	}
 
@@ -1417,27 +1592,43 @@ const ValveGame = (() => {
 		const sim = game.sim;
 		const vent = game.vent;
 		if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
-		GAS.refresh(sim, true);
-		// Grains would pack the shaft and throttle the very pipe being regulated.
 		S.drain(sim);
 		I.clearAll(sim.inlets);
+		vent.used.fill(0);
+		vent.savedCount.fill(0);
 		vent.count = Math.min(game.players.length, VENT_MAX);
 		let built = 0;
-		for (let s = 0; s < vent.count; s++) {
-			const seat = vent.seats[s];
-			clearSeat(seat);
-			seat.player = s;
-			if (!buildVentSeat(game, s)) continue;
-			built++;
+		const attempts = 32;
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			if (attempt > 0) {
+				game.mouthRandom = G.rng((sim.layout.seed | 0) ^ 0x2f9c1b7 ^ Math.imul(attempt, 0x9e3779b9));
+				for (let s = vent.count - 1; s >= 0; s--) {
+					const seat = vent.seats[s];
+					releaseSeatMouths(game, seat);
+					restoreSeatRoute(game, s);
+					clearSeat(seat);
+				}
+				I.clearAll(sim.inlets);
+			}
+			vent.used.fill(0);
+			built = 0;
+			for (let s = 0; s < vent.count; s++) {
+				clearSeat(vent.seats[s]);
+				vent.seats[s].player = s;
+				if (!buildVentSeat(game, s)) {
+					releaseSeatMouths(game, vent.seats[s]);
+					restoreSeatRoute(game, s);
+					clearSeat(vent.seats[s]);
+					break;
+				}
+				built++;
+			}
+			if (built === vent.count) break;
 		}
-		// Bands are fitted once every rig stands, so a seat measures the field its
-		// rival has just built rather than the one before it.
 		for (let s = 0; s < vent.count; s++) {
 			if (vent.seats[s].bottle < 0) continue;
 			fitVentBand(game, vent.seats[s], true);
 		}
-		// Snap the live field to the finished rig so play starts from what the
-		// bands were measured on.
 		GAS.refresh(sim, true);
 		return built;
 	}
@@ -1445,20 +1636,20 @@ const ValveGame = (() => {
 	function teardownVent(game) {
 		const vent = game.vent;
 		for (let s = vent.count - 1; s >= 0; s--) {
-			restoreColumn(game, s);
+			releaseSeatMouths(game, vent.seats[s]);
+			restoreSeatRoute(game, s);
 			clearSeat(vent.seats[s]);
 		}
 		vent.count = 0;
 		S.rebuildPressure(game.sim);
 	}
 
-	// The layout the rig was saved from is gone; forget the columns instead of
-	// writing them onto a field that never lent them.
 	function forgetVent(game) {
 		const vent = game.vent;
 		for (let s = 0; s < VENT_MAX; s++) clearSeat(vent.seats[s]);
-		vent.saved.fill(0);
-		vent.columns.fill(-1);
+		vent.used.fill(0);
+		vent.savedCount.fill(0);
+		vent.savedCell.fill(-1);
 		vent.count = 0;
 	}
 
@@ -1494,8 +1685,10 @@ const ValveGame = (() => {
 		const inlets = sim.inlets;
 		const wantIn = seat.drive > 0 ? 1 : 0;
 		const wantOut = seat.drive < 0 ? 1 : 0;
-		if (inlets.open[seat.inMouth] !== wantIn) S.toggleInlet(sim, seat.inMouth, false, seat.player);
-		if (inlets.open[seat.outMouth] !== wantOut) S.toggleInlet(sim, seat.outMouth, false, seat.player);
+		for (let k = 0; k < 2; k++) {
+			if (inlets.open[seat.inMouths[k]] !== wantIn) S.toggleInlet(sim, seat.inMouths[k], false, seat.player);
+			if (inlets.open[seat.outMouths[k]] !== wantOut) S.toggleInlet(sim, seat.outMouths[k], false, seat.player);
+		}
 	}
 
 	// The field tag is the band, which only changes per round; the gauge needle
@@ -1919,7 +2112,6 @@ const ValveGame = (() => {
 		VENT_AUTO,
 		VENT_MAX,
 		VENT_HOLD,
-		VENT_MIN_SPAN,
 		VENT_ALARM,
 		MAX_SEATS,
 		BOARD_SIZE,

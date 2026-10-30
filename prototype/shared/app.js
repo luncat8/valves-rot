@@ -180,7 +180,7 @@
 
 	function turnSelected(quarters) {
 		if (!canPlayerTurn(selected)) {
-			if (game.mode === "vent") Game.notice(game, "Vent mode is played at the mouths — every valve is locked.");
+			if (game.mode === "vent") Game.notice(game, "Vent mode is mouth-only control; valves still rotate on their automatic schedule.");
 			return;
 		}
 		S.turn(sim, selected, quarters);
@@ -260,7 +260,7 @@
 	function rosterTask(player) {
 		if (game.mode === "vent") {
 			const seat = game.vent.seats[player.id];
-			return seat && seat.bottle >= 0 ? "band " + seat.tag : "no rig";
+			return seat && seat.bottle >= 0 ? "band " + seat.tag : "no route";
 		}
 		if (player.questId < 0) return "idle";
 		for (let q = 0; q < game.quests.length; q++) {
@@ -302,17 +302,22 @@
 			const seat = game.vent.seats[s];
 			const pl = game.players[seat.player];
 			if (seat.bottle < 0) {
-				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span class="vent-band">no rig fits this seed</span></div>';
+				html += '<div class="vent-row out"><strong>' + pl.name + '</strong><span>no route fits this seed</span></div>';
 				continue;
 			}
+			const targetLeft = Math.max(0, Math.min(100, seat.lo * 100));
+			const targetWidth = Math.max(0, Math.min(100 - targetLeft, (seat.hi - seat.lo) * 100));
+			const current = Math.max(0, Math.min(100, seat.pressure * 100));
 			html +=
-				'<div class="vent-row' + (seat.ok ? " in" : " out") + '" data-seat="' + s + '" title="Select the bottle on the field">' +
-				'<span class="player-swatch" style="background:' + pl.hex + '"></span>' +
-				"<strong>" + pl.name + "</strong>" +
-				'<span class="vent-band">' + seat.tag + " · " + seat.points + " pts</span>" +
-				'<span class="vent-press">' + seat.pressure.toFixed(2) + "</span>" +
-				'<span class="vent-gauge"><i style="width:' + Math.round(seat.holdRatio * 100) + '%"></i></span>' +
-				'<span class="vent-rounds">' + seat.rounds + " held</span>" +
+				'<div class="vent-row' + (seat.ok ? " in" : " out") + '" data-seat="' + s + '" title="Select the collector on the field" style="--seat-accent:' + pl.accent + '">' +
+				'<div class="vent-readout-head"><strong>' + pl.name + '</strong><span>' + seat.points + ' pts · ' + seat.rounds + ' held</span></div>' +
+				'<div class="vent-readout-values"><span><small>LIVE PRESSURE</small><strong class="vent-current">' + seat.pressure.toFixed(2) + '</strong></span>' +
+				'<span><small>REQUESTED RANGE</small><strong>' + seat.lo.toFixed(2) + '–' + seat.hi.toFixed(2) + '</strong></span></div>' +
+				'<div class="vent-scale" role="img" aria-label="Pressure ' + seat.pressure.toFixed(2) + ', target ' + seat.lo.toFixed(2) + ' to ' + seat.hi.toFixed(2) + '">' +
+				'<i class="vent-target-range" style="left:' + targetLeft.toFixed(2) + '%;width:' + targetWidth.toFixed(2) + '%"></i>' +
+				'<i class="vent-current-marker' + (seat.ok ? "" : " outside") + '" style="left:' + current.toFixed(2) + '%"></i></div>' +
+				'<div class="vent-scale-labels"><span>0</span><span>1</span></div>' +
+				'<div class="vent-hold-row"><span>4 s hold</span><span class="vent-hold"><i style="width:' + Math.round(seat.holdRatio * 100) + '%"></i></span></div>' +
 				"</div>";
 		}
 		$("vent-list").innerHTML = html;
@@ -350,7 +355,7 @@
 		$("quest-list").innerHTML = qHtml;
 	}
 
-	// A seat that came, went, or changed hands moves mouths and rigs, so the scene
+	// A seat that came, went, or changed hands moves mouths and routes, so the scene
 	// and the air overlay are rebuilt around the new seat list.
 	function afterRosterChange() {
 		Game.consumeDirty(game, scene);
@@ -968,7 +973,7 @@
 		const owner = sim.inlets.owner[inlet];
 		const player = owner >= 0 ? game.players[owner] : null;
 		if (!player) {
-			Game.notice(game, game.mode === "vent" ? "Only the rigs' own mouths are in the bands here." : "No mouth was dealt in that slot.");
+			Game.notice(game, game.mode === "vent" ? "Only your source and vent mouths are in the bands here." : "No mouth was dealt in that slot.");
 		} else if (player.bot) {
 			Game.notice(game, player.name + " is bot controlled — untick its bot box to play that seat.");
 		} else {

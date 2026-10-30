@@ -448,8 +448,7 @@ assert.equal(element("auto-rotate").value, "90", "Returning to Lab mode restores
 assert.equal(element("game-panel").hidden, true);
 
 
-// Vent mode: the routes come prebuilt, every valve is locked, and each seat has
-// its own bot box, so a seat can be handed over, added or removed mid-match.
+// Vent mode uses the random field, prebuilt routes and mouth-only player control.
 element("mode-lab").checked = false;
 element("mode-vent").checked = true;
 element("mode-vent").onchange();
@@ -461,67 +460,73 @@ assert.equal(element("vent-heading").hidden, false);
 assert.equal(element("quest-list").hidden, true, "quests belong to Game mode");
 assert.equal(element("vent-hint").hidden, false);
 assert.equal(element("mouth-hint").hidden, true);
-assert.equal(element("pour").disabled, true, "grains would pack the pipe being regulated");
+assert.equal(element("pour").disabled, true, "grains are drained in pressure mode");
 assert.equal(element("drain").disabled, true);
 assert.equal(element("pressure-off").disabled, true, "a vent seat reads the grid gas");
 const ventRows = element("vent-list").innerHTML;
-assert.equal(ventRows.split("vent-row").length - 1, 2, "two seats borrow two columns");
-assert.ok(ventRows.includes('data-seat="0"') && ventRows.includes('data-seat="1"'), "each vent row locates its bottle");
+assert.equal(ventRows.split("vent-row").length - 1, 2, "two seats receive prebuilt routes");
+assert.ok(ventRows.includes('data-seat="0"') && ventRows.includes('data-seat="1"'), "each vent row locates its collector");
+assert.ok(ventRows.includes("LIVE PRESSURE") && ventRows.includes("REQUESTED RANGE"), "the large readout labels actual and target pressure");
+assert.ok(ventRows.includes("vent-target-range") && ventRows.includes("vent-current-marker"), "a readable scale shows the target band and live pressure line");
 const ventRoster = element("player-list").innerHTML;
 assert.ok(ventRoster.includes('data-bot="0"') && ventRoster.includes('data-bot="1"'), "every seat has its own bot box");
 assert.ok(ventRoster.includes('data-remove="0" disabled'), "your own seat cannot be removed");
 assert.equal(element("add-seat").disabled, true, "vent mode caps the seat list at two");
 
-function seatColumn(seat) {
+function seatCell(seat) {
 	element("vent-list").onclick({ target: { closest: sel => (sel === "[data-seat]" ? { dataset: { seat: String(seat) } } : null) } });
 	frames.shift()((now += 16.7));
-	const cell = element("selected-valve").textContent.match(/cell \((\d+),(\d+)\)/);
-	assert.ok(cell, "the bottle cell is named in the valve readout");
+	const cell = element("selected-valve").textContent.match(/cell \(?(\d+),(\d+)\)?/);
+	assert.ok(cell, "the collector cell is named in the valve readout");
 	return { column: Number(cell[1]) - 1, row: Number(cell[2]) - 1 };
 }
-const mine = seatColumn(0);
-const rival = seatColumn(1);
-assert.ok(Math.abs(mine.column - rival.column) >= 2, "two bottles do not share one weather");
+const mine = seatCell(0);
+const rival = seatCell(1);
+assert.notDeepEqual(mine, rival, "each seat has a distinct collector");
 
-// The rig is locked: a click on the bottle itself turns nothing and says why.
-const lockedText = element("selected-valve").textContent;
+// Clicking a collector cannot turn it: automatic valve rotation is the only
+// rotation in this mode.
+const collectorText = element("selected-valve").textContent;
 c.onclick({ clientX: (rival.column + 0.5) * G.S, clientY: G.POUR + (rival.row + 0.5) * G.S, shiftKey: false, detail: 1 });
 frames.shift()((now += 16.7));
-assert.equal(element("selected-valve").textContent, lockedText, "a vent-mode valve does not turn");
-assert.ok(element("game-status").textContent.includes("locked"), "the status line says the valves are locked");
+assert.equal(element("selected-valve").textContent, collectorText, "a vent-mode valve does not turn from a click");
+assert.ok(element("game-status").textContent.includes("mouth-only control"), "the status line explains valve input is unavailable");
 
-// Only the rigs' mouths are in the bands; a bot's mouths refuse the mouse until
-// that seat is handed to a person.
-clickMouth(1, (mine.column + 1) % G.N);
-assert.ok(element("game-status").textContent.includes("Only the rigs' own mouths"), "an unborrowed column has no mouth to press");
-const refused = element("game-status").textContent;
-clickMouth(1, mine.column);
-assert.equal(element("game-status").textContent, refused, "your own rig mouth is not refused");
-clickMouth(0, rival.column);
-assert.ok(element("game-status").textContent.includes("bot controlled"), "a bot seat keeps its own mouths");
+function findMouth(predicate) {
+	for (let side = 0; side < 2; side++) {
+		for (let column = 0; column < G.N; column++) {
+			clickMouth(side, column);
+			if (predicate(element("game-status").textContent, side, column)) return { side, column };
+		}
+	}
+	return null;
+}
+const botMouth = findMouth(text => text.includes("bot controlled"));
+assert.ok(botMouth, "a bot-controlled seat's own mouth refuses a human click");
+// Hand the bot's seat to a person and press that same mouth again.
 element("player-list").onchange({ target: { closest: sel => (sel === "[data-bot]" ? { dataset: { bot: "1" }, checked: false } : null) } });
 assert.ok(element("game-status").textContent.includes("user controlled"), "a seat can be handed to a person mid-match");
 assert.ok(!element("player-list").innerHTML.includes('data-bot="1" checked'), "the handed-over seat shows an unticked bot box");
 const handed = element("game-status").textContent;
-clickMouth(0, rival.column);
-assert.equal(element("game-status").textContent, handed, "and its mouths answer that person");
+clickMouth(botMouth.side, botMouth.column);
+assert.equal(element("game-status").textContent, handed, "the handed-over mouth answers that person");
 
-// Seats come and go: the borrowed columns are given back and built again.
+// Seats come and go; their paths are rebuilt from the unchanged random field.
 element("player-list").onclick({ target: { closest: sel => (sel === "[data-remove]" ? { dataset: { remove: "1" } } : null) } });
-assert.ok(element("game-status").textContent.includes("left"), "removing a seat re-deals the bands");
-assert.equal(element("vent-list").innerHTML.split("vent-row").length - 1, 1, "one seat borrows one column");
-assert.equal(element("add-seat").disabled, false, "a free seat can be added back");
+assert.ok(element("game-status").textContent.includes("left"), "removing a seat rebuilds the remaining route");
+assert.equal(element("vent-list").innerHTML.split("vent-row").length - 1, 1);
+assert.equal(element("add-seat").disabled, false);
 element("add-seat").onclick();
-assert.ok(element("game-status").textContent.includes("joined"), "adding a seat builds it a rig");
+assert.ok(element("game-status").textContent.includes("joined"), "adding a seat builds its route");
 element("add-seat").onclick();
 assert.ok(element("game-status").textContent.includes("1 or 2 seats"), "vent mode refuses a third seat");
 assert.equal(element("add-seat").disabled, true);
 
-// The band is tagged on the bottle cell, and the gauge beside it is the live
+// The side widget carries the target text; the gauge beside the bottle is the live
 // pocket pressure, so the field carries what the panel says.
 mainTexts.length = 0;
 frames.shift()((now += 16.7));
-assert.ok(mainTexts.some(text => /^\d\.\d\d.\d\.\d\d$/.test(text)), "the band is tagged on the bottle cell, got: " + mainTexts.join("|"));
+assert.ok(!mainTexts.some(text => /^\d\.\d\d.\d\.\d\d$/.test(text)), "no tiny target label is drawn on the bottle");
 
 // Leaving gives the lab its own field back: no tint, no lock, lab mouths.
 element("mode-vent").checked = false;
@@ -529,7 +534,7 @@ element("mode-lab").checked = true;
 element("mode-lab").onchange();
 frames.shift()((now += 16.7));
 assert.equal(element("auto-rotate").value, "90", "leaving Vent mode restores the lab field");
-assert.ok(!element("selected-valve").textContent.includes(" case"), "a borrowed column gives its case tint back");
+assert.ok(!element("selected-valve").textContent.includes(" case"), "a collector gives its case tint back");
 assert.equal(element("pour").disabled, false);
 assert.equal(element("drain").disabled, false);
 assert.equal(element("pressure-off").disabled, false);
