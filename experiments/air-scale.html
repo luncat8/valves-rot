@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Air scale · vertical vent test</title>
+	<style>
+		:root { color-scheme: dark; font: 15px system-ui, sans-serif; background: #10151c; color: #e7edf5; }
+		body { max-width: 940px; margin: 24px auto; padding: 0 16px; }
+		h1 { margin-bottom: 4px; font-size: 1.35rem; }
+		p { max-width: 70ch; color: #b6c2d0; }
+		.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin: 16px 0; }
+		label { display: flex; align-items: center; gap: 8px; }
+		input[type="range"] { width: 220px; }
+		output { min-width: 3em; color: #8bd8f5; font-variant-numeric: tabular-nums; }
+		button { border: 1px solid #64788c; border-radius: 5px; padding: 6px 12px; color: inherit; background: #243140; cursor: pointer; }
+		canvas { display: block; width: min(100%, 720px); height: auto; border: 1px solid #384656; background: #161d26; }
+		#stats { white-space: pre-wrap; font: 13px ui-monospace, monospace; color: #b6c2d0; }
+		.legend { display: flex; flex-wrap: wrap; gap: 20px; margin: 12px 0; }
+		.legend span { display: inline-flex; align-items: center; gap: 7px; }
+		.dot { width: 13px; height: 13px; display: inline-block; border-radius: 50%; }
+		.small { background: #f07a5f; } .standard { background: #e9b64b; } .heavy { background: #4fb8ab; }
+	</style>
+</head>
+<body>
+	<h1>Air scale: three vented cell pipes</h1>
+	<p>Each lane has a bottom <strong>vent-in</strong>, a vertical cell-valve pipe, a top <strong>vent-out</strong>, and one grain. At 1× the standard grain should balance gravity; at 2× the light grain should rise fastest. The radii below are also their relative mass model.</p>
+	<div class="controls">
+		<label>Air force <input id="force" type="range" min="0" max="2" step="0.05" value="1"><output id="force-value">1×</output></label>
+		<button id="restart" type="button">Reset grains</button>
+	</div>
+	<div class="legend">
+		<span><i class="dot small"></i>Light · r 1.7</span>
+		<span><i class="dot standard"></i>Standard · r 2.7</span>
+		<span><i class="dot heavy"></i>Heavy · r 3.4</span>
+	</div>
+	<canvas id="field" aria-label="Three vertical air pipes with source vents below, exhaust vents above, and grains of different weights"></canvas>
+	<p id="stats" aria-live="polite"></p>
+	<script src="../prototype/shared/geometry.js"></script>
+	<script src="../prototype/shared/inlets.js"></script>
+	<script src="../prototype/shared/air.js"></script>
+	<script src="../prototype/shared/gas.js"></script>
+	<script src="../prototype/shared/simulation.js"></script>
+	<script src="../prototype/shared/render.js"></script>
+	<script>
+		(() => {
+			const G = ValveGeometry;
+			const S = ValveSimulation;
+			const R = ValveRender;
+			const columns = [3, 4, 5];
+			const radii = [1.7, 2.7, 3.4];
+			const colors = ["#f07a5f", "#e9b64b", "#4fb8ab"];
+			const canvas = document.getElementById("field");
+			const ctx = canvas.getContext("2d");
+			const slider = document.getElementById("force");
+			const output = document.getElementById("force-value");
+			const stats = document.getElementById("stats");
+			const dpr = Math.min(window.devicePixelRatio || 1, 2);
+			canvas.width = G.SIZE * dpr;
+			canvas.height = (G.SIZE + 2 * G.POUR) * dpr;
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+			const valves = [];
+			for (let j = 0; j < G.N; j++) {
+				for (let i = 0; i < G.N; i++) {
+					const open = columns.indexOf(i) >= 0;
+					valves.push(G.makeValve(i, j, "solid", open ? [1, 3] : [], 0, 0));
+				}
+			}
+			const layout = { seed: 73, valves };
+			const scene = R.buildScene(layout, "#ffffff", dpr, "combined", null);
+			const fieldMap = R.makeFieldMap(Math.ceil(G.SIZE / 6), Math.ceil((G.SIZE + 2 * G.POUR) / 6));
+			let sim;
+			let previous = performance.now();
+			let statsClock = 0;
+
+			function setMouths(s) {
+				s.inlets.present.fill(0);
+				s.inlets.open.fill(0);
+				for (let n = 0; n < columns.length; n++) {
+					const c = columns[n];
+					s.inlets.present[c] = 1;
+					s.inlets.present[G.N + c] = 1;
+					s.inlets.open[c] = 1;
+					s.inlets.open[G.N + c] = 1;
+				}
+				s.inlets.version++;
+			}
+
+			function reset() {
+				sim = S.create(layout, { turning: false, lubricant: 1 });
+				setMouths(sim);
+				S.setPressure(sim, "grid");
+				S.setAirForce(sim, Number(slider.value));
+				for (let n = 0; n < columns.length; n++) {
+					S.addGrain(sim, (columns[n] + 0.5) * G.S, 540, radii[n], n);
+				}
+				previous = performance.now();
+			}
+
+			function draw() {
+				ctx.save();
+				ctx.translate(0, G.POUR);
+				R.renderScene(ctx, layout, scene);
+				R.renderField(fieldMap, sim.pressure);
+				ctx.save();
+				ctx.globalAlpha = 0.45;
+				ctx.imageSmoothingEnabled = true;
+				ctx.drawImage(fieldMap.canvas, 0, -G.POUR, G.SIZE, G.SIZE + 2 * G.POUR);
+				ctx.restore();
+				R.renderInlets(ctx, sim.inlets, -1);
+				R.renderGrains(ctx, sim, scene);
+				ctx.restore();
+				statsClock += 1;
+				if (statsClock % 8 !== 0) return;
+				const lines = ["air scale " + slider.value + "×  ·  active grains " + sim.count];
+				for (let n = 0; n < radii.length; n++) {
+					const k = n;
+					lines.push("r=" + radii[n].toFixed(1) + "  y=" + (sim.count > k ? sim.y[k].toFixed(1) : "vented") + "  vy=" + (sim.count > k ? sim.vy[k].toFixed(1) : "—") + " px/s");
+				}
+				stats.textContent = lines.join("\n");
+			}
+
+			function frame(now) {
+				const dt = Math.min((now - previous) / 1000, 0.1);
+				previous = now;
+				S.advance(sim, dt);
+				draw();
+				requestAnimationFrame(frame);
+			}
+
+			slider.oninput = () => {
+				output.value = slider.value + "×";
+				S.setAirForce(sim, Number(slider.value));
+			};
+			document.getElementById("restart").onclick = reset;
+			reset();
+			requestAnimationFrame(frame);
+		})();
+	</script>
+</body>
+</html>

@@ -32,27 +32,24 @@ const ValveSimulation = (() => {
 	const GRAVITY = 560;
 	const RESTITUTION = 0.1;
 	const REST_SPEED = 30;
-	// Round grains have almost no tangential grip: pair friction near zero lets
-	// stacks and pyramids push themselves apart and piles spread like the
-	// prototypes, while a small wall friction keeps rolling visibly damped.
-	const FRICTION = 0.02;
+	// Keep granular friction moderate; the lubricant slider scales the contact
+	// caps without changing the normal impulse or injecting velocity.
+	const FRICTION = 0.12;
 	const DAMPING = 0.05;
-	const WALL_FRICTION = 0.04;
+	const WALL_FRICTION = 0.1;
 	const MAX_SPEED = 300;
 	const ITERATIONS = 3;
 	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
 	// so a pile cannot creep into itself one substep at a time.
 	const TOUCH = 1e-3;
-	// Lubrication. Positional contacts alone cannot carry the weight of a bed, so
-	// an arch spanning a full passage never yields and a packed pipe stops instead
-	// of flowing. Resting grains get a rare deterministic knock sideways instead:
-	// the granular temperature a shaker would add, so a saturated passage creeps,
-	// a bend lets its grains through, and air or a lower outlet can move the bed.
+	// A narrow contact band lets touching pairs exchange impulses without
+	// injecting energy. Lubricant lowers tangential resistance; it never adds
+	// random velocity.
 	const CONTACT_MARGIN = 0.4;
-	const LUBE_RATE = 60;
-	const LUBE_SPEED = 60;
-	const LUBE_KICK = 160;
-	const LUBE_DROP = 0.3;
+	const STRESS_RATE = 60;
+	const STRESS_SPEED = 60;
+	const STRESS_KICK = 160;
+	const STRESS_DROP = 0.3;
 	const TURN_DWELL_MIN = 0.35;
 	const STALL_LIMIT = 0.4;
 	// How far a closing rim may shove a grain to clear its mouth before the valve
@@ -80,6 +77,7 @@ const ValveSimulation = (() => {
 	const sweepOut = { x: 0, y: 0, hit: false };
 	const nearest = { x: 0, y: 0, dist: 0, found: false };
 	const nrm = { x: 0, y: 0 };
+	const wallVel = { x: 0, y: 0 };
 	const target = { x: 0, y: 0 };
 	// Contact normal of the deepest pair overlap found by penetrationAt.
 	const penNrm = { x: 0, y: -1 };
@@ -159,6 +157,7 @@ const ValveSimulation = (() => {
 			inlets: INL.create(),
 			turning: o.turning !== false,
 			lubricant: o.lubricant === undefined ? 1 : clamp(o.lubricant, 0, 2),
+			lubricantStress: o.lubricantStress === undefined ? 0 : clamp(o.lubricantStress, 0, 0.5),
 			autoRotate: o.autoRotate === undefined ? 1 : clamp(o.autoRotate, 0, 1),
 			speed: o.speed === undefined ? 1 : o.speed,
 			capacity,
@@ -171,8 +170,6 @@ const ValveSimulation = (() => {
 			vy: new Float64Array(capacity),
 			r: new Float64Array(capacity),
 			color: new Uint8Array(capacity),
-			// 1 when the grain touched another grain in the previous step: only a
-			// bed that can arch needs lubricating, a lone grain does not.
 			contact: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
 			reach,
@@ -428,7 +425,7 @@ const ValveSimulation = (() => {
 		return true;
 	}
 
-	function wallContact(sim, k, nx, ny, wvx, wvy, h) {
+	function wallContact(sim, k, nx, ny, wvx, wvy) {
 		let vx = sim.vx[k];
 		let vy = sim.vy[k];
 		const un = (vx - wvx) * nx + (vy - wvy) * ny;
@@ -442,9 +439,63 @@ const ValveSimulation = (() => {
 		const tx = -ny;
 		const ty = nx;
 		const ut = (vx - wvx) * tx + (vy - wvy) * ty;
-		const jt = clamp(ut, -WALL_FRICTION * press, WALL_FRICTION * press);
+		const friction = WALL_FRICTION / (1 + sim.lubricant * 2);
+		const jt = clamp(ut, -friction * press, friction * press);
 		sim.vx[k] = vx - jt * tx;
 		sim.vy[k] = vy - jt * ty;
+	}
+
+	function wallVelocity(sim, k, x, y, nx, ny) {
+		const vi = G.cellAt(x, y);
+		const om = sim.omega[vi];
+		if (om === 0) return false;
+		const v = sim.layout.valves[vi];
+		const rx = x - v.cx;
+		const ry = y - v.cy;
+		const rHit = Math.sqrt(rx * rx + ry * ry);
+		if (rHit >= RV && !(rHit < RV + sim.r[k] + 0.8 && nx * rx + ny * ry > 0.7 * rHit)) return false;
+		wallVel.x = -om * ry;
+		wallVel.y = om * rx;
+		return true;
+	}
+
+	function contactWall(sim, k, x, y) {
+		wallVel.x = 0;
+		wallVel.y = 0;
+		if (wallVelocity(sim, k, x, y, nrm.x, nrm.y)) {
+			wallContact(sim, k, nrm.x, nrm.y, wallVel.x, wallVel.y);
+		} else {
+			wallContact(sim, k, nrm.x, nrm.y, 0, 0);
+		}
+	}
+
+	// A single straight tangent chord on a curved wall is outside the passage.
+	// Following the wall in short, clearance-corrected chords avoids that dead
+	// stop while preserving the normal collision impulse.
+	function slideRemainder(sim, k, remaining) {
+		for (let n = 0; n < 24 && remaining > 1e-8; n++) {
+			const vx = sim.vx[k];
+			const vy = sim.vy[k];
+			const speed = Math.sqrt(vx * vx + vy * vy);
+			if (speed < 1e-6) return;
+			const sub = Math.min(remaining, 0.25 / speed);
+			const x0 = sim.x[k];
+			const y0 = sim.y[k];
+			let tx = x0 + vx * sub;
+			let ty = y0 + vy * sub;
+			let clear = G.airClearance(sim.layout, tx, ty);
+			if (clear < sim.r[k] + 0.002 && normalAt(sim.layout, tx, ty)) {
+				const correction = Math.min(sim.r[k] + 0.002 - clear, 0.25);
+				tx += nrm.x * correction;
+				ty += nrm.y * correction;
+			}
+			G.sweep(sim.layout, x0, y0, tx, ty, sim.r[k], sweepOut);
+			if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) > penetrationAt(sim, k, x0, y0) + TOUCH) return;
+			sim.x[k] = sweepOut.x;
+			sim.y[k] = sweepOut.y;
+			if (sweepOut.hit && normalAt(sim.layout, sim.x[k], sim.y[k])) contactWall(sim, k, sim.x[k], sim.y[k]);
+			remaining -= sub;
+		}
 	}
 
 	function penetrationAt(sim, k, x, y) {
@@ -510,7 +561,7 @@ const ValveSimulation = (() => {
 
 	// Advances the sweep start point with any passage rotation while recording the
 	// grain's pre-step inertial world coordinates in (origX, origY).
-	function carryWalls(sim, h) {
+	function carryWalls(sim) {
 		const valves = sim.layout.valves;
 		const stamp = sim.steps;
 		for (let k = 0; k < sim.count; k++) {
@@ -534,7 +585,7 @@ const ValveSimulation = (() => {
 						const v = valves[vi];
 						const om = sim.omega[vi];
 						if (normalAt(sim.layout, px, py)) {
-							wallContact(sim, k, nrm.x, nrm.y, -om * (py - v.cy), om * (px - v.cx), h);
+							wallContact(sim, k, nrm.x, nrm.y, -om * (py - v.cy), om * (px - v.cx));
 						} else if (mx * mx + my * my > 0) {
 							sim.vx[k] *= 0.5;
 							sim.vy[k] *= 0.5;
@@ -604,57 +655,33 @@ const ValveSimulation = (() => {
 			nrm.x = -mx / len;
 			nrm.y = -my / len;
 		}
-		const vi = G.cellAt(tx, ty);
-		const om = sim.omega[vi];
-		let wvx = 0;
-		let wvy = 0;
-		if (om !== 0) {
-			const v = sim.layout.valves[vi];
-			const rx = tx - v.cx;
-			const ry = ty - v.cy;
-			const rHit = Math.sqrt(rx * rx + ry * ry);
-			// Rotor walls inside the rim, plus the outer rim face itself (radial
-			// normal), carry the rotor's tangential velocity; housing side walls stay fixed.
-			if (rHit < RV || (rHit < RV + sim.r[k] + 0.8 && nrm.x * rx + nrm.y * ry > 0.7 * rHit)) {
-				wvx = -om * ry;
-				wvy = om * rx;
-			}
-		}
-		wallContact(sim, k, nrm.x, nrm.y, wvx, wvy, h);
-		// Consume the remaining time tangentially instead of sticking at first impact.
+		contactWall(sim, k, tx, ty);
 		const dx = target.x - x0;
 		const dy = target.y - y0;
 		const length2 = dx * dx + dy * dy;
 		const used = length2 > 1e-12 ? clamp(((tx - x0) * dx + (ty - y0) * dy) / length2, 0, 1) : 1;
-		const remaining = h * (1 - used);
-		G.sweep(sim.layout, tx, ty, tx + sim.vx[k] * remaining, ty + sim.vy[k] * remaining, sim.r[k], sweepOut);
-		if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) > TOUCH) return;
-		sim.x[k] = sweepOut.x;
-		sim.y[k] = sweepOut.y;
+		slideRemainder(sim, k, h * (1 - used));
 	}
 
-	// The knock rate is per second, so a 30 Hz and a 120 Hz run add the same
-	// granular temperature, and both hashes come from the step and the grain
-	// index, so a replay of the same steps is identical.
-	function agitate(sim, k, gate) {
-		if (!sim.contact[k]) return;
+	function applyLubricantStress(sim, k, h) {
+		const stress = sim.lubricantStress;
+		if (stress <= 0 || !sim.contact[k]) return;
 		const vx = sim.vx[k];
 		const vy = sim.vy[k];
-		if (vx * vx + vy * vy >= LUBE_SPEED * LUBE_SPEED) return;
+		if (vx * vx + vy * vy >= STRESS_SPEED * STRESS_SPEED) return;
+		const gate = stress * STRESS_RATE * h;
 		if (G.hashUnit(0x51bd, sim.steps, k) >= gate) return;
-		const kick = (G.hashUnit(0x2f37, sim.steps, k + 7) - 0.5) * LUBE_KICK;
+		const kick = (G.hashUnit(0x2f37, sim.steps, k + 7) - 0.5) * STRESS_KICK * stress;
 		sim.vx[k] = vx + kick;
-		sim.vy[k] = vy + kick * LUBE_DROP;
+		sim.vy[k] = vy + kick * STRESS_DROP;
 	}
 
 	function integrate(sim, h) {
 		const damp = 1 - DAMPING * h;
-		const gate = sim.lubricant * LUBE_RATE * h;
-		const shake = gate < 1 ? gate : 1;
 		for (let k = 0; k < sim.count; k++) {
 			sim.vx[k] *= damp;
 			sim.vy[k] = (sim.vy[k] + GRAVITY * h) * damp;
-			if (shake > 0) agitate(sim, k, shake);
+			applyLubricantStress(sim, k, h);
 			clampSpeed(sim, k);
 			target.x = sim.origX[k] + sim.vx[k] * h;
 			target.y = sim.origY[k] + sim.vy[k] * h;
@@ -715,13 +742,13 @@ const ValveSimulation = (() => {
 		const dy = sim.y[j] - sim.y[i];
 		const minD = sim.r[i] + sim.r[j];
 		const d2 = dx * dx + dy * dy;
-		// A resolved bed is exactly touching, so a contact counts inside a small
-		// margin rather than only while the pair actually overlaps.
+		// Solve touching and slightly separated pairs as well as overlaps. A
+		// support impulse is needed before positional penetration exists; otherwise
+		// gravity is resolved one particle at a time and a packed bed can lock.
 		const reach = minD + CONTACT_MARGIN;
 		if (d2 >= reach * reach) return;
 		sim.contact[i] = 1;
 		sim.contact[j] = 1;
-		if (d2 >= minD * minD) return;
 		let nx;
 		let ny;
 		let d;
@@ -762,7 +789,8 @@ const ValveSimulation = (() => {
 		const tx = -ny;
 		const ty = nx;
 		const ut = (sim.vx[j] - sim.vx[i]) * tx + (sim.vy[j] - sim.vy[i]) * ty;
-		const jt = clamp(ut, -FRICTION * jn, FRICTION * jn);
+		const friction = FRICTION / (1 + sim.lubricant * 2);
+		const jt = clamp(ut, -friction * jn, friction * jn);
 		sim.vx[i] += jt * tx;
 		sim.vy[i] += jt * ty;
 		sim.vx[j] -= jt * tx;
@@ -835,6 +863,7 @@ const ValveSimulation = (() => {
 				sim.vy[w] = sim.vy[k];
 				sim.r[w] = sim.r[k];
 				sim.color[w] = sim.color[k];
+				sim.contact[w] = sim.contact[k];
 			}
 			w++;
 		}
@@ -845,7 +874,7 @@ const ValveSimulation = (() => {
 		const h = dt > 0 ? dt : STEP;
 		buildBins(sim);
 		updateTurns(sim, h);
-		carryWalls(sim, h);
+		carryWalls(sim);
 		buildBins(sim);
 		if (sim.pressureMode === "grid") GAS.step(sim, h);
 		else if (sim.pressureMode === "particles") AIR.step(sim, h);
@@ -886,6 +915,7 @@ const ValveSimulation = (() => {
 		sim.vx[k] = 0;
 		sim.vy[k] = 0;
 		sim.r[k] = rad;
+		sim.contact[k] = 0;
 		sim.color[k] =
 			color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color;
 		sim.injected++;
@@ -1156,10 +1186,12 @@ const ValveSimulation = (() => {
 		return added;
 	}
 
-	// 0 leaves a packed passage locked the way friction alone would; 1 is the
-	// default and 2 an obvious shake.
 	function setLubricant(sim, value) {
 		sim.lubricant = clamp(value, 0, 2);
+	}
+
+	function setLubricantStress(sim, value) {
+		sim.lubricantStress = clamp(value, 0, 0.5);
 	}
 
 	function setAirForce(sim, force) {
@@ -1243,6 +1275,7 @@ const ValveSimulation = (() => {
 		setSpeed,
 		setAirForce,
 		setLubricant,
+		setLubricantStress,
 		setPressure,
 		toggleInlet,
 		canPressInlet,

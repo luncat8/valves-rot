@@ -73,6 +73,8 @@ const ValveGas = (() => {
 	const GAS_MAX = 460;
 	const DRAG = 1.35;
 	const LIFT = 1.5;
+	const GAS_FORCE_SCALE = 1.4;
+	const REFERENCE_GRAIN_MASS = 2.7 * 2.7;
 	const SWIRL_REACH = CELL * 1.5;
 	const RELAX = 0.2;
 	const CELL_MASS = 1;
@@ -1449,7 +1451,7 @@ const ValveGas = (() => {
 	}
 
 	function drag(sim, gas, h) {
-		const force = sim.airForce;
+		const force = sim.airForce * GAS_FORCE_SCALE;
 		if (force <= 0) return;
 		const dragRate = DRAG * force;
 		const lift = LIFT * force;
@@ -1465,13 +1467,16 @@ const ValveGas = (() => {
 			const gvx = gx[idx];
 			const gvy = gy[idx];
 			if (gvx === 0 && gvy === 0) continue;
-			const jx = (dragRate * (gvx - sim.vx[k]) + lift * gvx) * h;
-			const jy = (dragRate * (gvy - sim.vy[k]) + lift * gvy) * h;
+			const massRatio = sim.r[k] * sim.r[k] / REFERENCE_GRAIN_MASS;
+			const jx = (dragRate * (gvx - sim.vx[k]) + lift * gvx) * h / massRatio;
+			const jy = (dragRate * (gvy - sim.vy[k]) + lift * gvy) * h / massRatio;
 			sim.vx[k] += jx;
 			sim.vy[k] += jy;
+			const reactionX = jx * massRatio;
+			const reactionY = jy * massRatio;
 			if (!pin[idx]) {
-				gx[idx] -= jx * invMass;
-				gy[idx] -= jy * invMass;
+				gx[idx] -= reactionX * invMass;
+				gy[idx] -= reactionY * invMass;
 				const sp = Math.sqrt(gx[idx] * gx[idx] + gy[idx] * gy[idx]);
 				if (sp > GAS_MAX) {
 					const s = GAS_MAX / sp;
@@ -1479,7 +1484,7 @@ const ValveGas = (() => {
 					gy[idx] *= s;
 				}
 			}
-			gas.gain += (jx < 0 ? -jx : jx) + (jy < 0 ? -jy : jy);
+			gas.gain += Math.abs(reactionX) + Math.abs(reactionY);
 			gas.drags++;
 		}
 	}

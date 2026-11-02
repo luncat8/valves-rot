@@ -81,7 +81,7 @@ function element(id) {
 	if (elements[id]) return elements[id];
 	const el = {
 		id,
-		value: id === "seed" ? "7" : id === "speed" || id === "force" || id === "lube" ? "1" : "",
+		value: id === "seed" ? "7" : id === "lube-stress" ? "0" : id === "speed" || id === "force" || id === "lube" ? "1" : "",
 		checked: id === "pressure-grid" || id === "pressure-draw",
 		textContent: "",
 		width: 0,
@@ -562,10 +562,13 @@ assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent", "
 
 element("force").value = "1.5";
 element("force").oninput();
-assert.equal(element("force-value").value, "1.5", "air force slider is wired");
+assert.equal(element("force-value").value, "1.5×", "air force slider is wired");
 element("lube").value = "0.5";
 element("lube").oninput();
 assert.equal(element("lube-value").value, "0.5", "lubricant slider is wired");
+element("lube-stress").value = "0.25";
+element("lube-stress").oninput();
+assert.equal(element("lube-stress-value").value, "0.25×", "optional lubricant stress slider is wired");
 element("pause").onclick();
 element("pressure-grid").checked = false;
 element("pressure-particles").checked = true;

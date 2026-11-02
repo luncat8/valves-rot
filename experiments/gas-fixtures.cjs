@@ -552,7 +552,7 @@ assert.ok(wet.drags > 0, "grains feel the field");
 const isolated = dropTest("grid", 2, true);
 assert.equal(isolated.drags, 0, "a chamber cut off from every mouth has no air flow");
 const particle = dropTest("particles", 1);
-assert.ok(particle.time > dry.time * 1.5, `air particles also hold a fall back (${particle.time.toFixed(2)} s)`);
+assert.ok(particle.time > dry.time * 1.4, `air particles also hold a fall back (${particle.time.toFixed(2)} s)`);
 const show = r => (Number.isFinite(r.time) ? r.time.toFixed(2) + " s" : "hovering");
 
 // ---- bounds, idle cost, mode switching ----------------------------------

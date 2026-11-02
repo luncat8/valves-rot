@@ -142,6 +142,10 @@ function sealedReservoir() {
 	assert.equal(sim.count, 9, "a sealed chamber keeps every grain");
 	assert.equal(sim.drained, 0);
 	assert.equal(sim.recovered, 0, "a sealed chamber never needs recovery");
+	let meanSpeed = 0;
+	for (let k = 0; k < sim.count; k++) meanSpeed += Math.hypot(sim.vx[k], sim.vy[k]);
+	meanSpeed /= sim.count;
+	assert.ok(meanSpeed < 5, `a settled sealed bed must stay quiet, mean speed ${meanSpeed.toFixed(2)} px/s`);
 	for (let k = 0; k < sim.count; k++) {
 		assert.ok(Math.hypot(sim.x[k] - v.cx, sim.y[k] - v.cy) <= v.chamberR - sim.r[k] + 0.05, "a settled grain stays in the chamber");
 	}
@@ -149,6 +153,33 @@ function sealedReservoir() {
 	conserved(sim, "sealed reservoir");
 	tally(sim);
 	return sim.count;
+}
+
+// The optional shake is deterministic, bounded at half the former kick, and
+// absent at zero; the ordinary lubricant slider never injects velocity.
+function lubricantStress() {
+	function build(stress) {
+		const layout = field({ "4,4": ["hollow", [], 12] });
+		const v = valve(layout, 4, 4);
+		const sim = S.create(layout, { turning: false, lubricant: 1, lubricantStress: stress });
+		for (let row = -1; row <= 1; row++) {
+			for (let col = -1; col <= 1; col++) {
+				assert.ok(S.addGrain(sim, v.cx + col * 4.6, v.cy + row * 4.6, 2.2, (col + row + 2) % 6) >= 0);
+			}
+		}
+		runChecked(sim, 5, "lubricant stress");
+		return sim;
+	}
+	const off = build(0);
+	const a = build(0.5);
+	const b = build(0.5);
+	assert.notDeepEqual(snapshot(off), snapshot(a), "optional stress must be able to shake a jam");
+	assert.deepEqual(snapshot(a), snapshot(b), "the stress slider remains deterministic");
+	assert.equal(a.maxPen, 0, "stress may not push grains through the chamber wall");
+	assert.ok(worstOverlap(a) < 0.1, "stress remains bounded by the contact solver");
+	conserved(a, "lubricant stress");
+	tally(a);
+	return "0.5× bounded / repeatable";
 }
 
 // A quarter-turn elbow: the up leg becomes the left leg, and the pile has to
@@ -239,26 +270,43 @@ function multiOutlet() {
 	return left;
 }
 
-// A packed elbow is the case the solver cannot do alone: the bed is a solid
-// arch over the bend, positional contacts carry no weight, and a full shaft
-// above it simply stops. Dry (lubricant 0) it must stay locked; lubricated it
-// must let the bed creep through the bend.
+function gravityJogLayout() {
+	return field({
+		"4,0": ["solid", [1, 3]],
+		"4,1": ["solid", [1, 3]],
+		"4,2": ["solid", [1, 3]],
+		"4,3": ["solid", [1, 3]],
+		"4,4": ["solid", [3, 0]],
+		"5,4": ["solid", [2, 1]],
+		"5,5": ["solid", [1, 3]],
+		"5,6": ["solid", [1, 3]],
+		"5,7": ["solid", [1, 3]],
+		"5,8": ["solid", [1, 3]],
+		"5,9": ["solid", [1, 3]],
+	});
+}
+
+// A lone grain must follow the curved offset wall around the first elbow. A
+// tangent projection at the initial collision is not a valid straight segment
+// on a curved wall; it used to hold the grain in place while velocity grew.
+function singleGrainL() {
+	const sim = S.create(gravityJogLayout(), { turning: false, lubricant: 0 });
+	assert.ok(S.addGrain(sim, 4.5 * SIDE, -20, 2.7, 0) >= 0);
+	runChecked(sim, 8, "single-grain L passage");
+	assert.equal(sim.drained, 1, "one grain must roll through the L-shaped jog to the drain");
+	assert.equal(sim.count, 0);
+	assert.equal(sim.maxPen, 0, "curved-wall following must not press the grain through a wall");
+	conserved(sim, "single-grain L passage");
+	tally(sim);
+	return sim.drained;
+}
+
+// A loaded elbow checks that touching contacts transmit support before
+// positional overlap develops. The lubricant only changes contact friction; it
+// must not be required to add random kicks to make the loaded bed move.
 function packedBend() {
 	function build(lubricant) {
-		const layout = field({
-			"4,0": ["solid", [1, 3]],
-			"4,1": ["solid", [1, 3]],
-			"4,2": ["solid", [1, 3]],
-			"4,3": ["solid", [1, 3]],
-			"4,4": ["solid", [3, 0]],
-			"5,4": ["solid", [2, 1]],
-			"5,5": ["solid", [1, 3]],
-			"5,6": ["solid", [1, 3]],
-			"5,7": ["solid", [1, 3]],
-			"5,8": ["solid", [1, 3]],
-			"5,9": ["solid", [1, 3]],
-		});
-		return S.create(layout, { turning: false, lubricant });
+		return S.create(gravityJogLayout(), { turning: false, lubricant });
 	}
 	function feed(sim, seconds, rate) {
 		const n = Math.round(seconds * 120);
@@ -270,15 +318,18 @@ function packedBend() {
 	}
 	const dry = build(0);
 	feed(dry, 12, 12);
-	assert.ok(dry.count >= 100, "the dry bend must actually be packed");
+	assert.ok(dry.count + dry.drained >= 100, "the dry bend must actually receive a full load");
 	const wet = build(1);
 	feed(wet, 12, 12);
-	assert.ok(dry.drained <= 3, `a dry packed bend barely moves, ${dry.drained} got out`);
-	assert.ok(wet.drained >= 4 * Math.max(dry.drained, 1), `a lubricated bend must flow, only ${wet.drained} got out`);
+	assert.ok(dry.drained >= 10, `a loaded dry bend must transmit gravity, only ${dry.drained} got out`);
+	assert.ok(wet.drained >= 10, `lubricated contacts must keep the bend flowing, only ${wet.drained} got out`);
+	assert.equal(dry.maxPen, 0, "dry contact impulses may not press grains through a wall");
 	assert.equal(wet.maxPen, 0, "lubrication may not press a grain through a wall");
+	conserved(dry, "loaded dry bend");
 	conserved(wet, "lubricated bend");
+	tally(dry);
 	tally(wet);
-	return wet.drained;
+	return `${dry.drained} dry / ${wet.drained} lubricated`;
 }
 
 // A jammed cluster: more grains than the pocket likes. The pile stays a pile,
@@ -338,19 +389,32 @@ function coincident() {
 	return 3;
 }
 
-// A grain resting against a diagonal passage must accelerate downhill, not
-// lose its tangential travel to the first blocked sweep each substep.
+// Both walls of an incline must release a lone grain downhill. This catches
+// wall-normal mistakes that a pile-only test masks.
 function slopeAndEditing() {
+	for (let side = -1; side <= 1; side += 2) {
+		const layout = field({ "4,4": ["solid", [0, 2]] });
+		const v = valve(layout, 4, 4);
+		G.setAngle(v, Math.PI / 6);
+		const sim = S.create(layout, { turning: false, lubricant: 0 });
+		const offset = G.HALF - S.R_GRAIN - 0.02;
+		const x = v.cx - side * Math.sin(v.angle) * offset;
+		const y = v.cy + side * Math.cos(v.angle) * offset;
+		assert.ok(S.addGrain(sim, x, y, S.R_GRAIN, 0) >= 0);
+		runChecked(sim, 0.18, "slope");
+		const downhill = (sim.x[0] - x) * Math.cos(v.angle) + (sim.y[0] - y) * Math.sin(v.angle);
+		assert.ok(downhill > 3.5, `grain on slope side ${side} must move downhill, moved ${downhill.toFixed(2)} px`);
+		assert.equal(sim.maxPen, 0, "a downhill slide must stay inside the passage");
+	}
 	const layout = field({ "4,4": ["solid", [0, 2]] });
 	const v = valve(layout, 4, 4);
 	G.setAngle(v, Math.PI / 6);
-	const sim = S.create(layout, { turning: false });
+	const sim = S.create(layout, { turning: false, lubricant: 0 });
 	const offset = G.HALF - S.R_GRAIN - 0.02;
 	const x = v.cx - Math.sin(v.angle) * offset;
 	const y = v.cy + Math.cos(v.angle) * offset;
 	assert.ok(S.addGrain(sim, x, y, S.R_GRAIN, 0) >= 0);
-	runChecked(sim, 0.18, "slope");
-	assert.ok(sim.x[0] > x + 2, "grain must travel downhill on a 30 degree slope");
+	runChecked(sim, 0.18, "slope editing setup");
 	assert.ok(sim.vx[0] > 15, "grain must retain downhill inertia");
 	const other = S.addGrain(sim, 36, -20, 2.2, 1);
 	assert.ok(other >= 0);
@@ -542,9 +606,11 @@ function machine() {
 const t0 = process.hrtime.bigint();
 const drained = fallingColumn();
 const sealed = sealedReservoir();
+const stress = lubricantStress();
 const routed = quarterTurnElbow();
 const throat = nearlyAligned();
 const exits = multiOutlet();
+const singleL = singleGrainL();
 const bend = packedBend();
 const jam = jammedCluster();
 const split = coincident();
@@ -556,9 +622,9 @@ const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
 console.log(
 	[
-		`OK  falling column ${drained} drained  sealed reservoir ${sealed} kept`,
+		`OK  falling column ${drained} drained  sealed reservoir ${sealed} kept  stress ${stress}`,
 		`quarter-turn elbow ${routed} rerouted  throat at ${throat}  multi-outlet ${exits} out`,
-		`packed bend ${bend} out lubricated  jammed cluster ${jam} kept  coincident ${split} split  rotating pocket ${carried} rad carried`,
+		`single-grain L ${singleL} drained  packed bend ${bend}  jammed cluster ${jam} kept  coincident ${split} split  rotating pocket ${carried} rad carried`,
 		`frame rates ${frames}  counters ${counted}`,
 		`machine ${full}`,
 		`steps ${worst.steps}  recovered ${worst.rec}  maxPush ${worst.push.toFixed(2)}  maxOverlap ${worst.overlap.toFixed(2)}  maxWall ${worst.pen.toFixed(3)}`,
