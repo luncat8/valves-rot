@@ -1467,7 +1467,7 @@ const ValveGas = (() => {
 			const gvx = gx[idx];
 			const gvy = gy[idx];
 			if (gvx === 0 && gvy === 0) continue;
-			const massRatio = sim.r[k] * sim.r[k] / REFERENCE_GRAIN_MASS;
+			const massRatio = (sim.mass ? sim.mass[k] : sim.r[k] * sim.r[k]) / REFERENCE_GRAIN_MASS;
 			const jx = (dragRate * (gvx - sim.vx[k]) + lift * gvx) * h / massRatio;
 			const jy = (dragRate * (gvy - sim.vy[k]) + lift * gvy) * h / massRatio;
 			sim.vx[k] += jx;

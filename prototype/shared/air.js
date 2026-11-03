@@ -117,7 +117,7 @@ const ValveAir = (() => {
 					const ny = d > 1e-9 ? dy / d : 0;
 					const incoming = (p.vx[k] - sim.vx[j]) * nx + (p.vy[k] - sim.vy[j]) * ny;
 					if (incoming >= 0) continue;
-					const mass = sim.r[j] * sim.r[j];
+					const mass = sim.mass ? sim.mass[j] : sim.r[j] * sim.r[j];
 					const impulse = (-2 * incoming / (1 / MASS + 1 / mass)) * sim.airForce;
 					p.vx[k] += impulse * nx / MASS;
 					p.vy[k] += impulse * ny / MASS;

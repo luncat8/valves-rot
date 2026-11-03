@@ -65,6 +65,29 @@ const ValveSimulation = (() => {
 	const BIN_COUNT = BX * BY;
 
 	const GRAIN_COLORS = ["#f07a5f", "#e9b64b", "#4fb8ab", "#7f93dd", "#d978b4", "#8cbf5a"];
+	// Palette index is the material. Solver mass keeps the historical r^2 scale:
+	// mass = (density / WATER_DENSITY) * r^2, so 1000 kg/m3 grains are unchanged.
+	const WATER_DENSITY = 1000;
+	const MATERIAL_DENSITY = [2000, 1400, 1000, 500, 1200, 800];
+	const MATERIAL_NAMES = ["dense red", "heavy amber", "neutral teal", "buoyant blue", "heavy pink", "light green"];
+
+	function materialDensity(color) {
+		const c = color >= 0 && color < MATERIAL_DENSITY.length ? color | 0 : 2;
+		return MATERIAL_DENSITY[c];
+	}
+
+	function grainMass(color, radius) {
+		return (materialDensity(color) / WATER_DENSITY) * radius * radius;
+	}
+
+	// Fraction of a disc below a horizontal surface `depth` px under its centre
+	// (depth <= -r: dry, depth >= r: fully submerged). Circular-segment area.
+	function submergedFraction(radius, depth) {
+		if (!(radius > 0) || depth <= -radius) return 0;
+		if (depth >= radius) return 1;
+		const x = depth / radius;
+		return (Math.acos(-x) + x * Math.sqrt(1 - x * x)) / Math.PI;
+	}
 
 	// Pour reservoirs: two staggered files in the band above top-row spouts.
 	const SLOT_FILES = [-3.2, 3.2];
@@ -169,6 +192,8 @@ const ValveSimulation = (() => {
 			vx: new Float64Array(capacity),
 			vy: new Float64Array(capacity),
 			r: new Float64Array(capacity),
+			mass: new Float64Array(capacity),
+			invMass: new Float64Array(capacity),
 			color: new Uint8Array(capacity),
 			contact: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
@@ -763,6 +788,11 @@ const ValveSimulation = (() => {
 			ny = dy / d;
 		}
 		const pen = minD - d;
+		const invMi = sim.invMass[i];
+		const invMj = sim.invMass[j];
+		const invSum = invMi + invMj;
+		// Positional split stays equal: mass-weighting it lets a heavy grain
+		// shove a wall-pinned light grain every iteration and the bed jitters.
 		if (pen > 1e-3) {
 			const half = pen * 0.5 + 1e-4;
 			const fi = pushGrain(sim, i, -nx * half, -ny * half, pen);
@@ -779,22 +809,31 @@ const ValveSimulation = (() => {
 		const rvy = sim.vy[j] - sim.vy[i];
 		const un = rvx * nx + rvy * ny;
 		const e = un < -REST_SPEED ? RESTITUTION : 0;
+		// Resting support stays equal-split (settles a mixed bed); only real
+		// impacts take inverse-mass shares, clamped to 2:1 so a heavy grain
+		// cannot squeeze a wall-pinned light grain out of a settled pile.
+		const wi = e > 0 ? clamp(2 * invMi / invSum, 2 / 3, 4 / 3) : 1;
+		const wj = 2 - wi;
 		const jn = -(1 + e) * un * 0.5;
 		if (jn > 0) {
-			sim.vx[i] -= jn * nx;
-			sim.vy[i] -= jn * ny;
-			sim.vx[j] += jn * nx;
-			sim.vy[j] += jn * ny;
+			sim.vx[i] -= jn * wi * nx;
+			sim.vy[i] -= jn * wi * ny;
+			sim.vx[j] += jn * wj * nx;
+			sim.vy[j] += jn * wj * ny;
 		}
 		const tx = -ny;
 		const ty = nx;
 		const ut = (sim.vx[j] - sim.vx[i]) * tx + (sim.vy[j] - sim.vy[i]) * ty;
 		const friction = FRICTION / (1 + sim.lubricant * 2);
+		// Friction velocity capped by mu*Jn (old scale), split by inverse mass;
+		// equal masses reproduce the old solver exactly.
 		const jt = clamp(ut, -friction * jn, friction * jn);
-		sim.vx[i] += jt * tx;
-		sim.vy[i] += jt * ty;
-		sim.vx[j] -= jt * tx;
-		sim.vy[j] -= jt * ty;
+		if (jn > 0) {
+			sim.vx[i] += jt * wi * tx;
+			sim.vy[i] += jt * wi * ty;
+			sim.vx[j] -= jt * wj * tx;
+			sim.vy[j] -= jt * wj * ty;
+		}
 	}
 
 	function resolvePairs(sim) {
@@ -862,6 +901,8 @@ const ValveSimulation = (() => {
 				sim.vx[w] = sim.vx[k];
 				sim.vy[w] = sim.vy[k];
 				sim.r[w] = sim.r[k];
+				sim.mass[w] = sim.mass[k];
+				sim.invMass[w] = sim.invMass[k];
 				sim.color[w] = sim.color[k];
 				sim.contact[w] = sim.contact[k];
 			}
@@ -918,6 +959,9 @@ const ValveSimulation = (() => {
 		sim.contact[k] = 0;
 		sim.color[k] =
 			color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color;
+		const mass = grainMass(sim.color[k], rad);
+		sim.mass[k] = mass;
+		sim.invMass[k] = 1 / mass;
 		sim.injected++;
 		return k;
 	}
@@ -1084,7 +1128,7 @@ const ValveSimulation = (() => {
 				sim.purged++;
 				continue;
 			}
-			for (const key of ["x", "y", "vx", "vy", "r", "color"]) sim[key][w] = sim[key][k];
+			for (const key of ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact"]) sim[key][w] = sim[key][k];
 			w++;
 		}
 		sim.count = w;
@@ -1260,6 +1304,12 @@ const ValveSimulation = (() => {
 		ITERATIONS,
 		BIN,
 		GRAIN_COLORS,
+		WATER_DENSITY,
+		MATERIAL_DENSITY,
+		MATERIAL_NAMES,
+		materialDensity,
+		grainMass,
+		submergedFraction,
 		create,
 		step,
 		advance,

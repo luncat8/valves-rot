@@ -137,6 +137,8 @@
 			<p>The grid stores a normalized relative pressure, not a measured thermodynamic one. The legend maps 0–1 to 0–the reference span in gauge-equivalent pascals; changing the span only relabels the ramp and does not change forces. With no open mouth the ramp still describes the trapped air; the legend names the missing source or vent when only one polarity is open.</p>
 			<p>The default span is measured from normal particle-wall impulse in a sealed reference chamber: 100 markers at 180 px/s, radius 15 px, over 20 simulation seconds. Its illustrative scales are 1 mm/px, 1 simulation second = 1 s, 1 mg per mass unit (3 mg per marker), and 10 mm depth. It is not an atmospheric pressure or a validation of pressure everywhere in the machine. Enter a known source-to-vent gauge difference to use another reference.</p>
 		</section>
+		<h3>Grain materials</h3>
+		<p>Color is material, not just a label: red 2,000 · amber 1,400 · teal 1,000 · pink 1,200 · green 800 · blue 500 kg/m³ (water is 1,000). Mass follows density × disc size, so a large light grain can outweigh a small dense one. Dense grains sink and buoyant grains will float once water arrives; air pushes light grains harder than dense ones of the same size.</p>
 		<h3>Other info</h3>
 		<p>The line under the field reports fps, the seed, active / injected / drained grains, plus solver diagnostics: purged (removed by Drain or by replacing a valve), recovered and pushes (grains nudged out of a turning wall). In grid mode it also shows mean pressure and flow.</p>
 		<p>Valve type names (solid / hollow × straight, elbow, tee, cross, single, blank) are listed in the Place valve drawer, where each name can be copied to the clipboard as text.</p>

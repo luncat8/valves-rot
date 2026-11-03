@@ -145,3 +145,12 @@
   dial's whole point is that one gesture buys several detents; leaving it on
   turns a single "turn" into a multi-quarter-turn move and quietly breaks the
   rule the HUD states.
+
+## Mass-weighted grain contacts (0.3 slice 1)
+- Full inverse-mass positional+impulse weighting destabilises packed mixed
+  beds: heavy grains squeeze wall-pinned light grains out sideways
+  ("watermelon seed"), sealed-bed mean speed 22 px/s vs <5 limit. Keep
+  resting support and positional split equal; apply clamped (2:1)
+  inverse-mass shares only on the restitution/impact branch.
+- Keep solver mass in the historical `r^2` units (`mass=(rho/1000)*r^2`) so
+  existing air/gas tuning stays exact for the neutral material.
