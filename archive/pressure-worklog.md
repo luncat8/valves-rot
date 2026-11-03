@@ -361,3 +361,19 @@ The recorded next step of the previous stage — calibrate the ramp so it can ca
 ## Next step
 
 Pressure is now the bots' surest kind (`7/7` completed at `0%` auto-rotate) because opening the right band is a click puzzle with no grain physics in the way, while open-count grain quests expire most often (`1/4` completed). Two measured follow-ups, in order of value: watch which cells `pickGoalCells` gives a two-bottle quest and whether a `Pour` above one of them can raise the second at all, then, if pressure stays trivial for bots, leave the last mouth of the favourable band shut at signing so the player has to open it.
+
+# Water and separation planning (2026-11-03)
+
+## Review and changes
+
+- Reviewed the preceding calibration: wall impulse is converted using explicit reference length, mass, time and depth; the network remains a relative potential with a Pa-equivalent display, not a calibrated pressure solver. No recalibration was needed for this planning step.
+- Expanded `water-plan.md` with the separation objective, shared deterministic material identities, density-derived mass, air and water coupling, collection metrics and Game palette compatibility. Added gravity-dependent sill handling to avoid treating all connected chambers as an instantly level pool, and corrected the obsolete description of the gas network.
+- Water and material physics are planned, not implemented; the first water stage still omits falling drops, which remain deferred.
+
+## Validation
+
+- Inspected `calibration.js`, simulation insertion/compaction, renderer palette and Game hue tables against the plan. Documentation-only change; no simulation tests rerun.
+
+## Next step
+
+Implement and validate the shared material/mass foundation and air separation before building the water volume and buoyancy model.
