@@ -154,3 +154,31 @@
   inverse-mass shares only on the restitution/impact branch.
 - Keep solver mass in the historical `r^2` units (`mass=(rho/1000)*r^2`) so
   existing air/gas tuning stays exact for the neutral material.
+
+## Quasi-static water volume (0.3 slice 2)
+- A per-cell "surface" is NOT the pool waterline: a fully submerged cell reports
+  its own top edge, so only the topmost wet cell carries the true free surface.
+  Test grain submersion against the component's highest surface (the waterline),
+  not the grain's own cell, or a submerged grain reads as half-submerged.
+- A relaxation convergence check based only on surface change falsely converges
+  when a cell is overfull: its surface clamps to the top edge and stops moving
+  while water still needs to rise. Also require no cell over capacity before
+  declaring equilibrium, or displaced water never backs up.
+- "Fill the lower cell first" vertical transfer is right for falling water but
+  needs a reverse (bottom-up) sweep to push excess back up when a lower cell's
+  capacity shrinks; alternate sweep directions each pass.
+- A coarse Eulerian grid cannot carry water around a rotating passage. When a
+  wall closes a wet cell, displace into adjacent void, route onward through open
+  faces only, and hold any unreachable remainder as rotor-carried `trapped`
+  volume returned when the passage reopens. That conserves volume across
+  split/merge without teleporting through a shut seam.
+- The top-row spout corridor is real void even when the port below is shut, so a
+  "blocked inlet" still admits water into the spout — the guarantee to assert is
+  that nothing lands BEHIND the shut port, not that admitted == 0. Distinguish a
+  metal mouth (blocked → unadmitted) from a full open mouth (admits, then backs
+  excess out the top → overflow).
+- Re-sampling a world water grid every tick while valves turn is the dominant
+  cost, not the relaxation. Cache per valve angle and throttle the rebuild to a
+  30 Hz mask clock (relaxation still runs each step): 4.4 → 1.4 ms/step turning,
+  0.48 ms/step static. Iterate an air-cell list and skip dry pairs instead of
+  scanning metal cells and recomputing gx/gy per cell.

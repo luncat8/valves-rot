@@ -15,6 +15,7 @@ const ValveSimulation = (() => {
 	const AIR = typeof ValveAir !== "undefined" ? ValveAir : require("./air.js");
 	const GAS = typeof ValveGas !== "undefined" ? ValveGas : require("./gas.js");
 	const INL = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
+	const WATER = typeof ValveWater !== "undefined" ? ValveWater : require("./water.js");
 	const N = G.N;
 	const SIZE = G.SIZE;
 	const POUR = G.POUR;
@@ -70,18 +71,30 @@ const ValveSimulation = (() => {
 	const WATER_DENSITY = 1000;
 	const MATERIAL_DENSITY = [2000, 1400, 1000, 500, 1200, 800];
 	const MATERIAL_NAMES = ["dense red", "heavy amber", "neutral teal", "buoyant blue", "heavy pink", "light green"];
+	// Per-grain arrays that must move together through every compaction path
+	// (compact, clearValve). One list, so a new field cannot be copied by one path
+	// and forgotten by the other. Scratch rebuilt each step (orig*, push*, order)
+	// is not listed.
+	const GRAIN_FIELDS = ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact"];
+
+	// Palette index is the material identity; an out-of-range index falls back to
+	// the neutral material so mass, render color and quest classification agree.
+	function materialIndex(color) {
+		return color >= 0 && color < MATERIAL_DENSITY.length ? color | 0 : 2;
+	}
 
 	function materialDensity(color) {
-		const c = color >= 0 && color < MATERIAL_DENSITY.length ? color | 0 : 2;
-		return MATERIAL_DENSITY[c];
+		return MATERIAL_DENSITY[materialIndex(color)];
 	}
 
 	function grainMass(color, radius) {
 		return (materialDensity(color) / WATER_DENSITY) * radius * radius;
 	}
 
-	// Fraction of a disc below a horizontal surface `depth` px under its centre
-	// (depth <= -r: dry, depth >= r: fully submerged). Circular-segment area.
+	// Fraction of a disc below a horizontal free surface, given `depth` = how far
+	// the disc centre sits BELOW that surface (screen y grows downward, so
+	// depth = centreY - surfaceY). depth <= -r: dry, depth >= r: fully submerged.
+	// Circular-segment area; the buoyancy kernel for Phase 1.
 	function submergedFraction(radius, depth) {
 		if (!(radius > 0) || depth <= -radius) return 0;
 		if (depth >= radius) return 1;
@@ -172,9 +185,10 @@ const ValveSimulation = (() => {
 		const slots = N * N;
 		const reach = G.drainReach(layout);
 		const sim = {
-			layout,
-			pressure: null,
-			pressureMode: "off",
+		layout,
+		pressure: null,
+		pressureMode: "off",
+		water: null,
 			// Page slider: multiplies how hard the pressure backend pushes grains.
 			airForce: 1,
 			inlets: INL.create(),
@@ -896,15 +910,10 @@ const ValveSimulation = (() => {
 				continue;
 			}
 			if (w !== k) {
-				sim.x[w] = sim.x[k];
-				sim.y[w] = sim.y[k];
-				sim.vx[w] = sim.vx[k];
-				sim.vy[w] = sim.vy[k];
-				sim.r[w] = sim.r[k];
-				sim.mass[w] = sim.mass[k];
-				sim.invMass[w] = sim.invMass[k];
-				sim.color[w] = sim.color[k];
-				sim.contact[w] = sim.contact[k];
+				for (let f = 0; f < GRAIN_FIELDS.length; f++) {
+					const arr = sim[GRAIN_FIELDS[f]];
+					arr[w] = arr[k];
+				}
 			}
 			w++;
 		}
@@ -925,6 +934,7 @@ const ValveSimulation = (() => {
 		for (let it = 0; it < ITERATIONS; it++) resolvePairs(sim);
 		measurePairs(sim);
 		compact(sim);
+		if (sim.water) WATER.step(sim, h);
 		sim.clock += h;
 		sim.steps++;
 	}
@@ -957,9 +967,9 @@ const ValveSimulation = (() => {
 		sim.vy[k] = 0;
 		sim.r[k] = rad;
 		sim.contact[k] = 0;
-		sim.color[k] =
-			color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color;
-		const mass = grainMass(sim.color[k], rad);
+	sim.color[k] = materialIndex(
+		color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color);
+	const mass = grainMass(sim.color[k], rad);
 		sim.mass[k] = mass;
 		sim.invMass[k] = 1 / mass;
 		sim.injected++;
@@ -1084,6 +1094,15 @@ const ValveSimulation = (() => {
 		initSchedule(sim);
 		INL.reset(sim.inlets);
 		sim.pressure = pressureFor(sim, sim.pressureMode);
+		if (sim.water) WATER.reset(sim.water);
+	}
+
+	// Water is a separate, off-by-default mode. Enabling lazily builds the volume
+	// grid; disabling keeps the state so re-enabling resumes the same water.
+	function setWater(sim, enabled) {
+		if (enabled && !sim.water) sim.water = WATER.create(sim);
+		if (sim.water) sim.water.enabled = !!enabled;
+		return sim.water;
 	}
 
 	// Snaps from the current target detent so repeated clicks mid-turn always
@@ -1128,7 +1147,10 @@ const ValveSimulation = (() => {
 				sim.purged++;
 				continue;
 			}
-			for (const key of ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact"]) sim[key][w] = sim[key][k];
+			for (let f = 0; f < GRAIN_FIELDS.length; f++) {
+				const arr = sim[GRAIN_FIELDS[f]];
+				arr[w] = arr[k];
+			}
 			w++;
 		}
 		sim.count = w;
@@ -1307,6 +1329,7 @@ const ValveSimulation = (() => {
 		WATER_DENSITY,
 		MATERIAL_DENSITY,
 		MATERIAL_NAMES,
+		materialIndex,
 		materialDensity,
 		grainMass,
 		submergedFraction,
@@ -1327,6 +1350,7 @@ const ValveSimulation = (() => {
 		setLubricant,
 		setLubricantStress,
 		setPressure,
+		setWater,
 		toggleInlet,
 		canPressInlet,
 		setInletOwnership,
