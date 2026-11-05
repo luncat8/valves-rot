@@ -19,7 +19,10 @@
 const assert = require("node:assert/strict");
 const G = require("../prototype/shared/geometry.js");
 const S = require("../prototype/shared/simulation.js");
+const path = require("node:path");
 const W = require("../prototype/shared/water.js");
+const P = require("./water-paint.cjs");
+const { writePng } = require("./png-writer.cjs");
 
 const N = G.N;
 const AXIS = 4;
@@ -170,6 +173,9 @@ W.setVent(w, AXIS, false);
 for (let k = 0; k < 120 * 3; k++) S.step(sim, S.STEP);
 console.log(`raise: ${t3.toFixed(1)} s at ${SLOW} px²/s, level ${levelAt(w).toFixed(0)}`);
 const filled = report("layer lifted into the trap", sim);
+// The trap before it is shut: floats sitting over the gate, dense grains below it.
+const VIEW = { x0: AXIS * G.S - 1.6 * G.S, y0: (GATE - 2) * G.S, w: 3.2 * G.S, h: 5 * G.S };
+const liftedPanel = P.panel(sim, VIEW, 2);
 
 // Shut the gate under the floats and drain: the gate is a wall, so the layer
 // stays where the water left it.
@@ -179,6 +185,10 @@ W.drainAll(w);
 for (let k = 0; k < 120 * 6; k++) S.step(sim, S.STEP);
 const dry = report("gate shut, water drained", sim);
 console.log(`  grains ${sim.count} of ${placed}, ${W.storedVol(w).toFixed(0)} px² left of ${w.admitted.toFixed(0)} admitted`);
+// Same window after the drain: the gate is the wall that keeps the layer split.
+const OUT = path.join(__dirname, "logs", "water-gate-0.5.png");
+writePng(OUT, [liftedPanel, P.panel(sim, VIEW, 2)], { background: 12 });
+console.log(`  wrote ${path.relative(path.join(__dirname, ".."), OUT)}`);
 
 assert.equal(sim.count, placed, "no grain is lost to the gate or the drain");
 assert.equal(dry.stray, 0, "no dense grain crosses the gate");
