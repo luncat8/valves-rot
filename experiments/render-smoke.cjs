@@ -9,6 +9,11 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..", "prototype", "shared");
 const calls = { total: 0, stroke: 0, fill: 0, drawImage: 0, putImageData: 0, arc: 0, fillRect: 0, canvases: 0 };
 const mainTranslates = [];
+const strokeStyles = new Set();
+// Segments drawn per pen colour, so a layer can be shown to have drawn geometry
+// and not merely to have set its strokeStyle.
+const penSegments = new Map();
+let currentPen = null;
 const mainDrawImages = [];
 const mainTexts = [];
 const gradient = { addColorStop() {} };
@@ -59,7 +64,13 @@ function recordingContext(isMain) {
 					calls.total++;
 				};
 			}
-			if (drawOps.indexOf(prop) >= 0) {
+			if (prop === "lineTo" || prop === "moveTo") {
+			return () => {
+				if (isMain && prop === "lineTo") penSegments.set(currentPen, (penSegments.get(currentPen) || 0) + 1);
+				calls.total++;
+			};
+		}
+		if (drawOps.indexOf(prop) >= 0) {
 				return () => {
 					if (prop === "stroke") calls.stroke++;
 					if (prop === "fill") calls.fill++;
@@ -70,7 +81,12 @@ function recordingContext(isMain) {
 				calls.total++;
 			};
 		},
-		set() {
+		set(obj, prop, value) {
+			// Record pen colours so a scenario can prove which layer was drawn.
+			if (prop === "strokeStyle") {
+				currentPen = value;
+				if (isMain) strokeStyles.add(value);
+			}
 			return true;
 		},
 	});
@@ -625,6 +641,8 @@ const putsBefore = calls.putImageData;
 const waterTranslates = mainTranslates.length;
 for (let i = 0; i < 40; i++) frames.shift()((now += 16.7));
 assert.ok(calls.putImageData - putsBefore >= 10, "the water fill is painted as a texture");
+assert.ok(strokeStyles.has(R.WATER_SURFACE), "the free surface is stroked over the fill");
+assert.ok((penSegments.get(R.WATER_SURFACE) || 0) > 5, "the free surface line follows the water columns");
 assert.ok(calls.total > 0);
 assert.ok(element("water-rate-value").value.includes("2000"));
 const statsLine = element("stats").textContent;

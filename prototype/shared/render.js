@@ -984,6 +984,7 @@ const ValveRender = (() => {
 		renderVents,
 		makeAirMap,
 		renderAirMap,
+		WATER_SURFACE,
 		makeWaterMap,
 		renderWater,
 		renderWaterSurface,

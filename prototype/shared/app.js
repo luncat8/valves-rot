@@ -1141,7 +1141,8 @@
 
 	// The fill samples the solver's own passability and waterline on a 3 px grid.
 	// It is drawn behind the grains and kept translucent, so metal never reads as
-	// wet and a submerged grain stays legible.
+	// wet and a submerged grain stays legible. The surface line goes on top of the
+	// texture: behind a bright grain the sheet alone would not read as a level.
 	function drawWater() {
 		const w = sim.water;
 		if (!waterField) waterField = Water.makeDisplay();
@@ -1150,6 +1151,7 @@
 		ctx.save();
 		ctx.imageSmoothingEnabled = true;
 		ctx.drawImage(waterMap.canvas, 0, -G.POUR, waterMap.nx * waterField.cell, waterMap.ny * waterField.cell);
+		R.renderWaterSurface(ctx, waterField);
 		ctx.restore();
 	}
 

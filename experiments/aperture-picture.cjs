@@ -5,8 +5,8 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
+const { writePng } = require("./png-writer.cjs");
 
 const ROOT = path.join(__dirname, "..");
 const SHARED = path.join(ROOT, "prototype/shared");
@@ -80,77 +80,17 @@ function ramp(p) {
 	return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-function crc32(buf) {
-	let table = crc32.table;
-	if (!table) {
-		table = crc32.table = new Int32Array(256);
-		for (let n = 0; n < 256; n++) {
-			let c = n;
-			for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-			table[n] = c;
-		}
-	}
-	let c = -1;
-	for (let i = 0; i < buf.length; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-	return (c ^ -1) >>> 0;
-}
-
-function chunk(type, data) {
-	const len = Buffer.alloc(4);
-	len.writeUInt32BE(data.length);
-	const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-	const crc = Buffer.alloc(4);
-	crc.writeUInt32BE(crc32(body));
-	return Buffer.concat([len, body, crc]);
-}
-
-function writePng(panels, width, height, bars) {
-	const ihdr = Buffer.alloc(13);
-	ihdr.writeUInt32BE(width, 0);
-	ihdr.writeUInt32BE(height, 4);
-	ihdr[8] = 8;
-	ihdr[9] = 2;
-	const image = Buffer.alloc((width * 3 + 1) * height);
-	for (let y = 0; y < height; y++) {
-		const row = y * (width * 3 + 1);
-		image[row] = 0;
-		image.fill(16, row + 1, row + 1 + width * 3);
-	}
-	const pad = 10;
-	const bar = 6;
-	for (let p = 0; p < panels.length; p++) {
-		const px = pad + p * (panels[p].w + pad);
-		for (let y = 0; y < bar; y++) {
-			for (let x = 0; x < panels[p].w; x++) {
-				const o = y * (width * 3 + 1) + 1 + (px + x) * 3;
-				image[o] = bars[p][0];
-				image[o + 1] = bars[p][1];
-				image[o + 2] = bars[p][2];
-			}
-		}
-		for (let y = 0; y < panels[p].h; y++) {
-			const dst = (y + bar + pad) * (width * 3 + 1) + 1 + px * 3;
-			panels[p].rgb.copy(image, dst, y * panels[p].w * 3, (y + 1) * panels[p].w * 3);
-		}
-	}
-	fs.writeFileSync(
-		OUT,
-		Buffer.concat([
-			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-			chunk("IHDR", ihdr),
-			chunk("IDAT", zlib.deflateSync(image, { level: 9 })),
-			chunk("IEND", Buffer.alloc(0)),
-		]),
-	);
-}
-
 const oldDir = backendFrom(REV);
 const old = render(oldDir, ANGLE);
 const current = render(SHARED, ANGLE);
-writePng([old, current], old.w * 2 + 30, old.h + 26, [
-	[200, 70, 60],
-	[70, 190, 110],
-]);
+writePng(
+	OUT,
+	[
+		{ rgb: old.rgb, w: old.w, h: old.h, bar: [200, 70, 60] },
+		{ rgb: current.rgb, w: current.w, h: current.h, bar: [70, 190, 110] },
+	],
+	{ bar: 6 },
+);
 console.log(
 	`${REV}: ${old.live} of ${old.cells} air cells reach a mouth (${((100 * old.live) / old.cells).toFixed(1)}%), ${old.comps} components\n` +
 		`working tree: ${current.live} of ${current.cells} (${((100 * current.live) / current.cells).toFixed(1)}%), ${current.comps} components\n` +

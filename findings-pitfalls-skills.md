@@ -190,14 +190,32 @@
   settle at 0.03 and 0.5 of a 6 px cell and both be right. Judging buoyancy
   against the pool's level is the honest test; judging it against one grain's
   fractional submersion is not.
-- Waterline + drag is only a stable equilibrium for a grain whose height fits
-  inside one cell. A floating grain spanning two cells pulls its displacement
-  from the lower one, so the level it feels steps by a whole cell height when it
-  crosses the edge, and the pair can limit-cycle instead of settling (measured:
-  a 3 px-radius float in a 6 px pool oscillates ~2 px indefinitely, while a 2.3
-  and a 2.7 px float in the same pool settle). Damping is bounded, so the cycle
-  is slow rather than violent; Slice 4 should rebalance pool size vs cell size or
-  the drag law before promising a still float for every radius.
+- Charge a body's displacement where the body IS, not on the cell holding its
+  centre. One 6 px cell shared by a 28 px² disc makes cell capacity, and with it
+  the waterline a float reads, step as soon as the grain crosses an edge — and if
+  that cell is a 2 px floor sliver (24 px² of capacity), the cell alternates
+  between "full" and not, so the water is pumped up and drains back at ~0.5 Hz.
+  Spreading the submerged area over the ≤ 3×3 cells the disc covers, weighted by
+  overlap, removed every measured cycle except a float in a vessel that holds
+  barely more than its own displacement. This replaces the earlier guess that the
+  limit came from the grain being taller than one cell: the grain never changed
+  cell at all in the failing case.
+- When a limit is written up as inherent ("the grain spans cells, so it must
+  step"), reproduce it with an instrumented probe before believing it: log the
+  quantity the body actually reads each step (here `levelUp` at the grain's cell,
+  its cell's `vol`/`gdisp`/`area`) rather than the quantity you assume it reads.
+  The wrong note cost a slice: the level swung 3.5 px while x was constant, which
+  one dump made obvious.
+- A function that is implemented, exported and unit-tested can still be dead: the
+  water surface line existed for a whole slice with no caller. For a renderer,
+  prove the call by recording assigned pen colours in the headless context stub
+  and asserting the layer's colour was used; pixels are not otherwise observable.
+- Pick the metric before the threshold, and check its components. Scoring a
+  separation by thirds of the pool marked correct sinks as misses because a pile
+  of grains is taller than a third of a shallow pool; halves plus a per-material
+  table showed the separation was 100% while the aggregate said 88%. Also exclude
+  neutral material from a "light vs dense" score — it is weightless in water, so
+  it can only ever count against you.
 - A gravity-side obstruction at the waterline is not a water bug. Two floats
   side by side ride the solver's `CONTACT_MARGIN` (~1.2 px) above the cell floor
   because the lower one rests on the bottom; the upper one then has its floor

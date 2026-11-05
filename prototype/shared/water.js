@@ -115,6 +115,9 @@ const ValveWater = (() => {
 			// display fill; kept out of the solver so both read one snapshot.
 			levels: new Float64Array(count),
 			levelUp: new Float64Array(count),
+			// True while the two arrays hold a published waterline, so clearing
+			// them once on the way out is enough.
+			levelsLive: false,
 			surfScratch: new Float64Array(count),
 			comp: new Int32Array(count),
 			openS: new Uint8Array(count),
@@ -554,6 +557,7 @@ const ValveWater = (() => {
 				row = end + 1;
 			}
 		}
+		w.levelsLive = true;
 	}
 
 	// The waterline at a world point (Infinity where there is no water): the level
@@ -575,46 +579,119 @@ const ValveWater = (() => {
 		return Number.isFinite(level) ? segFraction(r, y - level) : 0;
 	}
 
+	// Scratch for the cells one immersed disc touches: a disc of the maximum
+	// radius spans at most three cells in each direction, so nine slots. The
+	// weight sum is kept beside them because the sampled cell bands do not tile
+	// the plane, so the overlaps have to be normalised to keep the displaced
+	// area exactly the disc's.
+	const spotIdx = new Int32Array(9);
+	const spotW = new Float64Array(9);
+	const spotSum = { count: 0, total: 0 };
+
+	// Cells under the submerged part of one disc, weighted by the overlap of the
+	// disc's box with each cell's sampled band. Fills the scratch arrays and
+	// reports the count and the weight sum through spotSum.
+	function footprint(w, x, y, r, top, bottom) {
+		const cell = w.cell;
+		const nx = w.nx;
+		const gx0 = Math.max(0, Math.floor((x - r) / cell));
+		const gx1 = Math.min(nx - 1, Math.floor((x + r) / cell));
+		const gy0 = Math.max(0, Math.floor((top + G.POUR) / cell));
+		const gy1 = Math.min(w.ny - 1, Math.floor((bottom + G.POUR) / cell));
+		let count = 0;
+		let total = 0;
+		for (let gy = gy0; gy <= gy1; gy++) {
+			const row = gy * nx;
+			for (let gx = gx0; gx <= gx1; gx++) {
+				const j = row + gx;
+				if (!w.air[j]) continue;
+				// Sampled vertical band of the cell: a 2 px floor sliver counts as
+				// the sliver it is, not as a whole cell.
+				const lo = top > w.ceil[j] ? top : w.ceil[j];
+				const hi = bottom < w.floor[j] ? bottom : w.floor[j];
+				if (hi <= lo) continue;
+				const lx = x - r > gx * cell ? x - r : gx * cell;
+				const hx = x + r < (gx + 1) * cell ? x + r : (gx + 1) * cell;
+				if (hx <= lx) continue;
+				const weight = (hi - lo) * (hx - lx);
+				spotIdx[count] = j;
+				spotW[count] = weight;
+				total += weight;
+				count++;
+			}
+		}
+		spotSum.count = count;
+		spotSum.total = total;
+	}
+
 	// Grains displace water by their submerged disc area against the waterline,
-	// one-way in this slice. Publishing first means the displacement and the
-	// buoyancy of one step both read the same snapshot, taken before this step
-	// moves any water: a force that read the surface its own step just moved
-	// would make grains chase the relaxation.
+	// one-way in this slice, and the area is spread over the cells the disc
+	// covers rather than loaded on the cell of its centre. One cell is 6 px and a
+	// grain is up to 6.2 px across, so a centre-cell load makes the capacity, and
+	// with it the waterline a float reads, step whenever the grain crosses an
+	// edge; in a shallow pool the centre cell can be a 2 px floor sliver whose
+	// capacity is smaller than the disc, so it flips between full and not and
+	// pumps the water at ~0.5 Hz. Publishing first means displacement and
+	// buoyancy of one step both read the snapshot taken before this step moves
+	// any water: a force that read the surface its own step just moved would make
+	// grains chase the relaxation.
 	function displace(sim) {
 		const w = sim.water;
 		publishLevels(w);
 		const gdisp = w.gdisp;
 		const dispList = w.dispList;
+		const nx = w.nx;
 		for (let k = 0, n = w.dispCount; k < n; k++) gdisp[dispList[k]] = 0;
 		let used = 0;
 		for (let k = 0; k < sim.count; k++) {
-			const gx = Math.floor(sim.x[k] / w.cell);
-			const gy = Math.floor((sim.y[k] + G.POUR) / w.cell);
-			if (gx < 0 || gx >= w.nx || gy < 0 || gy >= w.ny) continue;
-			const i = gy * w.nx + gx;
-			if (!w.air[i]) continue;
-			const level = surfaceAt(w, sim.x[k], sim.y[k]);
-			if (!Number.isFinite(level)) continue;
+			const x = sim.x[k];
+			const y = sim.y[k];
 			const r = sim.r[k];
-			w.gdisp[i] += PI * r * r * segFraction(r, sim.y[k] - level);
-			dispList[used++] = i;
+			const level = surfaceAt(w, x, y);
+			if (!Number.isFinite(level)) continue;
+			const f = segFraction(r, y - level);
+			if (f <= 0) continue;
+			// Only the disc below the waterline displaces: from the waterline (or
+			// the top of the disc, when it is deeper) to the bottom of the disc.
+			const top = level > y - r ? level : y - r;
+			const bottom = y + r;
+			footprint(w, x, y, r, top, bottom);
+			const area = PI * r * r * f;
+			if (spotSum.total <= 0) {
+				// The samples leave a gap under the disc; charge the cell of the
+				// centre, which is air whenever the waterline reached the grain.
+				const i = Math.floor((y + G.POUR) / w.cell) * nx + Math.floor(x / w.cell);
+				if (!w.air[i]) continue;
+				gdisp[i] += area;
+				dispList[used++] = i;
+				continue;
+			}
+			const share = area / spotSum.total;
+			for (let s = 0; s < spotSum.count; s++) {
+				const j = spotIdx[s];
+				gdisp[j] += spotW[s] * share;
+				dispList[used++] = j;
+			}
 		}
 		w.dispCount = used;
-		const area = w.area;
+		const cap = w.area;
 		for (let k = 0; k < used; k++) {
 			const i = dispList[k];
-			if (gdisp[i] > area[i]) gdisp[i] = area[i];
+			if (gdisp[i] > cap[i]) gdisp[i] = cap[i];
 		}
 	}
 
 	// Water off (never enabled, or disabled mid-run): nobody is wet. A disabled
 	// grid keeps its volume, but the page must not draw it and grains must not
-	// feel it, so the published waterline is cleared rather than left stale.
+	// feel it, so the published waterline is cleared rather than left stale. The
+	// step calls this every tick while water is off, so it writes only when there
+	// is a published waterline to clear, not two grid-sized fills per tick.
 	function clearLevels(sim) {
 		const w = sim.water;
-		if (!w) return;
+		if (!w || !w.levelsLive) return;
 		w.levels.fill(NaN);
 		w.levelUp.fill(NaN);
+		w.levelsLive = false;
 	}
 
 	// ---- display -----------------------------------------------------------
@@ -785,6 +862,7 @@ const ValveWater = (() => {
 		w.layoutSeen.fill(-1);
 		w.levels.fill(NaN);
 		w.levelUp.fill(NaN);
+		w.levelsLive = false;
 	}
 
 	// True where a display texel is inside the metal: the fill must never paint
