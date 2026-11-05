@@ -100,6 +100,13 @@ const ValveWater = (() => {
 			cell: c,
 			nx, ny, count,
 			air: new Uint8Array(count),
+			// Every SUBDIV*SUBDIV sample of every cell: 0 metal, 1 an opening too
+			// tight to hold water, 2 water. The display asks this grid a 2 px
+			// question instead of re-sampling the geometry per frame.
+			fine: new Uint8Array(count * SUBDIV * SUBDIV),
+			sub: c / SUBDIV,
+			fnx: nx * SUBDIV,
+			fny: ny * SUBDIV,
 			airList: new Int32Array(count),
 			airCount: 0,
 			area: new Float64Array(count),
@@ -170,6 +177,10 @@ const ValveWater = (() => {
 
 	// ---- geometry sampling -------------------------------------------------
 
+	// A cell's SUBDIV*SUBDIV samples are kept, not just summed. The display reads
+	// them instead of asking the geometry again per texel: a 3 px fill scan is
+	// ~62k clearance evaluations a frame (4.9 ms measured), which is the same
+	// sampling the mask already paid for at 15 Hz.
 	function sampleCell(sim, w, i) {
 		const c = w.cell;
 		const gx = i % w.nx;
@@ -178,14 +189,34 @@ const ValveWater = (() => {
 		const y0 = gy * c - G.POUR;
 		const sub = c / SUBDIV;
 		const subArea = sub * sub;
+		const fine = w.fine;
+		const fnx = w.fnx;
+		// The sample grid is row-major over the whole field, so a lookup by world
+		// point is one index; packing the nine samples per cell instead would make
+		// the display's per-texel address arithmetic wrong in a way that is easy to
+		// miss (the first version did exactly that).
+		const col = gx * SUBDIV;
 		let area = 0;
 		let floor = -Infinity;
 		let ceil = Infinity;
 		for (let b = 0; b < SUBDIV; b++) {
 			const y = y0 + (b + 0.5) * sub;
-			for (let a = 0; a < SUBDIV; a++) {
+			let f = (gy * SUBDIV + b) * fnx + col;
+			for (let a = 0; a < SUBDIV; a++, f++) {
 				const x = x0 + (a + 0.5) * sub;
-				if (G.airClearance(sim.layout, x, y) < WATER_MIN) continue;
+				const clear = G.airClearance(sim.layout, x, y);
+				// 0 = metal, 1 = an opening too thin to hold water, 2 = water. The
+				// fill paints 1 and 2 (a drawn passage is a passage), the solver only
+				// ever charges water to 2.
+				if (clear <= 0) {
+					fine[f] = 0;
+					continue;
+				}
+				if (clear < WATER_MIN) {
+					fine[f] = 1;
+					continue;
+				}
+				fine[f] = 2;
 				area += subArea;
 				if (y > floor) floor = y;
 				if (y < ceil) ceil = y;
@@ -696,17 +727,43 @@ const ValveWater = (() => {
 
 	// ---- display -----------------------------------------------------------
 
-	const DISPLAY = 3;
-
-	// A finer grid than the solver so the fill reads as a sheet rather than 6 px
-	// blocks; each display pixel still borrows its water cell's passability and
-	// waterline, so the picture can never claim water where the solver has none.
-	function makeDisplay() {
-		const cell = DISPLAY;
+	// The fill is drawn on the mask's own 2 px sample grid, so a texel's centre is
+	// one of the samples the solver already admitted or rejected: the picture
+	// cannot claim water the solver refused, and cannot paint a wall. Asking the
+	// geometry per texel instead cost 4.9 ms a frame (measured) and repeated the
+	// mask's own work; the row/column tables below keep the per-texel loop free of
+	// division as well, because at 140k texels even that shows.
+	function makeDisplay(w) {
+		const cell = w.sub;
 		const nx = Math.ceil(G.SIZE / cell);
 		const ny = Math.ceil((G.SIZE + 2 * G.POUR) / cell);
-		// surf: the top of each column's water, NaN where the column is dry.
-		return { cell, nx, ny, air: new Uint8Array(nx * ny), level: new Float64Array(nx * ny), surf: new Float64Array(nx) };
+		const n = nx * ny;
+		const field = {
+			cell, nx, ny,
+			// air: the texel's water cell is open; solid: the texel itself is metal.
+			// level: the waterline the texel sees; a Float32 is a picture, not physics.
+			// surf: the top of each column's water, NaN where the column is dry.
+			air: new Uint8Array(n),
+			solid: new Uint8Array(n),
+			level: new Float32Array(n),
+			surf: new Float32Array(nx),
+			// Water cell row/column of each display row/column, and the fine sample
+			// row, so sampleDisplay indexes arrays instead of dividing.
+			wrow: new Int32Array(ny),
+			wcol: new Int32Array(nx),
+			frow: new Int32Array(ny),
+		};
+		for (let gx = 0; gx < nx; gx++) {
+			field.wcol[gx] = Math.min(w.nx - 1, Math.floor(((gx + 0.5) * cell) / w.cell));
+		}
+		for (let gy = 0; gy < ny; gy++) {
+			const y = (gy + 0.5) * cell - G.POUR;
+			field.wrow[gy] = Math.min(w.ny - 1, Math.max(0, Math.floor((y + G.POUR) / w.cell)));
+			// The display grid is the sample grid, so the fine row is the display row
+			// itself as long as it stays inside the mask.
+			field.frow[gy] = gy < w.fny ? gy : w.fny - 1;
+		}
+		return field;
 	}
 
 	// Per column, walk up from the bottom: the waterline a pixel belongs to is the
@@ -716,30 +773,40 @@ const ValveWater = (() => {
 	// how far up its level reaches inside one vertical run.
 	function sampleDisplay(sim, field) {
 		const w = sim.water;
-		const c = field.cell;
 		const nx = field.nx;
+		const ny = field.ny;
 		const air = field.air;
+		const solid = field.solid;
 		const level = field.level;
 		const surf = field.surf;
+		const wair = w.air;
+		const levels = w.levels;
+		const fine = w.fine;
 		const wnx = w.nx;
+		const fnx = w.fnx;
 		for (let gx = 0; gx < nx; gx++) {
-			const wgx = Math.min(wnx - 1, Math.floor((gx + 0.5) * c / w.cell));
+			const wi0 = field.wcol[gx];
+			const fx = gx < fnx ? gx : fnx - 1;
 			let top = Infinity;
 			let wet = Infinity;
-			for (let gy = field.ny - 1, i = (field.ny - 1) * nx + gx; gy >= 0; gy--, i -= nx) {
-				const y = (gy + 0.5) * c - G.POUR;
-				const wi = Math.min(w.ny - 1, Math.floor((y + G.POUR) / w.cell)) * wnx + wgx;
-				if (!w.air[wi]) {
+			for (let gy = ny - 1, i = (ny - 1) * nx + gx; gy >= 0; gy--, i -= nx) {
+				const wi = field.wrow[gy] * wnx + wi0;
+				if (!wair[wi]) {
 					// Metal ends the vertical run: a pool above it is another pool.
 					air[i] = 0;
+					solid[i] = 1;
 					level[i] = Infinity;
 					top = Infinity;
 					continue;
 				}
-				const s = w.levels[wi];
+				const s = levels[wi];
 				if (s < top) top = s;
 				air[i] = 1;
+				// The water cell is open, but this texel can still be a wall band the
+				// cell's single sample never saw; the mask's fine grid knows.
+				solid[i] = fine[field.frow[gy] * fnx + fx] === 0 ? 1 : 0;
 				level[i] = top;
+				const y = (gy + 0.5) * field.cell - G.POUR;
 				if (y > top) wet = top;
 			}
 			surf[gx] = wet;
@@ -873,7 +940,7 @@ const ValveWater = (() => {
 	}
 
 	return {
-		CELL, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RELAX_ITERS, MASK_DT, DRY_SKIP, DISPLAY,
+		CELL, SUBDIV, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RELAX_ITERS, MASK_DT, DRY_SKIP,
 		create, step, rebuild, relax, settle, displace, clearLevels, publishLevels,
 		makeDisplay, sampleDisplay, solidAt, segFraction, submerged,
 		setVent, setSupply, supplyFromSI, volumeSI, drainAll, reset,

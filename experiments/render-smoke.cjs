@@ -622,7 +622,13 @@ for (let i = 0; i < 3; i++) frames.shift()((now += 33));
 // Water: the controls park the air backend, the fill paints a texture plus the
 // surface line, draining empties it, and switching water off restores the air
 // mode the player had.
-const water = { on: element("water-on"), vent: element("water-vent"), rate: element("water-rate"), drain: element("water-drain") };
+const water = {
+	on: element("water-on"),
+	vent: element("water-vent"),
+	column: element("water-column"),
+	rate: element("water-rate"),
+	drain: element("water-drain"),
+};
 water.on.checked = true;
 water.on.onchange();
 assert.equal(element("pressure-grid").disabled, true, "water parks the pressure radios");
@@ -633,6 +639,17 @@ water.vent.onchange();
 water.rate.value = "2000";
 water.rate.oninput();
 assert.ok(element("water-rate-value").value.includes("2000"), "rate readout follows the slider");
+// The vent's column is a real control: it used to be a setVent() argument nobody
+// could reach from the page.
+assert.equal(water.column.disabled, false);
+water.column.value = "8";
+water.column.oninput();
+assert.equal(element("water-column-value").value, "8", "the column slider reaches setVent");
+// setVent clamps to the field, and the readout is read back from the water state,
+// so an out-of-range slider value cannot lie about where the vent pours.
+water.column.value = "42";
+water.column.oninput();
+assert.equal(element("water-column-value").value, "10", "the vent column is clamped to the field");
 // Resume from whatever paused state the earlier scenarios left behind.
 if (element("pause").textContent === "Resume") element("pause").onclick();
 // The page refreshes the stats line after 0.4 s of accumulated frame time.

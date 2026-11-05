@@ -226,3 +226,34 @@
   30 Hz mask clock (relaxation still runs each step): 4.4 → 1.4 ms/step turning,
   0.48 ms/step static. Iterate an air-cell list and skip dry pairs instead of
   scanning metal cells and recomputing gx/gy per cell.
+
+## Water display and capture (0.3 slices 4-5)
+- Do not re-derive in the render what the mask already sampled. A per-texel
+  geometry query for the water fill cost 4.9 ms a frame (62k clearance calls at
+  3 px) and repeated work the solver did at 15 Hz. Keep the mask's own
+  sub-samples (three states: metal / too tight for water / water), draw on that
+  sample grid, and the pass costs 1.3 ms. Index the sample grid the way it is
+  built: a per-cell packing addressed row-major reads plausible garbage and only
+  a fixture that walks the grid catches it.
+- A tuning constant that only exists as a module `const` cannot be swept by a
+  script, so a published balance table becomes folklore. Make the knob a sim
+  field (`sim.waterDrag`, `setWaterDrag`) and commit the sweep next to the
+  acceptance run, sharing one scenario module so the two cannot drift.
+- A control with no page wiring is a dead API: `setVent(w, column, open)` existed
+  while every caller passed the state's own column, so the pour was fixed. Drive
+  the new control from the page smoke test, including a value that must clamp.
+- A float has buoyancy and nothing else: it cannot be pushed sideways. An open
+  pocket at the surface level takes none of them (measured 0 of 24 in 14 s), so
+  "skim the layer into a side chamber" is not a mechanic this model can offer.
+  Capture vertically: lift the layer over a gate, shut the gate under it, drain.
+- A float that starts under a pile in a two-grain-wide passage is jammed (a
+  rotor arm is 13.8 px wide and its roof is flat, so there is no force to slide
+  along). Pour the mixture into the water at the top of a shaft instead: the
+  dense grains sink, the floats stay at the surface, and nothing has to pass
+  through the pile.
+- A hole in the floor drains grains with the water. Opening a bottom port to
+  empty "the lower half" of a split pool removed 20 of 24 grains. Either drain
+  through something a grain cannot pass, or keep the water and count the state.
+- The surface must not outrun the slowest float: net buoyancy `0.2 g` at 6 /s
+  drag caps a green float near 19 px/s, so a vent rate that lifts the level
+  faster than that leaves the layer behind. Stage a slow final raise.

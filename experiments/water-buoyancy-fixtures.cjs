@@ -196,15 +196,16 @@ for (const [color, want] of [[3, 0.5], [5, 0.8]]) {
 	S.setWater(sim, true);
 	const v = fillChamber(sim, 2000);
 	const w = sim.water;
-	const field = W.makeDisplay();
+	const field = W.makeDisplay(sim.water);
 	W.sampleDisplay(sim, field);
 	// `level` is the waterline the texel sees; the fill paints every texel below
 	// it, so the topmost painted texel of a column must sit on the pool surface
 	// (within one display cell) and nothing above may paint.
 	let wet = 0;
+	let dropped = 0;
 	let topPainted = new Float64Array(field.nx).fill(Infinity);
 	const map = { nx: field.nx, ny: field.ny, img: { data: new Uint8ClampedArray(field.nx * field.ny * 4) }, ctx: { putImageData() {} } };
-	R.renderWater(map, field, sim.layout);
+	R.renderWater(map, field);
 	const data = map.img.data;
 	for (let gy = 0; gy < field.ny; gy++) {
 		const y = (gy + 0.5) * field.cell - G.POUR;
@@ -219,6 +220,14 @@ for (const [color, want] of [[3, 0.5], [5, 0.8]]) {
 			}
 			if (W.solidAt(sim.layout, x, y)) {
 				assert.equal(alpha, 0, "a texel inside solid metal is dropped, not painted");
+				assert.equal(field.solid[i], 1, "the mask's own fine grid marks that metal");
+				continue;
+			}
+			// The mask may also reject a texel within one 2 px sample of a wall; it
+			// must never do the opposite, or the fill would paint metal it sampled.
+			if (field.solid[i]) {
+				assert.equal(alpha, 0, "the mask's own rejection is honoured by the fill");
+				dropped++;
 				continue;
 			}
 			if (field.level[i] === Infinity) {
@@ -235,6 +244,9 @@ for (const [color, want] of [[3, 0.5], [5, 0.8]]) {
 		}
 	}
 	assert.ok(wet > 50, `the fill covers the pool (${wet} texels)`);
+	// Over-dropping is the price of sampling at 2 px instead of per texel; it must
+	// stay a thin edge, not a hole in the sheet.
+	assert.ok(dropped < wet * 0.25, `the fine grid keeps the sheet (${dropped} open texels near walls dropped, ${wet} painted)`);
 	for (let gx = 0; gx < field.nx; gx++) {
 		const top = topPainted[gx];
 		if (!Number.isFinite(top)) continue;

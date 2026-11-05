@@ -15,7 +15,6 @@
 	const ctx = canvas.getContext("2d");
 	const legendRange = $("legend-range");
 	const airMap = R.makeAirMap(4);
-	const waterMap = R.makeWaterMap(Math.ceil(G.SIZE / Water.DISPLAY), Math.ceil((G.SIZE + G.POUR * 2) / Water.DISPLAY));
 	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
 	const point = { x: 0, y: 0 };
@@ -62,6 +61,7 @@
 	let legendReason = "";
 	let fieldAlpha = 0;
 	let waterField = null;
+	let waterMap = null;
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
@@ -117,6 +117,9 @@
 	function newLayout() {
 		layout = G.createLayout(readSeed());
 		sim = S.create(layout);
+		// The display grid is built for one water mask; a new field gets a new one.
+		waterField = null;
+		waterMap = null;
 		S.setSpeed(sim, +$("speed").value);
 		S.setAutoRotate(sim, readAutoPercent() / 100);
 		S.setAirForce(sim, +$("force").value);
@@ -589,11 +592,17 @@
 		const on = !!(sim.water && sim.water.enabled);
 		$("water-on").checked = on;
 		$("water-vent").disabled = !on;
+		$("water-column").disabled = !on;
 		$("water-rate").disabled = !on;
 		$("water-drain").disabled = !on;
 		$("water-vent").checked = on && sim.water.ventOpen;
 		const rate = sim.water ? sim.water.rate : +$("water-rate").value;
 		$("water-rate-value").value = Math.round(rate) + " px²/s";
+		// The vent pours into one column, so the pour can be aimed at a shaft or a
+		// trap instead of only the middle of the field.
+		const column = sim.water ? sim.water.ventColumn : +$("water-column").value - 1;
+		$("water-column").value = String(column + 1);
+		$("water-column-value").value = String(column + 1);
 		$("pressure-particles").disabled = on;
 		$("pressure-grid").disabled = on;
 		syncPressureRadios();
@@ -605,7 +614,7 @@
 		if (on) {
 			// The vent's column is the player's chosen column, clamped to the field.
 			const w = sim.water;
-			Water.setVent(w, w.ventColumn, $("water-vent").checked);
+			Water.setVent(w, +$("water-column").value - 1, $("water-vent").checked);
 			Water.setSupply(w, +$("water-rate").value);
 		}
 		syncWaterUI();
@@ -616,6 +625,12 @@
 	$("water-vent").onchange = () => {
 		if (!sim.water) return;
 		Water.setVent(sim.water, sim.water.ventColumn, $("water-vent").checked);
+		if (paused) drawFrame(false);
+	};
+	$("water-column").oninput = () => {
+		if (!sim.water) return;
+		Water.setVent(sim.water, +$("water-column").value - 1, sim.water.ventOpen);
+		$("water-column-value").value = String(sim.water.ventColumn + 1);
 		if (paused) drawFrame(false);
 	};
 	$("water-rate").oninput = () => {
@@ -1139,15 +1154,19 @@
 		ctx.restore();
 	}
 
-	// The fill samples the solver's own passability and waterline on a 3 px grid.
-	// It is drawn behind the grains and kept translucent, so metal never reads as
-	// wet and a submerged grain stays legible. The surface line goes on top of the
+	// The fill is the solver's own 2 px mask grid: passability and waterline come
+	// from one sample per texel, so metal never reads as wet and the sheet cannot
+	// disagree with the mask. It is drawn behind the grains and kept translucent,
+	// so a submerged grain stays legible. The surface line goes on top of the
 	// texture: behind a bright grain the sheet alone would not read as a level.
 	function drawWater() {
 		const w = sim.water;
-		if (!waterField) waterField = Water.makeDisplay();
+		if (!waterField) {
+			waterField = Water.makeDisplay(w);
+			waterMap = R.makeWaterMap(waterField.nx, waterField.ny);
+		}
 		Water.sampleDisplay(sim, waterField);
-		R.renderWater(waterMap, waterField, layout);
+		R.renderWater(waterMap, waterField);
 		ctx.save();
 		ctx.imageSmoothingEnabled = true;
 		ctx.drawImage(waterMap.canvas, 0, -G.POUR, waterMap.nx * waterField.cell, waterMap.ny * waterField.cell);

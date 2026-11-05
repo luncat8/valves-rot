@@ -200,6 +200,10 @@ const ValveSimulation = (() => {
 		// Pressure mode parked while water is on, restored when water is off.
 		airBeforeWater: null,
 		water: null,
+		// Submerged drag while water is on, per second at full submersion. A sim
+		// field rather than only the module constant, so the balance table in the
+		// water plan can be re-measured by a script instead of by editing this file.
+		waterDrag: WATER_DRAG,
 			// Page slider: multiplies how hard the pressure backend pushes grains.
 			airForce: 1,
 			inlets: INL.create(),
@@ -742,6 +746,7 @@ const ValveSimulation = (() => {
 		const nx = water ? water.nx : 0;
 		const ny = water ? water.ny : 0;
 		const levelUp = water ? water.levelUp : null;
+		const waterDrag = sim.waterDrag;
 		for (let k = 0; k < sim.count; k++) {
 			let gravity = GRAVITY;
 			let wet = 0;
@@ -759,7 +764,7 @@ const ValveSimulation = (() => {
 			sim.vy[k] = (sim.vy[k] + gravity * h) * damp;
 			if (wet > 0) {
 				// (1 - exp(-rate f h)) is in [0, 1), so drag only removes speed.
-				const give = 1 - Math.exp(-WATER_DRAG * wet * h);
+				const give = 1 - Math.exp(-waterDrag * wet * h);
 				sim.vx[k] -= sim.vx[k] * give;
 				sim.vy[k] -= sim.vy[k] * give;
 			}
@@ -1323,6 +1328,12 @@ const ValveSimulation = (() => {
 		sim.airForce = force > 0 ? force : 0;
 	}
 
+	// How quickly still water brakes a submerged grain. Zero is the free case the
+	// force-law fixtures use; the shipped value is WATER_DRAG.
+	function setWaterDrag(sim, rate) {
+		sim.waterDrag = rate > 0 ? rate : 0;
+	}
+
 	function setSpeed(sim, speed) {
 		sim.speed = speed > 0 ? speed : 0;
 	}
@@ -1408,6 +1419,7 @@ const ValveSimulation = (() => {
 		setGoalFeed,
 		setSpeed,
 		setAirForce,
+		setWaterDrag,
 		setLubricant,
 		setLubricantStress,
 		setPressure,

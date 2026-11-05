@@ -2,9 +2,9 @@
 // alpha change can be judged without a browser. Left is the seeded field mid-fill
 // from the vent; right is a sealed pool with one grain of every material, so the
 // float/sink result of slice 3 is visible in the same picture.
-// It composites the same layers the page does — dark ceramic, pale passages, the
-// translucent water sheet, then the grains — and is a colour preview, not a render
-// test (that is render-smoke.cjs).
+// The water sheet is painted by the page's own renderer through the shared
+// water painter, so it is a colour preview of the real layer, not a copy of it
+// (the render wiring itself is asserted in render-smoke.cjs).
 // Run: node experiments/water-picture.cjs [seed] [seconds]
 const path = require("node:path");
 const { writePng } = require("./png-writer.cjs");
@@ -14,18 +14,11 @@ const SHARED = path.join(ROOT, "prototype", "shared");
 const G = require(path.join(SHARED, "geometry.js"));
 const S = require(path.join(SHARED, "simulation.js"));
 const W = require(path.join(SHARED, "water.js"));
+const P = require("./water-paint.cjs");
 
 const SEED = Number(process.argv[2]) || 7;
 const SECONDS = Number(process.argv[3]) || 6;
 const OUT = path.join(__dirname, "logs", "water-state-0.3.png");
-const GRAIN = S.GRAIN_COLORS.map(hex => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
-
-// The page's water sheet, kept next to render.js's constants so a change there
-// shows up here: deep blue, alpha ramping in over a short band.
-const WATER_RGB = [30, 112, 210];
-const WATER_ALPHA_MIN = 0.58;
-const WATER_ALPHA_FULL = 1;
-const WATER_BAND = 6;
 
 function fieldSim() {
 	const sim = S.create(G.createLayout(SEED));
@@ -61,84 +54,12 @@ function poolSim() {
 	return sim;
 }
 
-function mix(px, o, rgb, a) {
-	px[o] += (rgb[0] - px[o]) * a;
-	px[o + 1] += (rgb[1] - px[o + 1]) * a;
-	px[o + 2] += (rgb[2] - px[o + 2]) * a;
-}
-
-// `view` is the world rect to draw and how many pixels per world px, so the
-// sealed pool can be inspected at a scale where a 2.7 px grain still reads.
-function render(sim, view) {
-	const w = sim.water;
-	const vx0 = view ? view.x0 : 0;
-	const vy0 = view ? view.y0 : -G.POUR;
-	const sc = view ? view.scale : 1;
-	const wdt = Math.round((view ? view.w : G.SIZE) * sc);
-	const hgt = Math.round((view ? view.h : G.SIZE + 2 * G.POUR) * sc);
-	const px = Buffer.alloc(wdt * hgt * 3);
-	for (let i = 0; i < px.length; i += 3) {
-		px[i] = 18;
-		px[i + 1] = 22;
-		px[i + 2] = 29;
-	}
-	// Passages: pale ceramic where the shared clearance admits a grain-sized disc.
-	for (let y = 0; y < hgt; y++) {
-		for (let x = 0; x < wdt; x++) {
-			const clear = G.airClearance(sim.layout, vx0 + (x + 0.5) / sc, vy0 + (y + 0.5) / sc);
-			const o = (y * wdt + x) * 3;
-			if (clear >= 2.7) {
-				px[o] = 236;
-				px[o + 1] = 240;
-				px[o + 2] = 244;
-			} else if (clear > 0) {
-				px[o] = 118;
-				px[o + 1] = 128;
-				px[o + 2] = 140;
-			}
-		}
-	}
-	// Water sheet: alpha grows with the depth below the waterline, read from the
-	// same published levels the buoyancy uses.
-	for (let y = 0; y < hgt; y++) {
-		for (let x = 0; x < wdt; x++) {
-			const wy = vy0 + (y + 0.5) / sc;
-			const level = W.surfaceAt(w, vx0 + (x + 0.5) / sc, wy);
-			const depth = wy - level;
-			if (!(depth > 0)) continue;
-			let t = depth / WATER_BAND;
-			if (t > 1) t = 1;
-			mix(px, (y * wdt + x) * 3, WATER_RGB, WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t);
-		}
-	}
-	// Grains on top, so a submerged grain is read through the sheet.
-	for (let k = 0; k < sim.count; k++) {
-		const cx = (sim.x[k] - vx0) * sc;
-		const cy = (sim.y[k] - vy0) * sc;
-		const rad = sim.r[k] * sc;
-		const col = GRAIN[sim.color[k]];
-		const edge = (rad - 1) * (rad - 1);
-		for (let dy = -Math.ceil(rad); dy <= rad; dy++) {
-			for (let dx = -Math.ceil(rad); dx <= rad; dx++) {
-				const d2 = dx * dx + dy * dy;
-				if (d2 > rad * rad) continue;
-				const x = Math.round(cx + dx);
-				const y = Math.round(cy + dy);
-				if (x < 0 || x >= wdt || y < 0 || y >= hgt) continue;
-				mix(px, (y * wdt + x) * 3, col, d2 > edge ? 0.55 : 1);
-			}
-		}
-	}
-	return { rgb: px, w: wdt, h: hgt };
-}
-
-
 const field = fieldSim();
 const pool = poolSim();
 const chamber = pool.layout.valves[5 * G.N + 4];
 writePng(
 	OUT,
-	[render(field), render(pool, { x0: chamber.cx - 62, y0: chamber.cy - 42, w: 124, h: 84, scale: 3 })],
+	[P.panel(field, { x0: 0, y0: -G.POUR, w: G.SIZE, h: G.SIZE + 2 * G.POUR }, 1), P.panel(pool, { x0: chamber.cx - 62, y0: chamber.cy - 42, w: 124, h: 84 }, 3)],
 	{ background: 12 },
 );
 if (process.env.WATER_DEBUG) {

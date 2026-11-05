@@ -898,37 +898,43 @@ const ValveRender = (() => {
 		return { canvas: c, ctx, img: ctx.createImageData(nx, ny), nx, ny };
 	}
 
-	function renderWater(map, field, layout) {
+	// The passability comes from the water mask's own sample grid (`solid`), not
+	// from a per-texel geometry sweep: a 3 px fill scan asked the geometry 62,400
+	// times a frame, which measured 4.9 ms and repeated work the mask already did.
+	// Row-major walk so the waterline row is computed once per row, not per texel.
+	function renderWater(map, field) {
 		const data = map.img.data;
 		const air = field.air;
+		const solid = field.solid;
 		const level = field.level;
 		const cell = field.cell;
 		const nx = map.nx;
-		const n = air.length;
 		const band = WATER_BAND;
-		for (let k = 0, o = 0; k < n; k++, o += 4) {
-			if (!air[k]) {
-				data[o + 3] = 0;
-				continue;
+		const r = WATER_RGB[0];
+		const g = WATER_RGB[1];
+		const b = WATER_RGB[2];
+		let o = 0;
+		for (let gy = 0; gy < map.ny; gy++) {
+			const y = (gy + 0.5) * cell - G.POUR;
+			for (let gx = 0; gx < nx; gx++, o += 4) {
+				const k = gy * nx + gx;
+				if (!air[k] || solid[k]) {
+					data[o + 3] = 0;
+					continue;
+				}
+				const depth = y - level[k];
+				if (!(depth > 0)) {
+					data[o + 3] = 0;
+					continue;
+				}
+				let t = depth / band;
+				if (t > 1) t = 1;
+				const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
+				data[o] = r;
+				data[o + 1] = g;
+				data[o + 2] = b;
+				data[o + 3] = (a * 255) | 0;
 			}
-			const x = ((k % nx) + 0.5) * cell;
-			if (G.airClearance(layout, x, (((k / nx) | 0) + 0.5) * cell - G.POUR) <= 0) {
-				data[o + 3] = 0;
-				continue;
-			}
-			const y = (((k / map.nx) | 0) + 0.5) * cell - G.POUR;
-			const depth = y - level[k];
-			if (!(depth > 0)) {
-				data[o + 3] = 0;
-				continue;
-			}
-			let t = depth / band;
-			if (t > 1) t = 1;
-			const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
-			data[o] = WATER_RGB[0];
-			data[o + 1] = WATER_RGB[1];
-			data[o + 2] = WATER_RGB[2];
-			data[o + 3] = (a * 255) | 0;
 		}
 		map.ctx.putImageData(map.img, 0, 0);
 	}
