@@ -284,4 +284,35 @@ function conservation(sim, tag) {
 	}
 }
 
-console.log("OK  water slice 2: components, sills, perched pools, split/merge, displacement, supply/drain/overflow, two resolutions");
+// 9. A valve replaced at the SAME angle still invalidates the mask. The cache
+//    used to key on the rotor angle alone, so swapping a valve left the water
+//    grid describing the old passage.
+{
+	const spec = { "4,5": ["hollow", [], RV * 0.85] };
+	const sim = makeSim(spec);
+	const w = sim.water;
+	const v = sim.layout.valves[5 * N + 4];
+	const cell = cellAt(w, v.cx, v.cy);
+	w.vol[cell] = 400;
+	W.settle(w, 300);
+	assert.ok(w.air[cell], "the chamber is air before the swap");
+	const vol = W.storedVol(w);
+	const blank = G.TYPES.find(t => t.kind === "solid" && t.ports.length === 0);
+	S.installValve(sim, 5 * N + 4, blank, 0); // same angle: 0
+	W.rebuild(sim);
+	assert.equal(w.air[cell], 0, "a sealed valve is no longer water-holding air");
+	assert.ok(Math.abs(W.storedVol(w) - vol) < 1e-6, `replacement conserves volume (${vol} -> ${W.storedVol(w)})`);
+	// The closing wall pushes water into the void next to it (a real corridor) and
+	// carries the rest; either way it is accounted, never left in phantom void.
+	const trapped = W.storedVol(w) - W.totalVol(w);
+	assert.ok(trapped > 0 || W.totalVol(w) > 0, "the water left the sealed chamber");
+	assert.ok(W.totalVol(w) <= vol + 1e-6, "nothing is created by the swap");
+	// Swap the chamber back at the same angle: the passage and its water return.
+	S.installValve(sim, 5 * N + 4, G.TYPES.find(t => t.id === "hollow-blank"), 0);
+	W.rebuild(sim);
+	assert.ok(w.air[cell], "the reopened chamber is air again");
+	assert.ok(W.totalVol(w) > 0, "the carried water comes back on reopen");
+	console.log("ok  same-angle valve replacement re-samples the mask");
+}
+
+console.log("OK  water slice 2: components, sills, perched pools, split/merge, displacement, supply/drain/overflow, replacement, two resolutions");

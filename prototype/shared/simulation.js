@@ -38,6 +38,12 @@ const ValveSimulation = (() => {
 	const FRICTION = 0.12;
 	const DAMPING = 0.05;
 	const WALL_FRICTION = 0.1;
+	// Submerged drag toward still water, per second at full submersion. The
+	// exponential step bound (1 - exp(-rate f h)) can only remove speed, so the
+	// water never injects energy; it only sets how fast a grain reaches its
+	// terminal velocity. 6/s gives a dense grain ~47 px/s sink and a buoyant one
+	// ~93 px/s rise at this gravity.
+	const WATER_DRAG = 6;
 	const MAX_SPEED = 300;
 	const ITERATIONS = 3;
 	// Overlap the solver tolerates before it calls a contact a touch. Kept tight
@@ -186,8 +192,13 @@ const ValveSimulation = (() => {
 		const reach = G.drainReach(layout);
 		const sim = {
 		layout,
+		// Bumped by every layout mutation that is not a rotor angle (a replaced
+		// valve keeps its angle), so caches keyed on geometry can notice it.
+		layoutVersion: 0,
 		pressure: null,
 		pressureMode: "off",
+		// Pressure mode parked while water is on, restored when water is off.
+		airBeforeWater: null,
 		water: null,
 			// Page slider: multiplies how hard the pressure backend pushes grains.
 			airForce: 1,
@@ -715,11 +726,43 @@ const ValveSimulation = (() => {
 		sim.vy[k] = vy + kick * STRESS_DROP;
 	}
 
+	// Archimedes on the grain's own material: with F_b = rho_w g V_sub and
+	// m = rho_g V, the vertical acceleration is g (1 - rho_w/rho_g f), where f is
+	// the submerged fraction. Fully submerged that reads directly off the palette:
+	// buoyant blue -g, neutral teal 0, dense red +0.5 g. Water density cancels
+	// against the solver's mass scale, so no per-grain mass is needed here.
+	function buoyantGravity(sim, k, f) {
+		return GRAVITY * (1 - (WATER_DENSITY / materialDensity(sim.color[k])) * f);
+	}
+
 	function integrate(sim, h) {
 		const damp = 1 - DAMPING * h;
+		const water = sim.water && sim.water.enabled ? sim.water : null;
+		const cell = water ? water.cell : 0;
+		const nx = water ? water.nx : 0;
+		const ny = water ? water.ny : 0;
+		const levelUp = water ? water.levelUp : null;
 		for (let k = 0; k < sim.count; k++) {
+			let gravity = GRAVITY;
+			let wet = 0;
+			// Waterline lookup inlined: one array read per grain, not a walk.
+			if (water) {
+				const gx = (sim.x[k] / cell) | 0;
+				const gy = ((sim.y[k] + POUR) / cell) | 0;
+				if (gx >= 0 && gx < nx && gy >= 0 && gy < ny) {
+					const level = levelUp[gy * nx + gx];
+					if (level === level) wet = submergedFraction(sim.r[k], sim.y[k] - level);
+				}
+				if (wet > 0) gravity = buoyantGravity(sim, k, wet);
+			}
 			sim.vx[k] *= damp;
-			sim.vy[k] = (sim.vy[k] + GRAVITY * h) * damp;
+			sim.vy[k] = (sim.vy[k] + gravity * h) * damp;
+			if (wet > 0) {
+				// (1 - exp(-rate f h)) is in [0, 1), so drag only removes speed.
+				const give = 1 - Math.exp(-WATER_DRAG * wet * h);
+				sim.vx[k] -= sim.vx[k] * give;
+				sim.vy[k] -= sim.vy[k] * give;
+			}
 			applyLubricantStress(sim, k, h);
 			clampSpeed(sim, k);
 			target.x = sim.origX[k] + sim.vx[k] * h;
@@ -934,7 +977,7 @@ const ValveSimulation = (() => {
 		for (let it = 0; it < ITERATIONS; it++) resolvePairs(sim);
 		measurePairs(sim);
 		compact(sim);
-		if (sim.water) WATER.step(sim, h);
+		sim.water ? WATER.step(sim, h) : WATER.clearLevels(sim);
 		sim.clock += h;
 		sim.steps++;
 	}
@@ -1099,9 +1142,24 @@ const ValveSimulation = (() => {
 
 	// Water is a separate, off-by-default mode. Enabling lazily builds the volume
 	// grid; disabling keeps the state so re-enabling resumes the same water.
+	// There is no validated gas/water interface yet, so water and the pressure
+	// backends stay exclusive: a submerged cell must not also carry gas or kinetic
+	// air. The player's choice is remembered and restored on the way out.
 	function setWater(sim, enabled) {
-		if (enabled && !sim.water) sim.water = WATER.create(sim);
-		if (sim.water) sim.water.enabled = !!enabled;
+		const on = !!enabled;
+		if (on && !sim.water) sim.water = WATER.create(sim);
+		if (!sim.water) return null;
+		sim.water.enabled = on;
+		if (on) {
+			if (sim.pressureMode !== "off") {
+				sim.airBeforeWater = sim.pressureMode;
+				setPressure(sim, "off");
+			}
+		} else if (sim.airBeforeWater) {
+			const mode = sim.airBeforeWater;
+			sim.airBeforeWater = null;
+			setPressure(sim, mode);
+		}
 		return sim.water;
 	}
 
@@ -1171,6 +1229,7 @@ const ValveSimulation = (() => {
 		const v = G.makeValve(old.i, old.j, type.kind, type.ports, 0, chamber);
 		G.setAngle(v, quarter * HALF_PI);
 		sim.layout.valves[index] = v;
+		sim.layoutVersion++;
 		sim.prevAngle[index] = sim.target[index] = v.angle;
 		sim.cos0[index] = v.cos;
 		sim.sin0[index] = v.sin;
@@ -1278,6 +1337,7 @@ const ValveSimulation = (() => {
 	// are untouched.
 	function setPressure(sim, mode) {
 		if (mode !== "off" && mode !== "particles" && mode !== "grid") return false;
+		if (mode !== "off" && sim.water && sim.water.enabled) return false;
 		if (sim.pressureMode === mode) return true;
 		sim.pressureMode = mode;
 		sim.pressure = pressureFor(sim, mode);
@@ -1327,6 +1387,7 @@ const ValveSimulation = (() => {
 		BIN,
 		GRAIN_COLORS,
 		WATER_DENSITY,
+		WATER_DRAG,
 		MATERIAL_DENSITY,
 		MATERIAL_NAMES,
 		materialIndex,

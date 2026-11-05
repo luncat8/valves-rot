@@ -513,7 +513,8 @@ button[aria-pressed="true"] {
 }
 
 .mode-controls,
-.pressure-controls {
+.pressure-controls,
+.water-controls {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 10px;

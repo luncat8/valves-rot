@@ -7,6 +7,7 @@
 	const I = ValveInlets;
 	const C = ValveCalibration;
 	const Game = ValveGame;
+	const Water = ValveWater;
 	const $ = id => document.getElementById(id);
 
 	const HEIGHT = G.SIZE + G.POUR * 2;
@@ -14,6 +15,7 @@
 	const ctx = canvas.getContext("2d");
 	const legendRange = $("legend-range");
 	const airMap = R.makeAirMap(4);
+	const waterMap = R.makeWaterMap(Math.ceil(G.SIZE / Water.DISPLAY), Math.ceil((G.SIZE + G.POUR * 2) / Water.DISPLAY));
 	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
 	const point = { x: 0, y: 0 };
@@ -59,6 +61,7 @@
 	let legendLabel = "";
 	let legendReason = "";
 	let fieldAlpha = 0;
+	let waterField = null;
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
@@ -121,6 +124,8 @@
 		S.setLubricantStress(sim, +$("lube-stress").value);
 		S.seed(sim);
 		S.setPressure(sim, readMode());
+		if ($("water-on").checked) applyWater();
+		else syncWaterUI();
 		Game.resetMatch(game, sim);
 		if (game.mode !== "lab") setAutoSlider(Math.round(Game.autoFor(game.mode) * 100));
 		rebuild(true);
@@ -230,6 +235,7 @@
 		setAutoSlider(Math.round(Game.autoFor(mode) * 100));
 		Game.consumeDirty(game, scene);
 		if (lab && scene) R.rebuildBackground(scene, layout, sim.caseTint);
+		syncWaterUI();
 		syncPressureRadios();
 		overlayDirty = true;
 		shownIndex = -2;
@@ -546,7 +552,10 @@
 	};
 
 	function pressureChanged() {
+		// Refused while water is on; syncPressureRadios puts the radios back.
 		S.setPressure(sim, readMode());
+		syncPressureRadios();
+		overlayDirty = true;
 		if (paused) drawFrame(true);
 	}
 	$("pressure-off").onchange = pressureChanged;
@@ -571,6 +580,53 @@
 		$("pressure-span").value = String(Number(C.DEFAULT_SPAN.toPrecision(6)));
 		$("pressure-span").oninput();
 	};
+
+	// ---- water --------------------------------------------------------------
+	// Water is off by default, so the dry baseline is untouched. Turning it on
+	// parks the air backend (the two are exclusive for now) and turning it off
+	// gives the player their previous pressure mode back.
+	function syncWaterUI() {
+		const on = !!(sim.water && sim.water.enabled);
+		$("water-on").checked = on;
+		$("water-vent").disabled = !on;
+		$("water-rate").disabled = !on;
+		$("water-drain").disabled = !on;
+		$("water-vent").checked = on && sim.water.ventOpen;
+		const rate = sim.water ? sim.water.rate : +$("water-rate").value;
+		$("water-rate-value").value = Math.round(rate) + " px²/s";
+		$("pressure-particles").disabled = on;
+		$("pressure-grid").disabled = on;
+		syncPressureRadios();
+	}
+
+	function applyWater() {
+		const on = $("water-on").checked;
+		S.setWater(sim, on);
+		if (on) {
+			// The vent's column is the player's chosen column, clamped to the field.
+			const w = sim.water;
+			Water.setVent(w, w.ventColumn, $("water-vent").checked);
+			Water.setSupply(w, +$("water-rate").value);
+		}
+		syncWaterUI();
+		if (paused) drawFrame(true);
+	}
+
+	$("water-on").onchange = applyWater;
+	$("water-vent").onchange = () => {
+		if (!sim.water) return;
+		Water.setVent(sim.water, sim.water.ventColumn, $("water-vent").checked);
+		if (paused) drawFrame(false);
+	};
+	$("water-rate").oninput = () => {
+		if (sim.water) Water.setSupply(sim.water, +$("water-rate").value);
+		$("water-rate-value").value = Math.round(+$("water-rate").value) + " px²/s";
+	};
+	$("water-drain").onclick = () => {
+		if (sim.water) Water.drainAll(sim.water);
+		if (paused) drawFrame(true);
+	};
+	syncWaterUI();
 
 	// ---- drawers ----------------------------------------------------------
 	// One drawer at a time, non-modal so the field beside it stays clickable.
@@ -1083,6 +1139,20 @@
 		ctx.restore();
 	}
 
+	// The fill samples the solver's own passability and waterline on a 3 px grid.
+	// It is drawn behind the grains and kept translucent, so metal never reads as
+	// wet and a submerged grain stays legible.
+	function drawWater() {
+		const w = sim.water;
+		if (!waterField) waterField = Water.makeDisplay();
+		Water.sampleDisplay(sim, waterField);
+		R.renderWater(waterMap, waterField, layout);
+		ctx.save();
+		ctx.imageSmoothingEnabled = true;
+		ctx.drawImage(waterMap.canvas, 0, -G.POUR, waterMap.nx * waterField.cell, waterMap.ny * waterField.cell);
+		ctx.restore();
+	}
+
 	const FIELD_ALPHA = 0.62;
 
 	// The pressure is state, not a difference between two live mouths: a sealed
@@ -1138,6 +1208,7 @@
 			if (pressure.kind === "grid") drawPressureGrid();
 			else R.renderPressure(ctx, pressure);
 		}
+		if (sim.water && sim.water.enabled) drawWater();
 		// Mouths sit under the grain piles that share the bands; the ownership
 		// tabs are redrawn above them so a player's own mouths never get buried.
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
@@ -1153,6 +1224,16 @@
 
 	function formatStats(fps) {
 		const purged = sim.purged > 0 ? " · purged " + sim.purged : "";
+		let water = "";
+		if (sim.water) {
+			const held = Water.storedVol(sim.water);
+			water = " · water " + Water.volumeSI(held).toFixed(2) + " L" +
+				" (" + Math.round(held).toString() + " px²)" +
+				" · wet " + Water.wetCount(sim.water) +
+				" · vent " + (sim.water.ventOpen ? "open" : "shut") +
+				" · over " + Math.round(sim.water.overflowed) +
+				" · drained " + Math.round(sim.water.drained);
+		}
 		let gas = "";
 		if (sim.pressure && sim.pressure.kind === "grid") {
 			const field = sim.pressure;
@@ -1176,7 +1257,8 @@
 			sim.recovered +
 			" · pushes " +
 			sim.pushed +
-			gas
+			gas +
+			water
 		);
 	}
 

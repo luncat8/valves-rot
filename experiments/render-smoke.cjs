@@ -204,7 +204,7 @@ const alpha = map.img.data.filter((_, k) => k % 4 === 3 && map.img.data[k] > 0).
 assert.ok(alpha > 1000, "air model must mark air pixels");
 
 // Drive the page: check frame transform (+POUR, never -POUR), steady overlay and controls.
-let now = 0;
+let now = performance.now();
 mainTranslates.length = 0;
 frames.shift()((now += 16.7));
 assert.deepEqual(mainTranslates[0], [0, G.POUR], "root frame transform must shift down by +POUR");
@@ -602,6 +602,40 @@ frames.shift()((now += 16.7));
 element("reset").onclick();
 element("pause").onclick();
 for (let i = 0; i < 3; i++) frames.shift()((now += 33));
+
+// Water: the controls park the air backend, the fill paints a texture plus the
+// surface line, draining empties it, and switching water off restores the air
+// mode the player had.
+const water = { on: element("water-on"), vent: element("water-vent"), rate: element("water-rate"), drain: element("water-drain") };
+water.on.checked = true;
+water.on.onchange();
+assert.equal(element("pressure-grid").disabled, true, "water parks the pressure radios");
+assert.equal(element("pressure-off").checked, true, "water forced the air backend off");
+assert.equal(water.vent.disabled, false);
+water.vent.checked = true;
+water.vent.onchange();
+water.rate.value = "2000";
+water.rate.oninput();
+assert.ok(element("water-rate-value").value.includes("2000"), "rate readout follows the slider");
+// Resume from whatever paused state the earlier scenarios left behind.
+if (element("pause").textContent === "Resume") element("pause").onclick();
+// The page refreshes the stats line after 0.4 s of accumulated frame time.
+for (let i = 0; i < 30; i++) frames.shift()((now += 17));
+const putsBefore = calls.putImageData;
+const waterTranslates = mainTranslates.length;
+for (let i = 0; i < 40; i++) frames.shift()((now += 16.7));
+assert.ok(calls.putImageData - putsBefore >= 10, "the water fill is painted as a texture");
+assert.ok(calls.total > 0);
+assert.ok(element("water-rate-value").value.includes("2000"));
+const statsLine = element("stats").textContent;
+assert.ok(statsLine.includes("water") && statsLine.includes("vent open"), "stats line reports water: " + statsLine);
+element("water-drain").onclick();
+water.on.checked = false;
+water.on.onchange();
+assert.equal(element("pressure-grid").disabled, false, "water off frees the pressure radios");
+assert.equal(element("pressure-off").checked, true, "the parked mode is not resurrected as grid gas");
+frames.shift()((now += 16.7));
+assert.ok(mainTranslates.length >= waterTranslates);
 
 const a = G.createLayout(321);
 const b = G.createLayout(321);

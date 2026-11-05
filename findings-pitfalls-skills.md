@@ -177,6 +177,32 @@
   that nothing lands BEHIND the shut port, not that admitted == 0. Distinguish a
   metal mouth (blocked → unadmitted) from a full open mouth (admits, then backs
   excess out the top → overflow).
+- Buoyancy must act BETWEEN a waterline and a grain, not between a cell and its
+  own surface. A cell holds one or two grains, so a floating grain's own
+  displacement can empty the cell it occupies; reading that cell's surface then
+  flips the grain between dry and submerged each step and it buzzes at the cell
+  height. Fill the *vertical run* from its floor (capacity first, the last cell
+  that runs out carries the surface) and hand every cell of the run that one
+  level. Measured on a lone buoyant grain: from a jittering 2 px swing at ~1 Hz
+  to < 0.01 px, and the floating fraction lands on the density ratio.
+- A pool line quantises to the coarse cell floor, so a 6 px cell gives the
+  waterline ~1 px of slack: two grains of different radius in the same pool can
+  settle at 0.03 and 0.5 of a 6 px cell and both be right. Judging buoyancy
+  against the pool's level is the honest test; judging it against one grain's
+  fractional submersion is not.
+- Waterline + drag is only a stable equilibrium for a grain whose height fits
+  inside one cell. A floating grain spanning two cells pulls its displacement
+  from the lower one, so the level it feels steps by a whole cell height when it
+  crosses the edge, and the pair can limit-cycle instead of settling (measured:
+  a 3 px-radius float in a 6 px pool oscillates ~2 px indefinitely, while a 2.3
+  and a 2.7 px float in the same pool settle). Damping is bounded, so the cycle
+  is slow rather than violent; Slice 4 should rebalance pool size vs cell size or
+  the drag law before promising a still float for every radius.
+- A gravity-side obstruction at the waterline is not a water bug. Two floats
+  side by side ride the solver's `CONTACT_MARGIN` (~1.2 px) above the cell floor
+  because the lower one rests on the bottom; the upper one then has its floor
+  above the pool line and cannot be wet at all. Read the float's own numbers
+  before touching the water model.
 - Re-sampling a world water grid every tick while valves turn is the dominant
   cost, not the relaxation. Cache per valve angle and throttle the rebuild to a
   30 Hz mask clock (relaxation still runs each step): 4.4 → 1.4 ms/step turning,

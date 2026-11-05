@@ -24,6 +24,15 @@ const ValveRender = (() => {
 	const WALL_H = "#98a3af";
 	const SELECT_C = "#efc179";
 	const RIM_BAND = 1.1;
+	// Water fill: deep blue against the pale ceramic. The sheet is still translucent
+	// enough to read grains under it, but the alpha ramps in over a short band so
+	// the free surface keeps a soft edge instead of a hard terrace. Depth is shown
+	// by opacity, not by hue: shallow water over a rim must not look like a stain.
+	const WATER_RGB = [30, 112, 210];
+	const WATER_ALPHA_MIN = 0.58;
+	const WATER_ALPHA_FULL = 1;
+	const WATER_BAND = 6;
+	const WATER_SURFACE = "rgba(214,244,255,0.98)";
 	const SPR = Math.ceil(2 * RV + 6);
 
 	const PLAYERS = [
@@ -876,6 +885,81 @@ const ValveRender = (() => {
 		}
 	}
 
+	// Quasi-static water fill, drawn after the scene and before the grains so a
+	// submerged grain reads through the sheet. One texel per display pixel: its
+	// alpha is the depth of water above it, so a free surface is a soft edge and
+	// deep water reads denser. A texel whose centre is inside metal is dropped,
+	// so the sheet never paints over a wall it only borrowed passability from.
+	function makeWaterMap(nx, ny) {
+		const c = document.createElement("canvas");
+		c.width = nx;
+		c.height = ny;
+		const ctx = c.getContext("2d");
+		return { canvas: c, ctx, img: ctx.createImageData(nx, ny), nx, ny };
+	}
+
+	function renderWater(map, field, layout) {
+		const data = map.img.data;
+		const air = field.air;
+		const level = field.level;
+		const cell = field.cell;
+		const nx = map.nx;
+		const n = air.length;
+		const band = WATER_BAND;
+		for (let k = 0, o = 0; k < n; k++, o += 4) {
+			if (!air[k]) {
+				data[o + 3] = 0;
+				continue;
+			}
+			const x = ((k % nx) + 0.5) * cell;
+			if (G.airClearance(layout, x, (((k / nx) | 0) + 0.5) * cell - G.POUR) <= 0) {
+				data[o + 3] = 0;
+				continue;
+			}
+			const y = (((k / map.nx) | 0) + 0.5) * cell - G.POUR;
+			const depth = y - level[k];
+			if (!(depth > 0)) {
+				data[o + 3] = 0;
+				continue;
+			}
+			let t = depth / band;
+			if (t > 1) t = 1;
+			const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
+			data[o] = WATER_RGB[0];
+			data[o + 1] = WATER_RGB[1];
+			data[o + 2] = WATER_RGB[2];
+			data[o + 3] = (a * 255) | 0;
+		}
+		map.ctx.putImageData(map.img, 0, 0);
+	}
+
+	// Surface line: connect the free surface of neighbouring water columns, so a
+	// pool reads as a level even where the sheet is too thin to see behind a
+	// bright grain. A wall or a big step ends the run instead of bridging it.
+	function renderWaterSurface(ctx, field) {
+		const surf = field.surf;
+		const c = field.cell;
+		const tol = c * 2.2;
+		let pen = false;
+		let last = 0;
+		ctx.beginPath();
+		for (let gx = 0; gx < field.nx; gx++) {
+			const y = surf[gx];
+			if (!Number.isFinite(y)) {
+				pen = false;
+				continue;
+			}
+			const x = (gx + 0.5) * c;
+			if (pen && Math.abs(y - last) <= tol) ctx.lineTo(x, y);
+			else ctx.moveTo(x, y);
+			pen = true;
+			last = y;
+		}
+		ctx.strokeStyle = WATER_SURFACE;
+		ctx.lineWidth = 1.4;
+		ctx.stroke();
+	}
+
 	function makeAirMap(cell) {
 		const w = Math.ceil(SIZE / cell);
 		const h = Math.ceil((SIZE + G.POUR * 2) / cell);
@@ -900,6 +984,9 @@ const ValveRender = (() => {
 		renderVents,
 		makeAirMap,
 		renderAirMap,
+		makeWaterMap,
+		renderWater,
+		renderWaterSurface,
 		renderGrains,
 		renderPressure,
 		makeFieldMap,
