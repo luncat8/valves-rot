@@ -42,6 +42,11 @@ const ValveWater = (() => {
 	// and a long dry shaft must not borrow a distant pool's surface.
 	const DRY_SKIP = 3;
 	const PI = Math.PI;
+	// Red, green, blue channels per cell: the conserved liquid state.
+	const CH = 3;
+	// Ids of the two books a whole cell can be emptied into.
+	const OVERFLOW = 0;
+	const DRAINED = 1;
 
 	// Circular-segment fraction below a surface `depth` px under the centre.
 	// Same kernel as the grain solver's submergedFraction; kept local so this
@@ -113,10 +118,17 @@ const ValveWater = (() => {
 			floor: new Float64Array(count),
 			ceil: new Float64Array(count),
 			width: new Float64Array(count),
+			// The only conserved liquid state: R, G, B slice area per cell, three
+			// adjacent values so one move walks a cell without a second index.
+			ch: new Float64Array(count * CH),
+			// vol is a cache of the channel sum. The level solver, displacement and
+			// every reader of a cell total keep using it; the channels rule, and the
+			// fixtures publish the residual instead of trusting this to be exact.
 			vol: new Float64Array(count),
 			// Water a closing wall could not route: the rotor carries it until the
 			// passage reopens. Kept so split/merge conserves volume exactly.
 			trapped: new Float64Array(count),
+			trappedCh: new Float64Array(count * CH),
 			gdisp: new Float64Array(count),
 			// Published waterlines per cell (NaN = dry), read by buoyancy and the
 			// display fill; kept out of the solver so both read one snapshot.
@@ -156,12 +168,33 @@ const ValveWater = (() => {
 			ventColumn: (G.N / 2) | 0,
 			ventOpen: false,
 			rate: DEFAULT_RATE,
+			// Equal shares over the selected pour channels. Kept normalized by
+			// setPour; deposit normalizes again so a hand-written mask cannot
+			// change the delivered volume.
+			pour: new Float64Array(CH),
+			pourMask: new Uint8Array(CH),
+			// Mixability flags partition the channels into phases (slice 2). They
+			// are state, but the phases themselves are derived, so a toggle can
+			// neither move nor lose liquid.
+			mixable: new Uint8Array(CH),
 			attempted: 0,
 			admitted: 0,
 			unadmitted: 0,
 			overflowed: 0,
 			drained: 0,
+			// Per-channel books: initial + admitted = stored + overflowed + drained.
+			// `initial` is what a fixture or scenario imposes by hand, so a direct
+			// injection is a boundary term rather than a hidden source.
+			chInitial: new Float64Array(CH),
+			chAttempted: new Float64Array(CH),
+			chAdmitted: new Float64Array(CH),
+			chUnadmitted: new Float64Array(CH),
+			chOverflowed: new Float64Array(CH),
+			chDrained: new Float64Array(CH),
 		};
+		w.pour.fill(1 / CH);
+		w.pourMask.fill(1);
+		w.mixable.fill(1);
 		w.stamp.fill(NaN);
 		w.layoutSeen.fill(-1);
 		w.levels.fill(NaN);
@@ -173,6 +206,123 @@ const ValveWater = (() => {
 		}
 		buildBlocks(w, valves);
 		return w;
+	}
+
+	// ---- channels ----------------------------------------------------------
+	//
+	// Liquid moves only through move() or deposit(). Anything else would be a way
+	// to carry (or lose) a channel on one path and not on the mirrored one, and
+	// proportional shares are exactly what is easy to forget: the closed-cell
+	// push, the trapped return, a drain and a sill spill all move the same liquid.
+
+	// Add `area` to a three-slot channel triple at `o`, split by `shares`. The last
+	// channel takes the remainder, so the triple gains exactly the area whatever
+	// the rounding of the first two shares. False when `shares` is empty.
+	function addSplit(dst, o, area, shares) {
+		const sum = shares[0] + shares[1] + shares[2];
+		if (!(sum > 0)) return false;
+		const a0 = area * shares[0] / sum;
+		const a1 = area * shares[1] / sum;
+		dst[o] += a0;
+		dst[o + 1] += a1;
+		dst[o + 2] += area - a0 - a1;
+		return true;
+	}
+
+	// Add `area` to a cell, split across its channels by `shares` (default: the
+	// pour mix).
+	function deposit(w, i, area, shares) {
+		if (!(area > 0)) return;
+		if (!addSplit(w.ch, i * CH, area, shares || w.pour)) return;
+		w.vol[i] += area;
+	}
+
+	// Move `area` from one cell to another, splitting it across the donor's
+	// channels in proportion. Rounding never reaches the total: the moved amount
+	// is exact, and a donor emptied by the move contributes all of its remainder.
+	function move(w, from, to, area) {
+		if (!(area > 0)) return;
+		const ch = w.ch;
+		const total = w.vol[from];
+		if (!(total > 0)) return;
+		if (area > total) area = total;
+		const f = from * CH;
+		const t = to * CH;
+		const all = area >= total;
+		const r = all ? 1 : area / total;
+		const a0 = ch[f] * r;
+		const a1 = ch[f + 1] * r;
+		const a2 = all ? ch[f + 2] : area - a0 - a1;
+		ch[f] -= a0; ch[t] += a0;
+		ch[f + 1] -= a1; ch[t + 1] += a1;
+		ch[f + 2] -= a2; ch[t + 2] += a2;
+		w.vol[from] = total - area;
+		w.vol[to] += area;
+	}
+
+	// A closing wall's unreachable remainder: the rotor carries exactly the
+	// composition it could not route.
+	function trap(w, i) {
+		if (!(w.vol[i] > 0)) return;
+		const o = i * CH;
+		for (let k = 0; k < CH; k++) {
+			w.trappedCh[o + k] += w.ch[o + k];
+			w.ch[o + k] = 0;
+		}
+		w.trapped[i] += w.vol[i];
+		w.vol[i] = 0;
+	}
+
+	function releaseTrapped(w, i) {
+		if (!(w.trapped[i] > 0)) return;
+		const o = i * CH;
+		for (let k = 0; k < CH; k++) {
+			w.ch[o + k] += w.trappedCh[o + k];
+			w.trappedCh[o + k] = 0;
+		}
+		w.vol[i] += w.trapped[i];
+		w.trapped[i] = 0;
+	}
+
+	// Empty one cell into an overflow or drain book and report the area taken.
+	function takeAll(w, i, book) {
+		const o = i * CH;
+		const into = book === OVERFLOW ? w.chOverflowed : w.chDrained;
+		let sum = 0;
+		for (let k = 0; k < CH; k++) {
+			into[k] += w.ch[o + k];
+			sum += w.ch[o + k];
+			w.ch[o + k] = 0;
+		}
+		w.vol[i] = 0;
+		return sum;
+	}
+
+	// Book an area whose channel split is given by `shares`; the same split as a
+	// deposit, so the books close against the cell totals.
+	function bookArea(book, area, shares) {
+		if (area === 0 || !Number.isFinite(area)) return;
+		addSplit(book, 0, area, shares);
+	}
+
+	// Impose a cell's liquid from outside (a fixture, a scenario, a future melt),
+	// split by `shares`. Replaces whatever was there and books the change as an
+	// opening inventory term; overwriting a cell with less books a negative one,
+	// because an outside edit is a boundary term, not a solver transfer.
+	function setLiquid(w, i, area, shares) {
+		const o = i * CH;
+		const before = w.vol[i];
+		for (let k = 0; k < CH; k++) w.ch[o + k] = 0;
+		w.vol[i] = 0;
+		deposit(w, i, area, shares);
+		bookArea(w.chInitial, w.vol[i] - before, shares || w.pour);
+	}
+
+	// Add liquid from outside and book it as an opening inventory term.
+	function inject(w, i, area, shares) {
+		if (!(area > 0)) return;
+		deposit(w, i, area, shares);
+		bookArea(w.chInitial, area, shares || w.pour);
 	}
 
 	// ---- geometry sampling -------------------------------------------------
@@ -323,8 +473,6 @@ const ValveWater = (() => {
 		const seen = w.seen;
 		for (let i = 0; i < w.count; i++) {
 			if (w.air[i] || w.vol[i] <= EPS) continue;
-			let excess = w.vol[i];
-			w.vol[i] = 0;
 			const stamp = ++w.seenStamp;
 			let head = 0;
 			let tail = 0;
@@ -334,15 +482,13 @@ const ValveWater = (() => {
 			if (gy + 1 < ny && w.air[i + nx]) { seen[i + nx] = stamp; queue[tail++] = i + nx; }
 			if (gx > 0 && w.air[i - 1]) { seen[i - 1] = stamp; queue[tail++] = i - 1; }
 			if (gx + 1 < nx && w.air[i + 1]) { seen[i + 1] = stamp; queue[tail++] = i + 1; }
-			while (head < tail && excess > EPS) {
+			// The donor keeps its composition while it empties, so every hop is a
+			// proportional move and whatever is left is what the rotor carries.
+			while (head < tail && w.vol[i] > EPS) {
 				const j = queue[head++];
 				const room = w.area[j] - w.vol[j];
-				if (room > EPS) {
-					const give = excess < room ? excess : room;
-					w.vol[j] += give;
-					excess -= give;
-					if (excess <= EPS) break;
-				}
+				if (room > EPS) move(w, i, j, w.vol[i] < room ? w.vol[i] : room);
+				if (w.vol[i] <= EPS) break;
 				const jx = j % nx;
 				const jy = (j / nx) | 0;
 				if (jy > 0 && w.openS[j - nx] && w.air[j - nx] && seen[j - nx] !== stamp) { seen[j - nx] = stamp; queue[tail++] = j - nx; }
@@ -350,7 +496,7 @@ const ValveWater = (() => {
 				if (jx > 0 && w.openE[j - 1] && w.air[j - 1] && seen[j - 1] !== stamp) { seen[j - 1] = stamp; queue[tail++] = j - 1; }
 				if (jx + 1 < nx && w.openE[j] && w.air[j + 1] && seen[j + 1] !== stamp) { seen[j + 1] = stamp; queue[tail++] = j + 1; }
 			}
-			if (excess > EPS) w.trapped[i] += excess;
+			if (w.vol[i] > EPS) trap(w, i);
 		}
 	}
 
@@ -387,9 +533,7 @@ const ValveWater = (() => {
 			}
 		}
 		// A passage that reopens returns the water its rotor carried.
-		for (let i = 0; i < w.count; i++) {
-			if (w.air[i] && w.trapped[i] > 0) { w.vol[i] += w.trapped[i]; w.trapped[i] = 0; }
-		}
+		for (let i = 0; i < w.count; i++) if (w.air[i]) releaseTrapped(w, i);
 		w.airCount = 0;
 		for (let i = 0; i < w.count; i++) if (w.air[i]) w.airList[w.airCount++] = i;
 		pushClosedWater(w);
@@ -424,9 +568,9 @@ const ValveWater = (() => {
 		if (total <= EPS) return;
 		const capD = effCap(w, d);
 		const newD = total < capD ? total : capD;
-		if (newD === w.vol[d]) return;
-		w.vol[d] = newD;
-		w.vol[u] = total - newD;
+		const delta = newD - w.vol[d];
+		if (delta > 0) move(w, u, d, delta);
+		else if (delta < 0) move(w, d, u, -delta);
 	}
 
 	// Horizontal face: equalize surfaces, but the source cannot drain below the
@@ -451,8 +595,7 @@ const ValveWater = (() => {
 		if (amt > avail) amt = avail;
 		if (amt > capDst) amt = capDst;
 		if (amt <= EPS) return;
-		w.vol[src] -= amt;
-		w.vol[dst] += amt;
+		move(w, src, dst, amt);
 	}
 
 	// openS/openE are only set where a face exists, so they encode the boundary;
@@ -747,6 +890,13 @@ const ValveWater = (() => {
 			solid: new Uint8Array(n),
 			level: new Float32Array(n),
 			surf: new Float32Array(nx),
+			// Normalized channel triple per water cell (dominant = 255), computed
+			// once a frame so a texel copies bytes instead of dividing channels.
+			color: new Uint8Array(w.count * 3),
+			// Channel-triple offset of each display row and column, so the texel
+			// loop addresses the colour table with two adds and no multiply.
+			crow: new Int32Array(ny),
+			ccol: new Int32Array(nx),
 			// Water cell row/column of each display row/column, and the fine sample
 			// row, so sampleDisplay indexes arrays instead of dividing.
 			wrow: new Int32Array(ny),
@@ -755,10 +905,12 @@ const ValveWater = (() => {
 		};
 		for (let gx = 0; gx < nx; gx++) {
 			field.wcol[gx] = Math.min(w.nx - 1, Math.floor(((gx + 0.5) * cell) / w.cell));
+			field.ccol[gx] = field.wcol[gx] * 3;
 		}
 		for (let gy = 0; gy < ny; gy++) {
 			const y = (gy + 0.5) * cell - G.POUR;
 			field.wrow[gy] = Math.min(w.ny - 1, Math.max(0, Math.floor((y + G.POUR) / w.cell)));
+			field.crow[gy] = field.wrow[gy] * w.nx * 3;
 			// The display grid is the sample grid, so the fine row is the display row
 			// itself as long as it stays inside the mask.
 			field.frow[gy] = gy < w.fny ? gy : w.fny - 1;
@@ -773,6 +925,28 @@ const ValveWater = (() => {
 	// how far up its level reaches inside one vertical run.
 	function sampleDisplay(sim, field) {
 		const w = sim.water;
+		// One normalized triple per water cell: I[k] = 255 * ch[k] / max(ch). Equal
+		// shares read white and a dilute colour keeps its hue, which is what makes
+		// a red pour read red at any dilution; it is a picture, not an intensity.
+		const color = field.color;
+		const ch = w.ch;
+		for (let k = 0, n = w.airCount; k < n; k++) {
+			const o = w.airList[k] * 3;
+			const r = ch[o];
+			const g = ch[o + 1];
+			const b = ch[o + 2];
+			let m = r > g ? r : g;
+			if (b > m) m = b;
+			if (m <= EPS) {
+				color[o] = 0;
+				color[o + 1] = 0;
+				color[o + 2] = 0;
+				continue;
+			}
+			color[o] = Math.round(255 * r / m);
+			color[o + 1] = Math.round(255 * g / m);
+			color[o + 2] = Math.round(255 * b / m);
+		}
 		const nx = field.nx;
 		const ny = field.ny;
 		const air = field.air;
@@ -825,13 +999,19 @@ const ValveWater = (() => {
 		if (!w.ventOpen || w.rate <= 0) return;
 		const want = w.rate * h;
 		w.attempted += want;
+		bookArea(w.chAttempted, want, w.pour);
 		const i = mouthIndex(w);
 		// A metal mouth is blocked: the supply never enters. An open mouth admits
 		// everything; if the system below is full the relaxation backs the excess
 		// out of the top boundary as overflow, never behind a wall.
-		if (!w.air[i]) { w.unadmitted += want; return; }
-		w.vol[i] += want;
+		if (!w.air[i]) {
+			w.unadmitted += want;
+			bookArea(w.chUnadmitted, want, w.pour);
+			return;
+		}
+		deposit(w, i, want, w.pour);
 		w.admitted += want;
+		bookArea(w.chAdmitted, want, w.pour);
 	}
 
 	function boundaries(sim) {
@@ -843,8 +1023,8 @@ const ValveWater = (() => {
 			const v = w.vol[i];
 			if (v <= 0) continue;
 			const gy = (i / w.nx) | 0;
-			if (gy <= OVERFLOW_ROW) { w.overflowed += v; w.vol[i] = 0; }
-			else if (gy * c - G.POUR >= G.SIZE) { w.drained += v; w.vol[i] = 0; }
+			if (gy <= OVERFLOW_ROW) w.overflowed += takeAll(w, i, OVERFLOW);
+			else if (gy * c - G.POUR >= G.SIZE) w.drained += takeAll(w, i, DRAINED);
 		}
 	}
 
@@ -895,6 +1075,58 @@ const ValveWater = (() => {
 		w.rate = rate > 0 ? rate : 0;
 	}
 
+	// Equal pour shares over the selected channels. An empty selection is refused
+	// so the inlet can never fall back to a default mix behind the player's back.
+	function setPour(w, mask) {
+		let n = 0;
+		for (let k = 0; k < CH; k++) n += mask && mask[k] ? 1 : 0;
+		if (n === 0) return false;
+		for (let k = 0; k < CH; k++) {
+			w.pourMask[k] = mask && mask[k] ? 1 : 0;
+			w.pour[k] = w.pourMask[k] ? 1 / n : 0;
+		}
+		return true;
+	}
+
+	// Mixability is state, but the phases are derived from it, so this only
+	// records the flags: no channel moves and no volume can change.
+	function setMixable(w, mask) {
+		for (let k = 0; k < CH; k++) w.mixable[k] = mask && mask[k] ? 1 : 0;
+	}
+
+	// Per-channel stored area, including what rotors are carrying, into `out`.
+	function channelTotals(w, out) {
+		const ch = w.ch;
+		const tc = w.trappedCh;
+		let a = 0;
+		let b = 0;
+		let c = 0;
+		for (let i = 0; i < w.count; i++) {
+			const o = i * CH;
+			a += ch[o] + tc[o];
+			b += ch[o + 1] + tc[o + 1];
+			c += ch[o + 2] + tc[o + 2];
+		}
+		out[0] = a;
+		out[1] = b;
+		out[2] = c;
+		return out;
+	}
+
+	// Largest |vol - sum(channels)| over all cells: the cache invariant the
+	// fixtures publish instead of assuming, NaN if any value went bad.
+	function residual(w) {
+		const ch = w.ch;
+		let max = 0;
+		for (let i = 0; i < w.count; i++) {
+			const o = i * CH;
+			const d = Math.abs(w.vol[i] - (ch[o] + ch[o + 1] + ch[o + 2]));
+			if (d !== d) return NaN;
+			if (d > max) max = d;
+		}
+		return max;
+	}
+
 	// Supply rate from SI: Q m^3/s spread over the slice depth becomes px^2/s.
 	function supplyFromSI(q) {
 		return q / M3_PER_PX2;
@@ -905,23 +1137,43 @@ const ValveWater = (() => {
 		return px2 * M3_PER_PX2;
 	}
 
+	// Empty every pool and every rotor-carried remainder, book per channel, and
+	// report the area that left.
 	function drainAll(w) {
-		const v = storedVol(w);
-		w.vol.fill(0);
-		w.trapped.fill(0);
+		let v = 0;
+		for (let i = 0; i < w.count; i++) {
+			if (w.trapped[i] > 0) {
+				const o = i * CH;
+				for (let k = 0; k < CH; k++) {
+					w.chDrained[k] += w.trappedCh[o + k];
+					w.trappedCh[o + k] = 0;
+				}
+				v += w.trapped[i];
+				w.trapped[i] = 0;
+			}
+			if (w.vol[i] > 0) v += takeAll(w, i, DRAINED);
+		}
 		w.drained += v;
 		return v;
 	}
 
 	function reset(w) {
+		w.ch.fill(0);
 		w.vol.fill(0);
 		w.trapped.fill(0);
+		w.trappedCh.fill(0);
 		w.gdisp.fill(0);
 		w.attempted = 0;
 		w.admitted = 0;
 		w.unadmitted = 0;
 		w.overflowed = 0;
 		w.drained = 0;
+		w.chInitial.fill(0);
+		w.chAttempted.fill(0);
+		w.chAdmitted.fill(0);
+		w.chUnadmitted.fill(0);
+		w.chOverflowed.fill(0);
+		w.chDrained.fill(0);
 		w.ventOpen = false;
 		w.built = false;
 		w.maskClock = 0;
@@ -943,8 +1195,9 @@ const ValveWater = (() => {
 		CELL, SUBDIV, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RELAX_ITERS, MASK_DT, DRY_SKIP,
 		create, step, rebuild, relax, settle, displace, clearLevels, publishLevels,
 		makeDisplay, sampleDisplay, solidAt, segFraction, submerged,
-		setVent, setSupply, supplyFromSI, volumeSI, drainAll, reset,
+		setVent, setSupply, setPour, setMixable, supplyFromSI, volumeSI, drainAll, reset,
 		totalVol, storedVol, wetCount, surface, surfaceAt, mouthIndex,
+		deposit, move, setLiquid, inject, channelTotals, residual, CH,
 	};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveWater;

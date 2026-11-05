@@ -664,6 +664,28 @@ assert.ok(calls.total > 0);
 assert.ok(element("water-rate-value").value.includes("2000"));
 const statsLine = element("stats").textContent;
 assert.ok(statsLine.includes("water") && statsLine.includes("vent open"), "stats line reports water: " + statsLine);
+// Pour colours and the view toggle are real controls: the boxes reach the
+// solver's shares, and the last colour cannot be switched off (the page re-syncs
+// from the module, so a refused mask shows up as a box that comes back checked).
+const pourR = element("water-pour-r");
+const pourG = element("water-pour-g");
+const pourB = element("water-pour-b");
+assert.equal(pourR.checked && pourG.checked && pourB.checked, true, "all three colours pour by default");
+pourG.checked = false;
+pourG.onchange();
+assert.equal(pourG.checked, false, "a pour colour can be switched off");
+pourB.checked = false;
+pourB.onchange();
+pourR.checked = false;
+pourR.onchange();
+assert.equal(pourR.checked, true, "the last pour colour comes back on");
+assert.equal(pourG.checked || pourB.checked, false, "the refused selection is not resurrected");
+element("water-view-pigment").checked = true;
+element("water-view-pigment").onchange();
+frames.shift()((now += 16.7));
+assert.ok(strokeStyles.has(R.WATER_SURFACE), "the surface line survives the pigment view");
+element("water-view-color").checked = true;
+element("water-view-color").onchange();
 element("water-drain").onclick();
 water.on.checked = false;
 water.on.onchange();

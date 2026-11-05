@@ -19,7 +19,7 @@ const P = require("./water-paint.cjs");
 const C = require("./water-scenario.cjs");
 
 const N = G.N;
-const OUT = path.join(__dirname, "logs", "water-separation-0.4.png");
+const OUT = path.join(__dirname, "logs", "water-separation-0.4.webp");
 
 function report(tag, result) {
 	const { bounds, rows, score: s } = result.final;

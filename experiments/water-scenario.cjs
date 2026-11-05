@@ -213,7 +213,7 @@ function floatWander(radius, color, seconds, drag) {
 	const w = S.setWater(sim, true);
 	const v = sim.layout.valves[5 * N + 4];
 	const i = Math.floor((v.cy + G.POUR) / w.cell) * w.nx + Math.floor(v.cx / w.cell);
-	w.vol[i] = TIGHT_VOL;
+	W.setLiquid(w, i, TIGHT_VOL);
 	for (let k = 0; k < 240; k++) S.step(sim, S.STEP);
 	const g = S.addGrain(sim, v.cx, v.cy + 4, radius, color);
 	for (let k = 0; k < 120 * 2; k++) S.step(sim, S.STEP);

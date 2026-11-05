@@ -43,7 +43,7 @@ function inject(sim, x, y, vol) {
 	const w = sim.water;
 	const i = cellAt(w, x, y);
 	assert.ok(w.air[i], "inject point must be air");
-	w.vol[i] += vol;
+	W.inject(w, i, vol);
 	return i;
 }
 
@@ -293,7 +293,7 @@ function conservation(sim, tag) {
 	const w = sim.water;
 	const v = sim.layout.valves[5 * N + 4];
 	const cell = cellAt(w, v.cx, v.cy);
-	w.vol[cell] = 400;
+	W.setLiquid(w, cell, 400);
 	W.settle(w, 300);
 	assert.ok(w.air[cell], "the chamber is air before the swap");
 	const vol = W.storedVol(w);

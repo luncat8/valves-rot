@@ -62,6 +62,12 @@
 	let fieldAlpha = 0;
 	let waterField = null;
 	let waterMap = null;
+	// Display-only: 0 paints the liquid's own channels, 1 paints pigment level.
+	let waterView = 0;
+	// Reused for the per-channel readout, so the status line allocates no array.
+	const waterChannels = new Float64Array(3);
+	// Inlet colour boxes: element id and the channel it selects.
+	const POUR_IDS = [["water-pour-r", 0], ["water-pour-g", 1], ["water-pour-b", 2]];
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
@@ -595,6 +601,10 @@
 		$("water-column").disabled = !on;
 		$("water-rate").disabled = !on;
 		$("water-drain").disabled = !on;
+		for (const [id, k] of POUR_IDS) {
+			$(id).disabled = !on;
+			$(id).checked = sim.water ? !!sim.water.pourMask[k] : $(id).checked;
+		}
 		$("water-vent").checked = on && sim.water.ventOpen;
 		const rate = sim.water ? sim.water.rate : +$("water-rate").value;
 		$("water-rate-value").value = Math.round(rate) + " px²/s";
@@ -641,6 +651,22 @@
 		if (sim.water) Water.drainAll(sim.water);
 		if (paused) drawFrame(true);
 	};
+	// Pour colours split the same total rate equally; the last one stays on, and
+	// the module refuses an empty mask, so the boxes are re-synced from state.
+	function applyPour() {
+		if (!sim.water) return;
+		const mask = [0, 0, 0];
+		for (const [id, k] of POUR_IDS) mask[k] = $(id).checked ? 1 : 0;
+		Water.setPour(sim.water, mask);
+		syncWaterUI();
+	}
+	for (const [id] of POUR_IDS) $(id).onchange = applyPour;
+	const applyView = () => {
+		waterView = $("water-view-pigment").checked ? 1 : 0;
+		if (paused) drawFrame(false);
+	};
+	$("water-view-color").onchange = applyView;
+	$("water-view-pigment").onchange = applyView;
 	syncWaterUI();
 
 	// ---- drawers ----------------------------------------------------------
@@ -1166,7 +1192,7 @@
 			waterMap = R.makeWaterMap(waterField.nx, waterField.ny);
 		}
 		Water.sampleDisplay(sim, waterField);
-		R.renderWater(waterMap, waterField);
+		R.renderWater(waterMap, waterField, waterView);
 		ctx.save();
 		ctx.imageSmoothingEnabled = true;
 		ctx.drawImage(waterMap.canvas, 0, -G.POUR, waterMap.nx * waterField.cell, waterMap.ny * waterField.cell);
@@ -1248,8 +1274,13 @@
 		let water = "";
 		if (sim.water) {
 			const held = Water.storedVol(sim.water);
+			Water.channelTotals(sim.water, waterChannels);
+			const rgb = held > 1e-6
+				? Math.round(waterChannels[0] / held * 100) + "/" + Math.round(waterChannels[1] / held * 100) + "/" + Math.round(waterChannels[2] / held * 100)
+				: "0/0/0";
 			water = " · water " + Water.volumeSI(held).toFixed(2) + " L" +
 				" (" + Math.round(held).toString() + " px²)" +
+				" · rgb " + rgb + "%" +
 				" · wet " + Water.wetCount(sim.water) +
 				" · vent " + (sim.water.ventOpen ? "open" : "shut") +
 				" · over " + Math.round(sim.water.overflowed) +

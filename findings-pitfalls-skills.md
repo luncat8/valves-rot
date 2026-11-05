@@ -227,6 +227,41 @@
   0.48 ms/step static. Iterate an air-cell list and skip dry pairs instead of
   scanning metal cells and recomputing gx/gy per cell.
 
+## Water colour channels (0.3 colour slice 1)
+- Give liquid ONE move primitive that splits an area across the donor's channels
+  in proportion, and let every path (vertical fill, sill spill, closed-cell push,
+  trapped return, supply, overflow, drain) call it. Duplicating the proportional
+  split per path is how a colour silently disappears on the one path nobody
+  tested. Give the last channel the remainder of the moved area, so a move is
+  exact instead of drifting by an ulp per transfer.
+- Keep the per-cell total (`vol`) as a cache of the channel sum and publish the
+  residual in the fixtures. Every existing reader — surface, displacement,
+  capacity, scenarios — keeps working on a total, while the channels stay
+  authoritative. Measured residual after a 20 s closed box with two pours:
+  1.4e-14 px² against 3.3e3 px² held.
+- Derive phases from the mixability flags instead of storing phase volumes: a
+  phase is a sum of channels, so a checkbox toggle rewrites no state and cannot
+  lose volume. Only the partition changes, and the sort is over at most three
+  numbers.
+- Dominant normalization (`255*v/max(v)`) makes an equal mix white, and white
+  over the pale porcelain reads as a brighter wall, not as liquid: the pool
+  vanished in the picture. Paint the color view at a fixed shade (~55%) and keep
+  the unshaded triple in the display field, so the ratio/hue mapping and the
+  pigment anchors stay testable while the sheet still reads as water.
+- Compute the normalized triple once per water cell per frame, then address it
+  from the texel loop through precomputed row/column offsets. Dividing channels
+  per texel (or multiplying an index per texel at 140k texels) showed up as
+  ~0.2 ms of a 1 ms display pass; with offset tables the pass is within noise of
+  the single-colour baseline (0.98 → 1.05-1.17 ms).
+- A display fixture must read the cell that HOLDS the liquid, not the cell it was
+  poured into: `setLiquid` into a valve centre settles into the chamber floor
+  cells, and the injected cell was already dry by the time the field was
+  sampled. Look up the fullest wet cell (and assert every wet cell's triple).
+- Per-channel books are easy to read one channel short: summing
+  `trappedCh[k]` instead of `trappedCh[i*3+k]` passes "carried volume > 0" and
+  fails "carried colours > 0". Assert the sum of a cell's channel stride against
+  its own total on the paths that move whole cells.
+
 ## Water display and capture (0.3 slices 4-5)
 - Do not re-derive in the render what the mask already sampled. A per-texel
   geometry query for the water fill cost 4.9 ms a frame (62k clearance calls at

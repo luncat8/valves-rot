@@ -521,3 +521,11 @@ button[aria-pressed="true"] {
 	border: 1px solid #596576;
 	border-radius: 5px;
 }
+
+/* Water colour pickers stay on one row inside the wrapped control bar. */
+.pour-colors,
+.water-views {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}

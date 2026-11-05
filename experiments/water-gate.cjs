@@ -186,7 +186,7 @@ for (let k = 0; k < 120 * 6; k++) S.step(sim, S.STEP);
 const dry = report("gate shut, water drained", sim);
 console.log(`  grains ${sim.count} of ${placed}, ${W.storedVol(w).toFixed(0)} px² left of ${w.admitted.toFixed(0)} admitted`);
 // Same window after the drain: the gate is the wall that keeps the layer split.
-const OUT = path.join(__dirname, "logs", "water-gate-0.5.png");
+const OUT = path.join(__dirname, "logs", "water-gate-0.5.webp");
 writePng(OUT, [liftedPanel, P.panel(sim, VIEW, 2)], { background: 12 });
 console.log(`  wrote ${path.relative(path.join(__dirname, ".."), OUT)}`);
 

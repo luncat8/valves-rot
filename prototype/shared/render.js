@@ -24,13 +24,18 @@ const ValveRender = (() => {
 	const WALL_H = "#98a3af";
 	const SELECT_C = "#efc179";
 	const RIM_BAND = 1.1;
-	// Water fill: deep blue against the pale ceramic. The sheet is still translucent
-	// enough to read grains under it, but the alpha ramps in over a short band so
-	// the free surface keeps a soft edge instead of a hard terrace. Depth is shown
-	// by opacity, not by hue: shallow water over a rim must not look like a stain.
-	const WATER_RGB = [30, 112, 210];
+	// Water fill: the sheet is translucent enough to read grains under it, but the
+	// alpha ramps in over a short band so the free surface keeps a soft edge
+	// instead of a hard terrace. Depth is shown by opacity, not by hue: shallow
+	// water over a rim must not look like a stain. The hue comes from the liquid's
+	// own channels (see renderWater), never from a fixed water colour.
 	const WATER_ALPHA_MIN = 0.58;
 	const WATER_ALPHA_FULL = 1;
+	// A channel triple carries a hue and a ratio, not a luminance: an equal mix is
+	// white, which over pale porcelain would read as a brighter wall. Shade the
+	// colour view a fixed step so any mix reads as liquid; the hue and the ratio
+	// are untouched, and the pigment view uses the unshaded triple.
+	const WATER_SHADE = 0.55;
 	const WATER_BAND = 6;
 	const WATER_SURFACE = "rgba(214,244,255,0.98)";
 	const SPR = Math.ceil(2 * RV + 6);
@@ -901,21 +906,35 @@ const ValveRender = (() => {
 	// The passability comes from the water mask's own sample grid (`solid`), not
 	// from a per-texel geometry sweep: a 3 px fill scan asked the geometry 62,400
 	// times a frame, which measured 4.9 ms and repeated work the mask already did.
-	// Row-major walk so the waterline row is computed once per row, not per texel.
-	function renderWater(map, field) {
+	// Row-major walk so the waterline row and the cell colour offset are computed
+	// once per row, not per texel.
+	//
+	// The pigment level is the same normalized triple folded to one neutral value,
+	// so white RGB reads black, (80,80,80) reads full light and (255,255,0) reads
+	// half. Both views are picture modes: the solver's channels decide, this only
+	// maps them to bytes.
+	function pigmentLevel(r, g, b) {
+		const l = (765 - (r + g + b)) / 2;
+		return l < 0 ? 0 : l > 255 ? 255 : l;
+	}
+
+	// view 0 paints the channels, view 1 paints the pigment level.
+	function renderWater(map, field, view) {
 		const data = map.img.data;
 		const air = field.air;
 		const solid = field.solid;
 		const level = field.level;
+		const color = field.color;
+		const crow = field.crow;
+		const ccol = field.ccol;
 		const cell = field.cell;
 		const nx = map.nx;
 		const band = WATER_BAND;
-		const r = WATER_RGB[0];
-		const g = WATER_RGB[1];
-		const b = WATER_RGB[2];
+		const pigment = view === 1;
 		let o = 0;
 		for (let gy = 0; gy < map.ny; gy++) {
 			const y = (gy + 0.5) * cell - G.POUR;
+			const row = crow[gy];
 			for (let gx = 0; gx < nx; gx++, o += 4) {
 				const k = gy * nx + gx;
 				if (!air[k] || solid[k]) {
@@ -930,9 +949,17 @@ const ValveRender = (() => {
 				let t = depth / band;
 				if (t > 1) t = 1;
 				const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
-				data[o] = r;
-				data[o + 1] = g;
-				data[o + 2] = b;
+				const c = row + ccol[gx];
+				if (pigment) {
+					const l = (pigmentLevel(color[c], color[c + 1], color[c + 2]) + 0.5) | 0;
+					data[o] = l;
+					data[o + 1] = l;
+					data[o + 2] = l;
+				} else {
+					data[o] = color[c] * WATER_SHADE;
+					data[o + 1] = color[c + 1] * WATER_SHADE;
+					data[o + 2] = color[c + 2] * WATER_SHADE;
+				}
 				data[o + 3] = (a * 255) | 0;
 			}
 		}
@@ -992,6 +1019,8 @@ const ValveRender = (() => {
 		renderAirMap,
 		WATER_SURFACE,
 		makeWaterMap,
+		pigmentLevel,
+		WATER_SHADE,
 		renderWater,
 		renderWaterSurface,
 		renderGrains,

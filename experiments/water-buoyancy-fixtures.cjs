@@ -28,7 +28,7 @@ function fillChamber(sim, vol) {
 	const w = sim.water;
 	const v = sim.layout.valves[5 * N + 4];
 	const i = Math.floor((v.cy + G.POUR) / w.cell) * w.nx + Math.floor(v.cx / w.cell);
-	w.vol[i] = vol;
+	W.setLiquid(w, i, vol);
 	for (let k = 0; k < 240; k++) S.step(sim, S.STEP); // settle + publish a waterline
 	return v;
 }

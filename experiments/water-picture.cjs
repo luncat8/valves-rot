@@ -1,4 +1,4 @@
-// Water picture: two panels written to logs/water-state-0.3.png so a colour or
+// Water picture: two panels written to logs/water-state-0.3.webp so a colour or
 // alpha change can be judged without a browser. Left is the seeded field mid-fill
 // from the vent; right is a sealed pool with one grain of every material, so the
 // float/sink result of slice 3 is visible in the same picture.
@@ -18,7 +18,7 @@ const P = require("./water-paint.cjs");
 
 const SEED = Number(process.argv[2]) || 7;
 const SECONDS = Number(process.argv[3]) || 6;
-const OUT = path.join(__dirname, "logs", "water-state-0.3.png");
+const OUT = path.join(__dirname, "logs", "water-state-0.3.webp");
 
 function fieldSim() {
 	const sim = S.create(G.createLayout(SEED));
@@ -47,7 +47,7 @@ function poolSim() {
 	const w = S.setWater(sim, true);
 	W.rebuild(sim);
 	const v = sim.layout.valves[5 * N + 4];
-	w.vol[Math.floor((v.cy + G.POUR) / w.cell) * w.nx + Math.floor(v.cx / w.cell)] = 1400;
+	W.setLiquid(w, Math.floor((v.cy + G.POUR) / w.cell) * w.nx + Math.floor(v.cx / w.cell), 1400);
 	for (let c = 0; c < 6; c++) S.addGrain(sim, v.cx + (c - 2.5) * 8.4, v.cy - 12, 2.7, c);
 	for (let c = 0; c < 6; c++) S.addGrain(sim, v.cx + (c - 2.5) * 8.4 + 4, v.cy - 3, 2.7, c);
 	for (let k = 0; k < 12 * 120; k++) S.step(sim, S.STEP);
