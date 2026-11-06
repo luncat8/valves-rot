@@ -958,8 +958,27 @@ const ValveRender = (() => {
 			ctx.fillStyle = "rgba(8,12,18,0.72)";
 			roundRect(ctx, x0, VENT_TAB_Y, VENT_TAB_W, VENT_TAB_H, 3);
 			ctx.fill();
+			// In-band tank look: a small colour tank on the left of the tab,
+			// the vent's own normalized colour (dimmed while shut).
+			roundRect(ctx, x0 + 1, VENT_TAB_Y + 2, 12, VENT_TAB_H - 4, 3);
 			ctx.fillStyle = col;
-			ctx.fillRect(x0 + 2, VENT_TAB_Y + 2, 10, VENT_TAB_H - 4);
+			ctx.fill();
+			ctx.lineWidth = 1.1;
+			ctx.strokeStyle = "rgba(10,14,20,0.85)";
+			ctx.stroke();
+			// Pouring-droplet cue: an open vent drips into its column.
+			if (open) {
+				ctx.globalAlpha = 0.55;
+				ctx.strokeStyle = col;
+				ctx.lineWidth = 1.7;
+				ctx.beginPath();
+				ctx.moveTo(x0 + 4, VENT_TAB_Y + VENT_TAB_H);
+				ctx.lineTo(x0 + 4, VENT_TAB_Y + VENT_TAB_H + 5);
+				ctx.moveTo(x0 + 10, VENT_TAB_Y + VENT_TAB_H);
+				ctx.lineTo(x0 + 10, VENT_TAB_Y + VENT_TAB_H + 5);
+				ctx.stroke();
+				ctx.globalAlpha = 1;
+			}
 			const gy = VENT_TAB_Y + (VENT_TAB_H - 4) / 2;
 			if (spectrum && active.column === c) {
 				// The left/right slide: the tab becomes a hue bar with a cursor.
