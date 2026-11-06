@@ -168,6 +168,27 @@ function assertUnchanged(w, snap, tag) {
 	W.move(w, i, j, w.vol[i]);
 	assert.equal(w.vol[i], 0);
 	assert.deepEqual([...w.ch.slice(i * 3, i * 3 + 3)], [0, 0, 0], "an emptied donor keeps nothing");
+	// Rounding rule: every share is a product with a factor below one, so it
+	// cannot overdraw its own channel — but the remainder can. A cell with an
+	// empty blue channel and a dust-sized move used to charge the rounding
+	// remainder to that empty channel and leave it at -1.4e-20 px²; the closed
+	// box measurement found the same dust at -6.8e-21 after 60 s of toggling. The
+	// remainder now goes to the largest channel, which holds a third of the move.
+	W.setLiquid(w, i, 36, [3, 1, 0]); // channels 27 / 9 / 0, no blue to overdraw
+	const jBefore = w.vol[j];
+	const jRed = w.ch[j * 3];
+	const jGreen = w.ch[j * 3 + 1];
+	const jBlue = w.ch[j * 3 + 2];
+	W.move(w, i, j, 0.00036);
+	for (let k = 0; k < 3; k++) {
+		assert.ok(w.ch[i * 3 + k] >= 0 && w.ch[j * 3 + k] >= 0, `channel ${k} stays nonnegative on a dust move`);
+	}
+	assert.ok(Math.abs(w.ch[j * 3] - jRed - 0.00027) < 1e-12, "red takes its 3/4 share");
+	assert.ok(Math.abs(w.ch[j * 3 + 1] - jGreen - 0.00009) < 1e-12, "green takes its 1/4 share");
+	assert.equal(w.ch[j * 3 + 2], jBlue, "an empty channel receives and gives nothing");
+	assert.ok(Math.abs(w.vol[i] - (36 - 0.00036)) < 1e-9, "the donor loses exactly what moved");
+	assert.ok(Math.abs(w.vol[j] - jBefore - 0.00036) < 1e-9, "the receiver gains exactly what moved");
+	assert.ok(Math.abs(w.ch[i * 3] / w.ch[i * 3 + 1] - 3) < 1e-9, "the donor keeps its 3:1 ratio");
 	books(w, "moves");
 	console.log("ok  move(area) is proportional, exact and leaves no remainder");
 }

@@ -232,8 +232,9 @@
   in proportion, and let every path (vertical fill, sill spill, closed-cell push,
   trapped return, supply, overflow, drain) call it. Duplicating the proportional
   split per path is how a colour silently disappears on the one path nobody
-  tested. Give the last channel the remainder of the moved area, so a move is
-  exact instead of drifting by an ulp per transfer.
+  tested. Give a remainder back so a move is exact instead of drifting by an ulp
+  per transfer — but give it to the LARGEST channel, not the last one; see the
+  measurement notes below for the negative dust the last channel produces.
 - Keep the per-cell total (`vol`) as a cache of the channel sum and publish the
   residual in the fixtures. Every existing reader — surface, displacement,
   capacity, scenarios — keeps working on a total, while the channels stay
@@ -324,3 +325,38 @@
   before believing your eyes about which is which: image-viewer ordering
   misled twice, and both times the blob was the stale one (blue water from
   before slice 1) while the fresh output was the correct gray.
+
+## Water colour measurement (0.3-water-color slice 3)
+- A proportional split is `channel * (area / total)` for every channel but one,
+  and the remainder for the last. The last channel is the one that can be empty,
+  and the remainder is a rounding error of magnitude `area`, so a dust-sized move
+  against a large cell charges a positive share to a zero channel: the long
+  closed-box run went to -6.8e-21 px². Charge the remainder to the largest
+  channel instead — it holds at least a third of the move, so it is far from
+  either bound — clamp each share to its own channel, and advance the cell cache
+  by what actually moved. Strict nonnegativity is then a property of the split,
+  not a tolerance. The all-mixable golden stayed bit-identical through the change
+  (an emptying move transfers every channel exactly, so the common path is
+  unchanged in value and only changes which channel absorbs the last ulp).
+- Scan for the invariant after EVERY step, not once per second. The ledger closed
+  to 1e-12 px² and the fixture asserted `min >= -1e-9` while the negative dust
+  accumulated for a whole simulated minute; a per-second scan reported the same
+  minimum and hid when it happened. 7200 step scans over 46800 channels cost
+  ~0.1 ms a step on this machine — 2% of the run, and the difference between
+  "bounded" and "cannot happen".
+- An invariant test needs a case that fails on the old code. `move` of 3.6e-4 px²
+  out of a 27 / 9 / 0 cell overdraws the empty blue channel by 1.4e-20, and
+  `movePhase` of 1.89e-3 px² out of a 27 / 0 / 9 cell overdraws green by
+  2.2e-19: two four-line fixtures that fail loudly on the remainder-as-last rule.
+- `W.rebuild` returns false without sampling when no rotor moved, so a rebuild
+  benchmark that calls it twice measures 0.000 ms. Time the three paths the page
+  actually takes: an idle tick (free), a full mask after a layout change
+  (~10 ms for 15600 cells), and one turned rotor (~0.32 ms).
+- Time the display path with the field and the map allocated once. Allocating
+  `makeDisplay` inside the timed block measured GC instead of pixels and spread
+  the layered frame across 1.2-5.4 ms; with the buffers reused the two views and
+  both phase counts land at 1.18-1.21 ms.
+- One-shot timing on freshly poured scenes is the noisiest number in the bench:
+  the first second after a pour came out 0.26-0.44 ms across identical runs. Take
+  a median of 5 fresh scenes, report it, and say in the log that deltas under
+  0.1 ms are run-to-run noise, so nobody reads 0.03 ms as a regression.

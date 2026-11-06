@@ -1,0 +1,9 @@
+seed 3, 120 Hz, basin view x 216..432 y 504..684 at scale 2, gate view x 216..432 y 288..468 at scale 2
+water-color.png panels left to right:
+  1 mixed colour   - R/G/B all mixable, 10 s after three pours
+  2 mixed pigment  - same state, pigment view
+  3 layered colour - R/G/B each its own phase, 10 s after three pours: blue on top
+  4 layered pigment- same state, pigment view (a pure layer reads light)
+water-color-gate.png panels left to right:
+  1 gate open      - red left, blue right, filled above the seam, connector open 2 s
+  2 gate shut      - the same connector turned shut, 5 s later: the stack holds on

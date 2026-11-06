@@ -1,0 +1,11 @@
+node v22.22.3; Intel(R) Xeon(R) Processor @ 2.60GHz; seed 3; dt 0.008333333333333333; 120 Hz budget 8.333 ms; medians of 9 runs of 120 steps and 5 frames
+scene: 215 wet cells mixed, 216 layered, 0 grains
+wet step sorting   mixed 0.265 ms  layered 0.365 ms  delta +0.100 ms (first second after the pour)
+wet step static    mixed 0.230 ms  layered 0.263 ms  delta +0.034 ms (3.2% of budget)
+wet step turning   mixed 0.778 ms  layered 0.805 ms  delta +0.027 ms (9.7% of budget)
+rebuild idle       mixed 0.000 ms  layered 0.000 ms (no rotor moved, the step skips the mask)
+rebuild full mask  mixed 10.050 ms  layered 10.016 ms  delta -0.035 ms
+rebuild one turn   mixed 0.314 ms  layered 0.315 ms  delta +0.001 ms
+display color      mixed 1.183 ms  layered 1.206 ms
+display pigment    mixed 1.193 ms  layered 1.210 ms
+mixed is the all-mixable single-liquid baseline (the path the golden digest pins); deltas under 0.1 ms are run-to-run noise on this machine

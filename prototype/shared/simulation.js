@@ -16,6 +16,7 @@ const ValveSimulation = (() => {
 	const GAS = typeof ValveGas !== "undefined" ? ValveGas : require("./gas.js");
 	const INL = typeof ValveInlets !== "undefined" ? ValveInlets : require("./inlets.js");
 	const WATER = typeof ValveWater !== "undefined" ? ValveWater : require("./water.js");
+	const HEAT = typeof ValveHeat !== "undefined" ? ValveHeat : require("./heat.js");
 	const N = G.N;
 	const SIZE = G.SIZE;
 	const POUR = G.POUR;
@@ -200,6 +201,8 @@ const ValveSimulation = (() => {
 		// Pressure mode parked while water is on, restored when water is off.
 		airBeforeWater: null,
 		water: null,
+		// Heat is a local-equilibrium enthalpy field on the water grid.
+		heat: null,
 		// Submerged drag while water is on, per second at full submersion. A sim
 		// field rather than only the module constant, so the balance table in the
 		// water plan can be re-measured by a script instead of by editing this file.
@@ -1007,6 +1010,7 @@ const ValveSimulation = (() => {
 		measurePairs(sim);
 		compact(sim);
 		sim.water ? WATER.step(sim, h) : WATER.clearLevels(sim);
+		HEAT.step(sim, h);
 		sim.clock += h;
 		sim.steps++;
 	}
@@ -1167,6 +1171,7 @@ const ValveSimulation = (() => {
 		INL.reset(sim.inlets);
 		sim.pressure = pressureFor(sim, sim.pressureMode);
 		if (sim.water) WATER.reset(sim.water);
+		if (sim.heat) HEAT.reset(sim.heat);
 	}
 
 	// Water is a separate, off-by-default mode. Enabling lazily builds the volume
@@ -1179,6 +1184,8 @@ const ValveSimulation = (() => {
 		if (on && !sim.water) sim.water = WATER.create(sim);
 		if (!sim.water) return null;
 		sim.water.enabled = on;
+		// Heat lives on the water grid and has no meaning without it.
+		if (!on && sim.heat) sim.heat.enabled = false;
 		if (on) {
 			if (sim.pressureMode !== "off") {
 				sim.airBeforeWater = sim.pressureMode;
@@ -1190,6 +1197,20 @@ const ValveSimulation = (() => {
 			setPressure(sim, mode);
 		}
 		return sim.water;
+	}
+
+	// Heat needs the water grid, so enabling it enables water with its inlet
+	// closed (the field is a solid block of cells, not a filling pool) and
+	// leaves the pour and colour settings alone. Disabling water disables heat;
+	// per-valve powers stay, so re-enabling resumes the same field.
+	function setHeat(sim, enabled) {
+		const on = !!enabled;
+		if (on && !sim.water) setWater(sim, true);
+		if (on && sim.water) WATER.setVent(sim.water, sim.water.ventColumn, false);
+		if (on && !sim.heat) sim.heat = HEAT.create(sim);
+		if (!sim.heat) return null;
+		sim.heat.enabled = on;
+		return sim.heat;
 	}
 
 	// Snaps from the current target detent so repeated clicks mid-turn always
@@ -1449,6 +1470,7 @@ const ValveSimulation = (() => {
 		setLubricantStress,
 		setPressure,
 		setWater,
+		setHeat,
 		toggleInlet,
 		canPressInlet,
 		setInletOwnership,

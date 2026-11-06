@@ -268,8 +268,14 @@ const ValveWater = (() => {
 	}
 
 	// Move `area` from one cell to another, splitting it across the donor's
-	// channels in proportion. Rounding never reaches the total: the moved amount
-	// is exact, and a donor emptied by the move contributes all of its remainder.
+	// channels in proportion. The LARGEST channel takes the rounding remainder,
+	// not the last one: every other share is a product with a factor below one,
+	// so it cannot exceed its own channel, while a remainder charged to an empty
+	// channel is exactly how a couple of ulps of rounding become a negative
+	// inventory. The largest channel is at least a third of the move, so the
+	// remainder is far from both bounds; the clamps are the last-ulp guard for a
+	// move within an ulp of the cell's whole contents. The cache then advances by
+	// what actually moved, so a clamp can never make it under-report either.
 	function move(w, from, to, area) {
 		if (!(area > 0)) return;
 		const ch = w.ch;
@@ -278,16 +284,39 @@ const ValveWater = (() => {
 		if (area > total) area = total;
 		const f = from * CH;
 		const t = to * CH;
-		const all = area >= total;
-		const r = all ? 1 : area / total;
-		const a0 = ch[f] * r;
-		const a1 = ch[f + 1] * r;
-		const a2 = all ? ch[f + 2] : area - a0 - a1;
-		ch[f] -= a0; ch[t] += a0;
-		ch[f + 1] -= a1; ch[t + 1] += a1;
-		ch[f + 2] -= a2; ch[t + 2] += a2;
-		w.vol[from] = total - area;
-		w.vol[to] += area;
+		let m0;
+		let m1;
+		let m2;
+		if (area >= total) {
+			// Emptying the cell moves every channel exactly, so a drained cell
+			// keeps no rounding residue.
+			m0 = ch[f];
+			m1 = ch[f + 1];
+			m2 = ch[f + 2];
+		} else {
+			const r = area / total;
+			let big = 0;
+			if (ch[f + 1] > ch[f]) big = 1;
+			if (ch[f + 2] > ch[f + big]) big = 2;
+			m0 = big === 0 ? 0 : ch[f] * r;
+			m1 = big === 1 ? 0 : ch[f + 1] * r;
+			m2 = big === 2 ? 0 : ch[f + 2] * r;
+			if (big === 0) m0 = area - m1 - m2;
+			else if (big === 1) m1 = area - m0 - m2;
+			else m2 = area - m0 - m1;
+		}
+		if (!(m0 >= 0)) m0 = 0;
+		else if (m0 > ch[f]) m0 = ch[f];
+		if (!(m1 >= 0)) m1 = 0;
+		else if (m1 > ch[f + 1]) m1 = ch[f + 1];
+		if (!(m2 >= 0)) m2 = 0;
+		else if (m2 > ch[f + 2]) m2 = ch[f + 2];
+		ch[f] -= m0; ch[t] += m0;
+		ch[f + 1] -= m1; ch[t + 1] += m1;
+		ch[f + 2] -= m2; ch[t + 2] += m2;
+		const moved = m0 + m1 + m2;
+		w.vol[from] = total - moved;
+		w.vol[to] += moved;
 	}
 
 	// ---- phases ------------------------------------------------------------
@@ -346,10 +375,11 @@ const ValveWater = (() => {
 		return v;
 	}
 
-	// Move `area` of ONE phase, split across that phase's channels in proportion;
-	// the last channel of the phase takes the remainder so the moved area is
-	// exact. A phase that leaves completely moves its channels exactly, so no
-	// rounding residue stays in an emptied cell.
+	// Move `area` of ONE phase, split across that phase's channels in proportion.
+	// Same rounding rule as move(): the phase's LARGEST channel takes the
+	// remainder, so no share can exceed its channel and a phase can never gain a
+	// negative channel. A phase that leaves completely moves its channels
+	// exactly, so no rounding residue stays in an emptied cell.
 	function movePhase(w, from, to, p, area) {
 		if (!(area > 0)) return;
 		const of = w.phaseOf;
@@ -357,16 +387,16 @@ const ValveWater = (() => {
 		const f = from * CH;
 		const t = to * CH;
 		let pv = 0;
-		let last = -1;
+		let big = -1;
 		for (let k = 0; k < CH; k++) {
 			if (of[k] !== p) continue;
 			pv += ch[f + k];
-			last = k;
+			if (big < 0 || ch[f + k] > ch[f + big]) big = k;
 		}
-		if (!(pv > 0)) return;
+		if (!(pv > 0) || big < 0) return;
 		if (area > pv) area = pv;
-		let moved = 0;
 		if (area >= pv) {
+			let moved = 0;
 			for (let k = 0; k < CH; k++) {
 				if (of[k] !== p) continue;
 				const v = ch[f + k];
@@ -374,18 +404,26 @@ const ValveWater = (() => {
 				ch[t + k] += v;
 				moved += v;
 			}
-		} else {
-			const r = area / pv;
-			let acc = 0;
-			for (let k = 0; k < CH; k++) {
-				if (of[k] !== p) continue;
-				const m = k === last ? area - acc : ch[f + k] * r;
-				ch[f + k] -= m;
-				ch[t + k] += m;
-				acc += m;
-			}
-			moved = acc;
+			w.vol[from] -= moved;
+			w.vol[to] += moved;
+			return;
 		}
+		const r = area / pv;
+		let moved = 0;
+		for (let k = 0; k < CH; k++) {
+			if (of[k] !== p) continue;
+			if (k === big) continue;
+			const m = ch[f + k] * r;
+			ch[f + k] -= m;
+			ch[t + k] += m;
+			moved += m;
+		}
+		let rest = area - moved;
+		if (!(rest >= 0)) rest = 0;
+		else if (rest > ch[f + big]) rest = ch[f + big];
+		ch[f + big] -= rest;
+		ch[t + big] += rest;
+		moved += rest;
 		w.vol[from] -= moved;
 		w.vol[to] += moved;
 	}

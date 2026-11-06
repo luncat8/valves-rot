@@ -448,4 +448,27 @@ function books(w, tag) {
 	console.log(`ok  an emptied below-surface cell keeps finite bands from below`);
 }
 
+// 10. The same rounding rule inside a phase: the remainder goes to the phase's
+//     largest channel, so a phase whose last channel is empty cannot go negative
+//     when a dust-sized share is moved. Recorded dust: -2.2e-19 px².
+{
+	const { sim, w } = makeSim({ "4,5": ["hollow", [], RV * 0.8], "5,5": ["hollow", [], RV * 0.8] });
+	W.setMixable(w, [1, 1, 0]); // phase 0 holds R and G, phase 1 is blue
+	const a = valve(sim.layout, 4, 5);
+	const b = valve(sim.layout, 5, 5);
+	const i = cellAt(w, a.cx, a.cy);
+	const j = cellAt(w, b.cx, b.cy);
+	W.setLiquid(w, i, 36, [3, 0, 1]); // R 27, G 0, B 9
+	assert.equal(w.ch[i * 3 + 1], 0, "the phase's last channel starts empty");
+	W.movePhase(w, i, j, w.phaseOf[0], 0.00189);
+	for (let k = 0; k < 3; k++) {
+		assert.ok(w.ch[i * 3 + k] >= 0 && w.ch[j * 3 + k] >= 0, `channel ${k} stays nonnegative on a dust share`);
+	}
+	assert.equal(w.ch[i * 3 + 1], 0, "the empty channel of the phase is untouched");
+	assert.ok(Math.abs(w.ch[j * 3] - 0.00189) < 1e-12, "the phase moves its whole red share");
+	assert.equal(w.ch[j * 3 + 2], 0, "the other phase does not move");
+	books(w, "phase rounding");
+	console.log(`ok  a phase keeps its empty channel at 0 on a ${(0.00189).toFixed(5)} px² share`);
+}
+
 console.log("OK  water colour slice 2: separated phases settle, buoy and paint in layers");

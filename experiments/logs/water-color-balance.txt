@@ -1,5 +1,5 @@
-node v22.22.3; Intel(R) Xeon(R) Processor @ 2.60GHz; seed 3; dt 0.008333333333333333; 60 s; 60 toggles
-max ledger absolute 1.136868e-12 px²; relative 7.579123e-16; cache 4.547474e-13 px²
-minimum channel -6.776264e-21 px² (roundoff dust)
-limits: absolute 1e-5 px²; relative 1e-9; cache 1e-9 px²; negative dust -1e-9 px²
-OK  closed-box channel balance and bit-exact toggles
+node v22.22.3; Intel(R) Xeon(R) Processor @ 2.60GHz; seed 3; dt 0.008333333333333333; 60 s; 60 toggles; every step scanned
+max ledger absolute 9.094947e-13 px²; relative 6.063298e-16; cache 4.050094e-13 px²
+minimum channel 0.000000e+0 px² over 7200 steps (0 negative scans)
+limits: absolute 1e-5 px²; relative 1e-9; cache 1e-9 px²; negative none
+OK  closed-box channel balance, bit-exact toggles and nonnegative inventories
