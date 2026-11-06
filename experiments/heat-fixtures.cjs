@@ -250,3 +250,260 @@ const dry = { "4,5": ["hollow", [0], RV * 0.7] };
 }
 
 console.log("OK  heat slice 1a: capacity, conduction, sources, ambient, ledger, substep gate");
+
+// ---- slice 1b: material coupling and temperature view ---------------------
+
+const R = require("../prototype/shared/render.js");
+
+// A two-chamber pool connected by an open east face, insulated from the room.
+function poolSim(spec) {
+	const { sim, h } = makeSim(spec);
+	H.setAmbient(h, 20, 0);
+	return { sim, h, w: sim.water };
+}
+
+// A top chamber over a bottom chamber, joined by a straight vertical pipe:
+// water falls freely between them, so the exchange has no sill to perch on.
+const twoChambers = {
+	"4,4": ["hollow", [1], RV * 0.7],
+	"4,5": ["hollow", [3], RV * 0.7],
+};
+
+// The centre cell of a valve's chamber (imposition point for setCell).
+function chamberCell(sim, valveIndex) {
+	const v = sim.layout.valves[valveIndex];
+	const w = sim.water;
+	return Math.floor((v.cy + G.POUR) / w.cell) * w.nx + Math.floor(v.cx / w.cell);
+}
+
+// The open cells of a chamber's disc, and their H/vol/capacity sums in `out`.
+function chamberCells(sim, valveIndex, out) {
+	const v = sim.layout.valves[valveIndex];
+	const w = sim.water;
+	const r = v.chamberR;
+	const c = w.cell;
+	const gx0 = Math.max(0, Math.floor((v.cx - r) / c));
+	const gx1 = Math.min(w.nx - 1, Math.floor((v.cx + r) / c));
+	const gy0 = Math.max(0, Math.floor((v.cy - r + G.POUR) / c));
+	const gy1 = Math.min(w.ny - 1, Math.floor((v.cy + r + G.POUR) / c));
+	out.h = 0;
+	out.vol = 0;
+	out.cap = 0;
+	for (let gy = gy0; gy <= gy1; gy++) {
+		for (let gx = gx0; gx <= gx1; gx++) {
+			const i = gy * w.nx + gx;
+			if (!w.air[i]) continue;
+			out.h += sim.heat.H[i] - H.latentOf(sim.heat, i);
+			out.vol += w.vol[i];
+			out.cap += sim.heat.C[i];
+		}
+	}
+	return out;
+}
+
+const sums = { h: 0, vol: 0, cap: 0 };
+
+// 8. Liquid movement: a hot pool relaxes into its neighbour and both
+//    chambers keep every joule of the books. Pure B shares at and above 80 °C
+//    so no plateau engages during the mix.
+{
+	const { sim, h, w } = poolSim(twoChambers);
+	// The whole field sits at 100 °C so the B channel never dips to its 80 °C
+	// plateau: this slice measures transport, not phase change.
+	H.fill(h, 100);
+	H.setCell(h, sim, chamberCell(sim, 4 * N + 4), 400, [0, 0, 1], 100);
+	H.setCell(h, sim, chamberCell(sim, 5 * N + 4), 60, [0, 0, 1], 85);
+	chamberCells(sim, 4 * N + 4, sums);
+	const top0 = sums.vol;
+	chamberCells(sim, 5 * N + 4, sums);
+	const bot0h = sums.h;
+	const bot0v = sums.vol;
+	for (let k = 0; k < 240; k++) S.step(sim, S.STEP);
+	books(h, "liquid movement");
+	chamberCells(sim, 4 * N + 4, sums);
+	const topVol = sums.vol;
+	chamberCells(sim, 5 * N + 4, sums);
+	const botVol = sums.vol;
+	const botT = sums.h / sums.cap;
+	assert.ok(topVol < top0 - 100, `the top pool drained (${top0.toFixed(0)} -> ${topVol.toFixed(0)} px²)`);
+	assert.ok(botVol > bot0v + 100, `the lower chamber gained liquid (${bot0v.toFixed(0)} -> ${botVol.toFixed(0)} px²)`);
+	assert.ok(sums.h > bot0h, "the lower chamber gained energy");
+	assert.ok(botT > 85 && botT < 100, `the mixed pool reads between its ends (${botT.toFixed(1)} °C)`);
+	console.log(`ok  liquid movement: top ${top0.toFixed(0)} -> ${topVol.toFixed(0)} px², lower ${bot0v.toFixed(0)} -> ${botVol.toFixed(0)} px² at ${botT.toFixed(1)} °C`);
+}
+
+// 9. Supply, overflow and drain: the vent's pour enters the material book at
+//    ambient with its latent, the overflow band carries donor enthalpy out,
+//    and Drain water empties the books with it.
+{
+	const { sim, h, w } = poolSim({ "4,5": ["hollow", [3], RV * 0.7] });
+	// Everything at 130 °C so no channel reaches its plateau.
+	H.fill(h, 130);
+	H.setAmbient(h, 130, 0);
+	W.setVent(w, 4, true);
+	W.setSupply(w, 6000);
+	for (let k = 0; k < 1440; k++) S.step(sim, S.STEP);
+	books(h, "supply and overflow");
+	assert.ok(w.admitted > 1000, `the vent admitted ${w.admitted.toFixed(0)} px²`);
+	assert.ok(w.overflowed > 100, `the band overflowed ${w.overflowed.toFixed(0)} px²`);
+	// Net material ≈ what is still stored. Pass-through pricing is exact per
+	// parcel but the exported parcel leaves at the donor's live temperature,
+	// which drifts a few hundredths of a degree off the ambient import price
+	// as liquid mixes with the cell's metal; the bound is that wiggle over
+	// the whole throughput, not an exact price match.
+	const throughput = (h.p.liquidHeat * 130 + (h.p.latent[0] + h.p.latent[1] + h.p.latent[2]) / 3) * w.admitted;
+	const held = W.storedVol(w);
+	const latent = (h.p.latent[0] + h.p.latent[1] + h.p.latent[2]) / 3 * held;
+	const sensible = h.p.liquidHeat * held * 130;
+	assert.ok(Math.abs(h.material - (sensible + latent)) <= 2e-3 * throughput,
+		`material book ${h.material.toFixed(1)} vs stored ${sensible.toFixed(1)} + latent ${latent.toFixed(1)}`);
+	W.drainAll(w);
+	books(h, "drain water");
+	assert.ok(Math.abs(h.material) <= 2e-3 * throughput,
+		`drain emptied the material book (${h.material.toExponential(2)} left)`);
+	console.log(`ok  supply/overflow/drain: admitted ${w.admitted.toFixed(0)}, overflowed ${w.overflowed.toFixed(0)}, books closed`);
+}
+
+// 10. Grain sensible energy: a cold grain imports at ambient, its crossings
+//     move its energy cell to cell while it falls, and Drain exports it at the
+//     cell's published temperature. No liquid, so no plateau can engage.
+{
+	const spec = { "4,5": ["hollow", [0], RV * 0.75] };
+	const { sim, h } = poolSim(spec);
+	H.fill(h, 100);
+	const v = sim.layout.valves[5 * N + 4];
+	const k0 = S.addGrain(sim, v.cx, v.cy - RV * 0.5, 2.7, 0);
+	assert.ok(k0 >= 0, "the grain was placed");
+	for (let step = 0; step < 360; step++) {
+		S.step(sim, S.STEP);
+		books(h, "grain fall step " + step);
+	}
+	assert.ok(sim.count === 1, "the grain is still in the field");
+	const landed = sim.gcell[0];
+	assert.ok(landed >= 0, "the grain is booked in a cell");
+	const dE = h.p.grainHeat * sim.mass[0] * h.T[landed];
+	assert.ok(h.material > 0 && h.material <= dE * 1.001,
+		`import ${h.material.toFixed(2)} vs sensible at landing ${dE.toFixed(2)}`);
+	const imported = h.material;
+	S.drain(sim);
+	books(h, "grain drain");
+	// The grain arrived cold and leaves carrying the heat it absorbed from its
+	// cell, so the net book is a deficit bounded by the field's warmth.
+	const absorbed = h.p.grainHeat * sim.mass[0] === 0 ? 0 : imported - h.material;
+	assert.ok(h.material < 0, `the drain exported the grain warmer than it came (${h.material.toFixed(1)} net)`);
+	// Bound: the field was filled at 100 °C and the grain arrived at 20 °C,
+	// with composition wobble on top.
+	assert.ok(absorbed <= h.p.grainHeat * (2000 / 1000) * 2.7 * 2.7 * 105,
+		`the absorbed heat is bounded (${absorbed.toFixed(1)} E)`);
+	console.log(`ok  grain crossings: imported ${imported.toFixed(1)} E at 20 °C, exported at ${h.T[landed].toFixed(0)} °C, net ${h.material.toFixed(1)} E`);
+}
+
+// 11. A rotor turn with liquid and a grain present: the mask rebuild moves
+//     capacity and cells, never enthalpy.
+{
+	const spec = {
+		"3,5": ["hollow", [0], RV * 0.7],
+		"4,5": ["solid", [0, 2], 0],
+		"5,5": ["hollow", [2], RV * 0.7],
+	};
+	const { sim, h } = poolSim(spec);
+	const mid = 5 * N + 4;
+	const leftCell = chamberCell(sim, 5 * N + 3);
+	H.setCell(h, sim, leftCell, 200, [0, 0, 1], 130);
+	const right = sim.layout.valves[5 * N + 5];
+	assert.ok(S.addGrain(sim, right.cx, right.cy, 2.7, 3) >= 0, "the blue grain was placed");
+	H.setTemperature(h, chamberCell(sim, 5 * N + 5), 60);
+	for (let k = 0; k < 60; k++) S.step(sim, S.STEP);
+	books(h, "settled before turn");
+	const before = H.stored(h);
+	S.turn(sim, mid, 1);
+	W.rebuild(sim);
+	for (let k = 0; k < 60; k++) S.step(sim, S.STEP);
+	const after = H.stored(h);
+	assert.ok(Math.abs(after - before) <= 1e-9 * Math.max(1, Math.abs(before)),
+		`the turn kept the field's energy (${Math.abs(after - before).toExponential(2)})`);
+	books(h, "turn with material");
+	console.log(`ok  turn with liquid and a grain: ${before.toFixed(0)} E held, ledger closed`);
+}
+
+// 12. The overlay samples the published field: every texel is the fixed scale
+//     color of its cell's temperature, clamped at both ends.
+{
+	const { sim, h } = poolSim({ "4,5": ["hollow", [0], RV * 0.7] });
+	H.fill(h, 20);
+	H.setTemperature(h, 100, -15);
+	H.setTemperature(h, 101, 65);
+	H.setTemperature(h, 102, 300);
+	const map = { nx: h.nx, ny: h.ny, img: { data: new Uint8ClampedArray(h.count * 4) }, ctx: { putImageData() {} } };
+	R.renderHeat(map, h);
+	let worst = 0;
+	for (let i = 0; i < h.count; i++) {
+		const want = R.heatColor(h.T[i]);
+		const o = i * 4;
+		for (let c = 0; c < 3; c++) {
+			const d = Math.abs(map.img.data[o + c] - want[c]);
+			if (d > worst) worst = d;
+		}
+	}
+	assert.equal(worst, 0, "every texel equals the published temperature's color");
+	assert.deepEqual(R.heatColor(-15), R.heatColor(R.HEAT_MIN), "below the scale clamps");
+	assert.deepEqual(R.heatColor(300), R.heatColor(R.HEAT_MAX), "above the scale clamps");
+	console.log(`ok  overlay: ${h.count} texels agree with the published field, 0..${R.HEAT_MAX} °C fixed scale`);
+}
+
+// 13. Lifecycle: disabling heat freezes the books while the water keeps
+//     running, re-enabling resumes them, and reset empties the field but
+//     keeps every valve's power.
+{
+	const { sim, h } = poolSim({ "4,5": ["hollow", [0], RV * 0.7] });
+	H.fill(h, 40);
+	assert.equal(H.setPower(h, 5 * N + 4, 50), true);
+	for (let k = 0; k < 120; k++) S.step(sim, S.STEP);
+	const frozen = {
+		stored: H.stored(h),
+		source: h.source,
+		ambient: h.ambient,
+		material: h.material,
+	};
+	S.setHeat(sim, false);
+	assert.equal(sim.heat.enabled, false, "heat is disabled");
+	for (let k = 0; k < 120; k++) S.step(sim, S.STEP);
+	assert.equal(H.stored(h), frozen.stored, "a disabled field stores exactly what it had");
+	assert.equal(h.source, frozen.source, "and its books are frozen");
+	S.setHeat(sim, true);
+	for (let k = 0; k < 120; k++) S.step(sim, S.STEP);
+	books(h, "resume after disable");
+	assert.ok(h.source > frozen.source, "the source book resumed");
+	H.reset(h);
+	assert.equal(H.stored(h), 0, "reset empties the field");
+	assert.equal(H.residual(h), 0, "and its books");
+	assert.equal(h.power[5 * N + 4], 50, "the valve keeps its power");
+	console.log(`ok  lifecycle: books frozen while off, resumed on, reset keeps powers`);
+}
+
+// 14. Step cost against the heat-disabled baseline on the same wet scene.
+{
+	const sim = S.create(G.createLayout(7), { turning: true });
+	S.setPressure(sim, "off");
+	S.setWater(sim, true);
+	W.setVent(sim.water, 4, true);
+	W.setSupply(sim.water, 600);
+	const h = S.setHeat(sim, true);
+	H.setAmbient(h, 130, 0.05);
+	// Fill the scene with flowing water at 130 °C: no plateau engages, so the
+	// comparison measures the coupling, not a phase-change storm.
+	H.fill(h, 130);
+	for (let k = 0; k < 720; k++) S.step(sim, S.STEP);
+	const steps = 2000;
+	let t0 = process.hrtime.bigint();
+	for (let k = 0; k < steps; k++) S.step(sim, S.STEP);
+	const onMs = Number(process.hrtime.bigint() - t0) / 1e6 / steps;
+	S.setHeat(sim, false);
+	t0 = process.hrtime.bigint();
+	for (let k = 0; k < steps; k++) S.step(sim, S.STEP);
+	const offMs = Number(process.hrtime.bigint() - t0) / 1e6 / steps;
+	assert.ok(onMs < offMs * 4 + 0.01, `heat-on ${onMs.toFixed(3)} ms/step vs off ${offMs.toFixed(3)}`);
+	console.log(`ok  timing: ${offMs.toFixed(3)} ms/step off, ${onMs.toFixed(3)} ms/step on (${(onMs / offMs).toFixed(2)}×), substeps ${sim.heat.substeps}`);
+}
+
+console.log("OK  heat slice 1b: material coupling, books, overlay, lifecycle, timing");

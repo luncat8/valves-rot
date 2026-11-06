@@ -1,0 +1,142 @@
+// Heat picture: heater and cooler panels written to logs/heat-0.4.png so the
+// temperature scale, the plateau pins and the phase change can be judged
+// without a browser. The field is painted by the page's own renderers (the
+// water sheet through renderWater, the temperature overlay through
+// renderHeat's LUT), so it is a colour preview of the real layers, not a copy.
+// Run: node experiments/heat-picture.cjs
+"use strict";
+const path = require("node:path");
+const fs = require("node:fs");
+const { writePng } = require("./png-writer.cjs");
+const P = require("./water-paint.cjs");
+
+const ROOT = path.join(__dirname, "..");
+const SHARED = path.join(ROOT, "prototype", "shared");
+const G = require(path.join(SHARED, "geometry.js"));
+const S = require(path.join(SHARED, "simulation.js"));
+const W = require(path.join(SHARED, "water.js"));
+const H = require(path.join(SHARED, "heat.js"));
+const R = require(path.join(SHARED, "render.js"));
+
+const N = G.N;
+const RV = G.RV;
+const OUT = path.join(__dirname, "logs", "heat-0.4.png");
+const LOG = path.join(__dirname, "logs", "heat-0.4.txt");
+
+// Two sealed chambers over a solid field: the left one heated, the right one
+// cooled, both holding a pool.
+function scene() {
+	const spec = {
+		"3,5": ["hollow", [0], RV * 0.75],
+		"6,5": ["hollow", [2], RV * 0.75],
+	};
+	const valves = [];
+	for (let j = 0; j < N; j++) {
+		for (let i = 0; i < N; i++) {
+			const e = spec[i + "," + j];
+			valves.push(G.makeValve(i, j, e ? e[0] : "solid", e ? e[1] : [], 0, e && e[2] ? e[2] : 0));
+		}
+	}
+	const sim = S.create({ seed: 3, valves }, { turning: false });
+	S.setPressure(sim, "off");
+	S.setWater(sim, true);
+	W.rebuild(sim);
+	const h = S.setHeat(sim, true);
+	H.setAmbient(h, 20, 0.05);
+	const cellOf = v => Math.floor((v.cy + G.POUR) / sim.water.cell) * sim.water.nx + Math.floor(v.cx / sim.water.cell);
+	const left = sim.layout.valves[5 * N + 3];
+	const right = sim.layout.valves[5 * N + 6];
+	// A hot pool under the cooler so the freeze front is visible at once, and
+	// a cold pool under the heater so the melt front is.
+	H.setCell(h, sim, cellOf(left), 500, [1, 0, 0], 20);
+	H.setCell(h, sim, cellOf(right), 400, [0, 0, 1], 130);
+	for (let c = 0; c < 6; c++) S.addGrain(sim, left.cx + (c - 2.5) * 7, left.cy - 14, 2.7, c % 6);
+	H.setPower(h, 5 * N + 3, 150);
+	H.setPower(h, 5 * N + 6, -150);
+	return { sim, h, left, right };
+}
+
+// The temperature overlay as the page paints it: one texel per water cell
+// through the fixed LUT, composited at the page's overlay alpha.
+function heatOverlay(sim, view, scale, wdt, hgt, px) {
+	const h = sim.heat;
+	const heat = { nx: h.nx, ny: h.ny, img: { data: new Uint8ClampedArray(h.count * 4) }, ctx: { putImageData() {} } };
+	R.renderHeat(heat, h);
+	const data = heat.img.data;
+	const cell = h.cell;
+	for (let y = 0; y < hgt; y++) {
+		const wy = view.y0 + (y + 0.5) / scale;
+		const gy = Math.floor((wy + G.POUR) / cell);
+		if (gy < 0 || gy >= h.ny) continue;
+		for (let x = 0; x < wdt; x++) {
+			const gx = Math.floor((view.x0 + (x + 0.5) / scale) / cell);
+			if (gx < 0 || gx >= h.nx) continue;
+			const o = (gy * h.nx + gx) * 4;
+			const pxo = (y * wdt + x) * 3;
+			px[pxo] += (data[o] - px[pxo]) * 0.58;
+			px[pxo + 1] += (data[o + 1] - px[pxo + 1]) * 0.58;
+			px[pxo + 2] += (data[o + 2] - px[pxo + 2]) * 0.58;
+		}
+	}
+}
+
+// The fixed °C scale as a strip panel: gradient with notches every 60 °C.
+function legendPanel() {
+	const w = 18;
+	const hgt = 120;
+	const px = Buffer.alloc(w * hgt * 3);
+	for (let y = 0; y < hgt; y++) {
+		const t = R.HEAT_MAX * (1 - y / (hgt - 1));
+		const c = R.heatColor(t);
+		for (let x = 0; x < w; x++) {
+			const o = (y * w + x) * 3;
+			px[o] = c[0];
+			px[o + 1] = c[1];
+			px[o + 2] = c[2];
+			if (x < 3 && Math.round(t) % 60 === 0) {
+				px[o] = 255;
+				px[o + 1] = 255;
+				px[o + 2] = 255;
+			}
+		}
+	}
+	return { rgb: px, w, h: hgt };
+}
+
+function panel(sim, view, scale) {
+	const p = P.panel(sim, view, scale);
+	heatOverlay(sim, view, scale, p.w, p.h, p.rgb);
+	return p;
+}
+
+const { sim, h, left, right } = scene();
+for (let k = 0; k < 12 * 120; k++) S.step(sim, S.STEP);
+const w = sim.water;
+const ch = new Float64Array(3);
+W.channelTotals(w, ch);
+const heatView = { x0: 0, y0: -G.POUR, w: G.SIZE, h: G.SIZE + 2 * G.POUR };
+const zoom = { x0: right.cx - 62, y0: right.cy - 46, w: 124, h: 92 };
+writePng(OUT, [panel(sim, heatView, 1), panel(sim, zoom, 3), legendPanel()], { background: 12 });
+
+// The measurement log: fixed seed, parameters, ledger and phase books.
+const lines = [];
+lines.push("heat 0.4 picture and measurement, seed 3, 12 s at 120 Hz");
+lines.push("params " + JSON.stringify(h.p));
+lines.push(`heater valve ${5 * N + 3} at +150 E/s, cooler valve ${5 * N + 6} at -150 E/s, ambient ${h.p.ambient} °C`);
+lines.push(`ledger: initial ${h.initial.toFixed(0)} source ${h.source.toFixed(0)} ambient ${h.ambient.toFixed(0)} material ${h.material.toFixed(0)}`);
+lines.push(`residual ${H.residual(h).toExponential(2)} (tolerance 1e-9 relative)`);
+lines.push(`channels R ${ch[0].toFixed(1)} G ${ch[1].toFixed(1)} B ${ch[2].toFixed(1)} px², grains ${sim.count}, melted ${h.melted.toFixed(1)} mg, frozen ${h.frozen.toFixed(1)} mg`);
+const meanT = (() => {
+	let s = 0;
+	for (let i = 0; i < h.count; i++) s += h.T[i];
+	return s / h.count;
+})();
+lines.push(`mean field temperature ${meanT.toFixed(2)} °C, substeps ${h.substeps}`);
+lines.push(`left chamber T ${h.T[Math.floor((left.cy + G.POUR) / w.cell) * w.nx + Math.floor(left.cx / w.cell)].toFixed(1)} °C, right chamber T ${h.T[Math.floor((right.cy + G.POUR) / w.cell) * w.nx + Math.floor(right.cx / w.cell)].toFixed(1)} °C`);
+const t0 = process.hrtime.bigint();
+for (let k = 0; k < 2000; k++) S.step(sim, S.STEP);
+const ms = Number(process.hrtime.bigint() - t0) / 1e6 / 2000;
+lines.push(`step cost with heat on: ${ms.toFixed(3)} ms/step (grains ${sim.count}, wet ${W.wetCount(w)})`);
+fs.writeFileSync(LOG, lines.join("\n") + "\n");
+console.log(lines.join("\n"));
+console.log(`wrote ${path.relative(ROOT, OUT)} and ${path.relative(ROOT, LOG)}`);

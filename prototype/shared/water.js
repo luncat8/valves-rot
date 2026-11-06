@@ -192,6 +192,13 @@ const ValveWater = (() => {
 			// Bumped whenever any vent's shares change, so the renderer's
 			// colour cache rebuilds only on a real change.
 			ventVersion: 0,
+			// Heat hooks, attached by the heat field while it exists: a liquid
+			// parcel carries sensible enthalpy at the donor's last published
+			// temperature plus its latent book, in and out of the cells and the
+			// material ledger. Null (no heat) costs one branch per primitive.
+			onFlow: null,
+			onEnter: null,
+			onLeave: null,
 			// Published ceiling of every vent rate, read by the renderer and the
 			// page's vertical slide without importing this module's constant.
 			rateMax: RATE_MAX,
@@ -220,9 +227,11 @@ const ValveWater = (() => {
 			band: new Float64Array(count * CH),
 			bandRho: new Float64Array(count * CH),
 			// Scratch phase volumes of one cell, and of a pair, so a pass allocates
-			// nothing.
+			// nothing. mvScratch holds one movePhase call's per-channel amounts so
+			// the heat hook can be told them without allocation.
 			pvA: new Float64Array(CH),
 			pvB: new Float64Array(CH),
+			mvScratch: new Float64Array(CH),
 			attempted: 0,
 			admitted: 0,
 			unadmitted: 0,
@@ -335,6 +344,9 @@ const ValveWater = (() => {
 		else if (m1 > ch[f + 1]) m1 = ch[f + 1];
 		if (!(m2 >= 0)) m2 = 0;
 		else if (m2 > ch[f + 2]) m2 = ch[f + 2];
+		// The parcel leaves before the books change, so the hook still reads
+		// the donor's full channels and its published temperature.
+		if (w.onFlow) w.onFlow(from, to, m0 + m1 + m2, m0, m1, m2);
 		ch[f] -= m0; ch[t] += m0;
 		ch[f + 1] -= m1; ch[t + 1] += m1;
 		ch[f + 2] -= m2; ch[t + 2] += m2;
@@ -419,35 +431,38 @@ const ValveWater = (() => {
 		}
 		if (!(pv > 0) || big < 0) return;
 		if (area > pv) area = pv;
+		// Same hook contract as move(): the per-channel amounts are computed
+		// first, reported before any book changes, then applied.
+		const mv = w.mvScratch;
+		mv[0] = 0;
+		mv[1] = 0;
+		mv[2] = 0;
 		if (area >= pv) {
-			let moved = 0;
 			for (let k = 0; k < CH; k++) {
 				if (of[k] !== p) continue;
-				const v = ch[f + k];
-				ch[f + k] = 0;
-				ch[t + k] += v;
-				moved += v;
+				mv[k] = ch[f + k];
 			}
-			w.vol[from] -= moved;
-			w.vol[to] += moved;
-			return;
-		}
+		} else {
 		const r = area / pv;
+			let part = 0;
+			for (let k = 0; k < CH; k++) {
+				if (of[k] !== p || k === big) continue;
+				mv[k] = ch[f + k] * r;
+				part += mv[k];
+			}
+			let rest = area - part;
+			if (!(rest >= 0)) rest = 0;
+			else if (rest > ch[f + big]) rest = ch[f + big];
+			mv[big] = rest;
+		}
+		if (w.onFlow) w.onFlow(from, to, mv[0] + mv[1] + mv[2], mv[0], mv[1], mv[2]);
 		let moved = 0;
 		for (let k = 0; k < CH; k++) {
-			if (of[k] !== p) continue;
-			if (k === big) continue;
-			const m = ch[f + k] * r;
-			ch[f + k] -= m;
-			ch[t + k] += m;
-			moved += m;
+			if (mv[k] === 0) continue;
+			ch[f + k] -= mv[k];
+			ch[t + k] += mv[k];
+			moved += mv[k];
 		}
-		let rest = area - moved;
-		if (!(rest >= 0)) rest = 0;
-		else if (rest > ch[f + big]) rest = ch[f + big];
-		ch[f + big] -= rest;
-		ch[t + big] += rest;
-		moved += rest;
 		w.vol[from] -= moved;
 		w.vol[to] += moved;
 	}
@@ -479,6 +494,7 @@ const ValveWater = (() => {
 	// Empty one cell into an overflow or drain book and report the area taken.
 	function takeAll(w, i, book) {
 		const o = i * CH;
+		if (w.onLeave) w.onLeave(i, w.ch[o], w.ch[o + 1], w.ch[o + 2]);
 		const into = book === OVERFLOW ? w.chOverflowed : w.chDrained;
 		let sum = 0;
 		for (let k = 0; k < CH; k++) {
@@ -518,6 +534,25 @@ const ValveWater = (() => {
 		if (!(area > 0)) return;
 		deposit(w, i, area, shares);
 		bookArea(w.chInitial, area, shares || w.pour);
+	}
+
+	// Remove up to `m` px² of ONE channel, for a freeze that converts liquid
+	// into a grain inside the same cell. Returns the area actually taken.
+	function takeChannel(w, i, k, m) {
+		const o = i * CH;
+		let take = m > 0 ? m : 0;
+		if (take > w.ch[o + k]) take = w.ch[o + k];
+		if (take <= 0) return 0;
+		w.ch[o + k] -= take;
+		w.vol[i] -= take;
+		return take;
+	}
+
+	// Shut every source vent at once (a heat field starts with a closed inlet
+	// row), keeping each vent's rate and colour like a reset does.
+	function shutVents(w) {
+		w.ventOn.fill(0);
+		syncCurrent(w);
 	}
 
 	// ---- geometry sampling -------------------------------------------------
@@ -1468,6 +1503,7 @@ const ValveWater = (() => {
 				continue;
 			}
 			deposit(w, i, want, s);
+			if (w.onEnter) w.onEnter(i, want, s);
 			w.admitted += want;
 			bookArea(w.chAdmitted, want, s);
 		}
@@ -1728,6 +1764,7 @@ const ValveWater = (() => {
 		for (let i = 0; i < w.count; i++) {
 			if (w.trapped[i] > 0) {
 				const o = i * CH;
+				if (w.onLeave) w.onLeave(i, w.trappedCh[o], w.trappedCh[o + 1], w.trappedCh[o + 2]);
 				for (let k = 0; k < CH; k++) {
 					w.chDrained[k] += w.trappedCh[o + k];
 					w.trappedCh[o + k] = 0;
@@ -1788,7 +1825,7 @@ const ValveWater = (() => {
 		setVent, selectVent, setSupply, setPour, setVentRate, setVentShares, toggleVent, sweepVents,
 		ventOpenCount, hueShares, sharesHue, setMixable, supplyFromSI, volumeSI, drainAll, reset,
 		totalVol, storedVol, wetCount, surface, surfaceAt, mouthCell,
-		deposit, move, movePhase, setLiquid, inject, channelTotals, residual, CH,
+		deposit, move, movePhase, takeChannel, shutVents, setLiquid, inject, channelTotals, residual, CH,
 		derivePhases, phaseVol, phaseVols,
 	};
 })();

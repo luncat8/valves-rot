@@ -96,6 +96,30 @@ const ValveRender = (() => {
 		}
 		return out;
 	})();
+	// Temperature view: a FIXED labelled °C scale, unlike the pressure ramp
+	// (which relabels through a reference span). The heat field is an
+	// enthalpy model in real units, so its colors are pinned to degrees.
+	const HEAT_MIN = 0;
+	const HEAT_MAX = 240;
+	const HEAT_STOPS = [
+		[0, 38, 44, 120],
+		[0.18, 46, 134, 214],
+		[0.38, 64, 200, 166],
+		[0.55, 138, 206, 78],
+		[0.72, 244, 208, 66],
+		[0.87, 240, 140, 48],
+		[1, 232, 58, 48],
+	];
+	const HEAT_LUT = buildRamp(HEAT_STOPS);
+	// The °C value of one LUT index, for fixtures that check the picture
+	// against the published field.
+	function heatColor(t) {
+		let v = (t - HEAT_MIN) * (255 / (HEAT_MAX - HEAT_MIN));
+		if (!(v > 0)) v = 0;
+		else if (v > 255) v = 255;
+		const q = (v | 0) * 4;
+		return [HEAT_LUT[q], HEAT_LUT[q + 1], HEAT_LUT[q + 2]];
+	}
 
 	function hsl(h, s, l) {
 		return "hsl(" + h.toFixed(1) + "," + s.toFixed(1) + "%," + l.toFixed(1) + "%)";
@@ -734,6 +758,95 @@ const ValveRender = (() => {
 		map.ctx.putImageData(map.img, 0, 0);
 	}
 
+	// One texel per water-grid cell, metal and passages alike: the whole
+	// machine has a temperature in this model, not only the pipes. The map
+	// samples heat.T directly, so a fixture can compare the picture against
+	// the published field without touching geometry.
+	function renderHeat(map, heat) {
+		const data = map.img.data;
+		const TT = heat.T;
+		const scale = 255 / (HEAT_MAX - HEAT_MIN);
+		for (let k = 0, o = 0; k < heat.count; k++, o += 4) {
+			let v = (TT[k] - HEAT_MIN) * scale;
+			if (!(v > 0)) v = 0;
+			else if (v > 255) v = 255;
+			const q = (v | 0) * 4;
+			data[o] = HEAT_LUT[q];
+			data[o + 1] = HEAT_LUT[q + 1];
+			data[o + 2] = HEAT_LUT[q + 2];
+			data[o + 3] = 255;
+		}
+		map.ctx.putImageData(map.img, 0, 0);
+	}
+
+	// The heat legend shares the pressure legend slot: the air backends are
+	// parked while water (and therefore heat) is on, so the two never draw
+	// together. Ticks every 60 °C on the fixed 0..240 scale.
+	function renderHeatLegend(ctx) {
+		const x = LEGEND_X;
+		const y = LEGEND_Y;
+		ctx.save();
+		roundRect(ctx, x - 46, y - 16, LEGEND_W + 51, LEGEND_H + 30, 4);
+		ctx.fillStyle = "rgba(10,14,20,0.72)";
+		ctx.fill();
+		const step = LEGEND_H / LEGEND_STEPS;
+		for (let i = 0; i < LEGEND_STEPS; i++) {
+			const t = 1 - i / (LEGEND_STEPS - 1);
+			const q = ((t * 255) | 0) * 4;
+			ctx.fillStyle = "rgb(" + HEAT_LUT[q] + "," + HEAT_LUT[q + 1] + "," + HEAT_LUT[q + 2] + ")";
+			ctx.fillRect(x, y + i * step, LEGEND_W, step + 0.7);
+		}
+		ctx.fillStyle = "rgba(226,236,245,0.95)";
+		ctx.font = "10px system-ui, sans-serif";
+		ctx.textAlign = "right";
+		ctx.textBaseline = "middle";
+		ctx.fillText("°C", x + LEGEND_W, y - 9);
+		for (let deg = 0; deg <= HEAT_MAX; deg += 60) {
+			const ty = y + LEGEND_H * (1 - deg / HEAT_MAX);
+			ctx.fillText(String(deg), x - 3, ty);
+		}
+		ctx.restore();
+	}
+
+	// Source badges: a heater or cooler disc in the case corner of every valve
+	// with a nonzero power, arrow up for heating and down for cooling, with a
+	// ring on the valve the panel is editing.
+	function renderHeatBadges(ctx, layout, heat, selected) {
+		const power = heat.power;
+		for (let k = 0; k < layout.valves.length; k++) {
+			const pw = power[k];
+			if (!pw) continue;
+			const v = layout.valves[k];
+			const x = v.cx - G.S / 2 + 8;
+			const y = v.cy - G.S / 2 + 8;
+			const hot = pw > 0;
+			ctx.beginPath();
+			ctx.arc(x, y, 5.4, 0, TAU);
+			ctx.fillStyle = hot ? "rgba(255,106,77,0.92)" : "rgba(88,183,255,0.92)";
+			ctx.fill();
+			if (k === selected) {
+				ctx.beginPath();
+				ctx.arc(x, y, 7.2, 0, TAU);
+				ctx.strokeStyle = "rgba(255,255,255,0.9)";
+				ctx.lineWidth = 1.6;
+				ctx.stroke();
+			}
+			ctx.beginPath();
+			if (hot) {
+				ctx.moveTo(x, y - 2.6);
+				ctx.lineTo(x + 2.4, y + 1.6);
+				ctx.lineTo(x - 2.4, y + 1.6);
+			} else {
+				ctx.moveTo(x, y + 2.6);
+				ctx.lineTo(x + 2.4, y - 1.6);
+				ctx.lineTo(x - 2.4, y - 1.6);
+			}
+			ctx.closePath();
+			ctx.fillStyle = "rgba(16,22,30,0.9)";
+			ctx.fill();
+		}
+	}
+
 	function renderPressureLegend(ctx, spanLabel) {
 		const x = LEGEND_X;
 		const y = LEGEND_Y;
@@ -1041,7 +1154,7 @@ const ValveRender = (() => {
 // view 0 paints the channels, view 1 paints the pigment level. A texel takes the
 // colour of the phase layer its own y falls in, so a stratified column draws as
 // bands instead of one blended sheet.
-function renderWater(map, field, view) {
+function renderWater(map, field, view, dim) {
 	const data = map.img.data;
 	const air = field.air;
 	const solid = field.solid;
@@ -1078,7 +1191,10 @@ function renderWater(map, field, view) {
 			}
 			let t = depth / band;
 			if (t > 1) t = 1;
-			const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
+			// `dim` (0..1] fades the sheet while the temperature view is on, so the
+			// liquid colour and the heat field stay legible together.
+			let a = (WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t) * (dim || 1);
+			if (a > 1) a = 1;
 			let c = row + ccol[gx];
 			const layers = rank[rowCell + wcol[gx]];
 			if (layers > 1) {
@@ -1160,6 +1276,12 @@ function renderWater(map, field, view) {
 		WATER_SURFACE,
 		makeWaterMap,
 		pigmentLevel,
+		HEAT_MIN,
+		HEAT_MAX,
+		heatColor,
+		renderHeat,
+		renderHeatLegend,
+		renderHeatBadges,
 		WATER_SHADE,
 		renderWater,
 		renderWaterSurface,

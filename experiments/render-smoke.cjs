@@ -763,8 +763,43 @@ assert.ok(strokeStyles.has(R.WATER_SURFACE), "the surface line survives the pigm
 element("water-view-color").checked = true;
 element("water-view-color").onchange();
 element("water-drain").onclick();
-water.on.checked = false;
-water.on.onchange();
+element("water-view-color").checked = true;
+element("water-view-color").onchange();
+
+// Heat: enabling it turns water on with every vent shut, the power slider
+// edits the selected valve and survives a disable, the view toggle dims the
+// sheet and paints the °C legend, and turning water off parks heat.
+assert.equal(element("heat-on").checked, false, "heat starts off");
+assert.equal(element("heat-power").disabled, true, "no valve is selected yet");
+element("water-on").checked = false;
+element("water-on").onchange();
+element("heat-on").checked = true;
+element("heat-on").onchange();
+assert.equal(element("water-on").checked, true, "heat enables water");
+assert.equal(element("water-vent").checked, false, "heat shuts the vent row");
+assert.equal(element("pressure-grid").disabled, true, "heat keeps the pressure radios parked");
+c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+assert.equal(element("heat-power").disabled, false, "a selected valve takes a power");
+element("heat-power").value = "120";
+element("heat-power").oninput();
+assert.ok(element("heat-power-value").value.includes("120"), "the power readout follows the slider");
+element("heat-ambient").value = "30";
+element("heat-ambient").oninput();
+element("heat-view").checked = true;
+element("heat-view").onchange();
+mainTexts.length = 0;
+frames.shift()((now += 16.7));
+assert.ok(mainTexts.some(text => String(text).includes("°C")), "the °C legend is drawn in heat view");
+element("heat-view").checked = false;
+element("heat-view").onchange();
+element("heat-on").checked = false;
+element("heat-on").onchange();
+assert.equal(element("heat-power").disabled, true, "the parked slider is disabled");
+assert.equal(element("heat-power").value, "120", "the parked slider keeps the valve's power");
+element("water-on").checked = false;
+element("water-on").onchange();
+assert.equal(element("heat-on").checked, false, "water off parks heat");
 assert.equal(element("pressure-grid").disabled, false, "water off frees the pressure radios");
 assert.equal(element("pressure-off").checked, true, "the parked mode is not resurrected as grid gas");
 frames.shift()((now += 16.7));

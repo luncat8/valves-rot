@@ -8,6 +8,7 @@
 	const C = ValveCalibration;
 	const Game = ValveGame;
 	const Water = ValveWater;
+	const Heat = ValveHeat;
 	const $ = id => document.getElementById(id);
 
 	const HEIGHT = G.SIZE + G.POUR * 2 + G.VENT_STRIP;
@@ -93,6 +94,11 @@
 	let waterMap = null;
 	// Display-only: 0 paints the liquid's own channels, 1 paints pigment level.
 	let waterView = 0;
+	// Heat overlays: the temperature field and the valve source badges. The
+	// liquid sheet dims while the temperature view is on so both read.
+	let heatViewOn = false;
+	let heatMap = null;
+	let heatSelSeen = -2;
 	// Reused for the per-channel readout, so the status line allocates no array.
 	const waterChannels = new Float64Array(3);
 	// Inlet colour boxes: element id and the channel it selects.
@@ -166,6 +172,7 @@
 		S.setPressure(sim, readMode());
 		if ($("water-on").checked) applyWater();
 		else syncWaterUI();
+		syncHeatUI();
 		Game.resetMatch(game, sim);
 		if (game.mode !== "lab") setAutoSlider(Math.round(Game.autoFor(game.mode) * 100));
 		rebuild(true);
@@ -725,6 +732,64 @@
 	$("water-view-color").onchange = applyView;
 	$("water-view-pigment").onchange = applyView;
 	syncWaterUI();
+
+	// ---- heat -------------------------------------------------------------
+	// Heat lives on the water grid: enabling it enables water with every vent
+	// shut, and disabling water disables heat while each valve keeps its power.
+	// The Power slider edits the SELECTED valve, like the water panel edits the
+	// current vent; a selection change re-reads it.
+	function syncHeatUI() {
+		const h = sim.heat;
+		const on = !!(h && h.enabled);
+		$("heat-on").checked = on;
+		$("heat-power").disabled = !on || selected < 0;
+		$("heat-ambient").disabled = !on;
+		$("heat-view").disabled = !on;
+		if (on) {
+			$("heat-power").value = String(selected >= 0 ? h.power[selected] : 0);
+			$("heat-power-value").value = Math.round(selected >= 0 ? h.power[selected] : 0) + " E/s";
+			$("heat-ambient").value = String(h.p.ambient);
+		} else {
+			$("heat-power-value").value = "— select a valve";
+		}
+		$("heat-view").checked = on && heatViewOn;
+	}
+
+	function applyHeat() {
+		S.setHeat(sim, $("heat-on").checked);
+		syncHeatUI();
+		syncWaterUI();
+		if (paused) drawFrame(true);
+	}
+
+	$("heat-on").onchange = applyHeat;
+	$("heat-power").oninput = () => {
+		if (!sim.heat || selected < 0) return;
+		Heat.setPower(sim.heat, selected, +$("heat-power").value);
+		$("heat-power-value").value = Math.round(+$("heat-power").value) + " E/s";
+		if (paused) drawFrame(false);
+	};
+	$("heat-ambient").oninput = () => {
+		if (sim.heat) Heat.setAmbient(sim.heat, +$("heat-ambient").value);
+	};
+	$("heat-view").onchange = () => {
+		heatViewOn = $("heat-view").checked;
+		if (paused) drawFrame(false);
+	};
+
+	// The temperature view is one texel per water cell over the whole machine,
+	// metal and passages alike, on a fixed labelled 0..240 °C scale; the liquid
+	// sheet is dimmed under it so hue and temperature read together.
+	function drawHeatMap() {
+		const h = sim.heat;
+		if (!heatMap || heatMap.nx !== h.nx || heatMap.ny !== h.ny) heatMap = R.makeFieldMap(h.nx, h.ny);
+		R.renderHeat(heatMap, h);
+		ctx.save();
+		ctx.globalAlpha = 0.58;
+		ctx.imageSmoothingEnabled = true;
+		ctx.drawImage(heatMap.canvas, 0, -G.POUR, h.nx * h.cell, h.ny * h.cell);
+		ctx.restore();
+	}
 
 	// ---- drawers ----------------------------------------------------------
 	// One drawer at a time, non-modal so the field beside it stays clickable.
@@ -1424,14 +1489,14 @@
 	// disagree with the mask. It is drawn behind the grains and kept translucent,
 	// so a submerged grain stays legible. The surface line goes on top of the
 	// texture: behind a bright grain the sheet alone would not read as a level.
-	function drawWater() {
+	function drawWater(dim) {
 		const w = sim.water;
 		if (!waterField) {
 			waterField = Water.makeDisplay(w);
 			waterMap = R.makeWaterMap(waterField.nx, waterField.ny);
 		}
 		Water.sampleDisplay(sim, waterField);
-		R.renderWater(waterMap, waterField, waterView);
+		R.renderWater(waterMap, waterField, waterView, dim);
 		ctx.save();
 		ctx.imageSmoothingEnabled = true;
 		ctx.drawImage(waterMap.canvas, 0, -G.POUR, waterMap.nx * waterField.cell, waterMap.ny * waterField.cell);
@@ -1481,6 +1546,10 @@
 	}
 
 	function drawFrame(forceOverlay) {
+		if (selected !== heatSelSeen) {
+			heatSelSeen = selected;
+			if (sim.heat && sim.heat.enabled) syncHeatUI();
+		}
 		syncLegend();
 		syncSelectedValve();
 		ctx.save();
@@ -1494,7 +1563,9 @@
 			if (pressure.kind === "grid") drawPressureGrid();
 			else R.renderPressure(ctx, pressure);
 		}
-		if (sim.water && sim.water.enabled) drawWater();
+		const heatOn = !!(sim.heat && sim.heat.enabled);
+		if (sim.water && sim.water.enabled) drawWater(heatOn && heatViewOn ? 0.42 : 1);
+		if (heatOn && heatViewOn) drawHeatMap();
 		// Mouths sit under the grain piles that share the bands; the ownership
 		// tabs are redrawn above them so a player's own mouths never get buried.
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
@@ -1506,6 +1577,8 @@
 		R.renderVents(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
 		R.renderDrag(ctx, layout, sim, drag);
+		if (heatOn) R.renderHeatBadges(ctx, layout, sim.heat, selected);
+		if (heatOn && heatViewOn) R.renderHeatLegend(ctx);
 		if (drawPressure && pressure.kind === "grid") R.renderPressureLegend(ctx, pressureSpanLabel);
 		ctx.restore();
 	}
@@ -1526,6 +1599,12 @@
 				" · vents " + Water.ventOpenCount(sim.water) + " open" +
 				" · over " + Math.round(sim.water.overflowed) +
 				" · drained " + Math.round(sim.water.drained);
+		}
+		let heat = "";
+		if (sim.heat && sim.heat.enabled) {
+			let sum = 0;
+			for (let i = 0; i < sim.heat.count; i++) sum += sim.heat.T[i];
+			heat = " · heat " + (sum / sim.heat.count).toFixed(1) + " °C mean" + " · src " + Math.round(sim.heat.source) + " · amb " + Math.round(sim.heat.ambient) + " · mat " + Math.round(sim.heat.material) + " · res " + Number(Heat.residual(sim.heat)).toExponential(0);
 		}
 		let gas = "";
 		if (sim.pressure && sim.pressure.kind === "grid") {
@@ -1551,8 +1630,22 @@
 			" · pushes " +
 			sim.pushed +
 			gas +
-			water
+			water +
+			heat
 		);
+	}
+
+	// The Heat fieldset readout: the ledger as four numbers plus the phase
+	// change masses, so a long run can be judged without the console.
+	function updateHeatReadout() {
+		const h = sim.heat;
+		const el = $("heat-readout");
+		if (!h || !h.enabled) {
+			el.hidden = true;
+			return;
+		}
+		el.hidden = false;
+		el.textContent = "field " + Math.round(Heat.stored(h)) + " E" + " · source " + Math.round(h.source) + " · ambient " + Math.round(h.ambient) + " · material " + Math.round(h.material) + " · residual " + Number(Heat.residual(h)).toExponential(1) + " · melted " + h.melted.toFixed(1) + " mg" + " · frozen " + h.frozen.toFixed(1) + " mg" + " · " + h.substeps + " substep(s)";
 	}
 
 	function frame(now) {
@@ -1574,6 +1667,7 @@
 		stats.clock += dt;
 		if (stats.clock > 0.4) {
 			$("stats").textContent = formatStats(stats.frames / stats.clock);
+			updateHeatReadout();
 			stats.frames = 0;
 			stats.clock = 0;
 		}

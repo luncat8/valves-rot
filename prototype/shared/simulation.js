@@ -82,7 +82,10 @@ const ValveSimulation = (() => {
 	// (compact, clearValve). One list, so a new field cannot be copied by one path
 	// and forgotten by the other. Scratch rebuilt each step (orig*, push*, order)
 	// is not listed.
-	const GRAIN_FIELDS = ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact"];
+	// gcell: the water-grid cell each grain was last booked in by the heat
+	// field (-1 = not yet imported), so a crossing moves its sensible energy
+	// exactly once and a removal exports it.
+	const GRAIN_FIELDS = ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact", "gcell"];
 
 	// Palette index is the material identity; an out-of-range index falls back to
 	// the neutral material so mass, render color and quest classification agree.
@@ -228,6 +231,7 @@ const ValveSimulation = (() => {
 			invMass: new Float64Array(capacity),
 			color: new Uint8Array(capacity),
 			contact: new Uint8Array(capacity),
+			gcell: new Int32Array(capacity),
 			order: new Int32Array(capacity),
 			reach,
 			goalFeed: new Uint8Array(N),
@@ -270,6 +274,7 @@ const ValveSimulation = (() => {
 		sim.stalledList.fill(-1);
 		sim.goalOwner.fill(-1);
 		sim.caseTint.fill(-1);
+		sim.gcell.fill(-1);
 		buildSpoutMask(sim);
 		initSchedule(sim);
 		return sim;
@@ -982,6 +987,7 @@ const ValveSimulation = (() => {
 		for (let k = 0; k < sim.count; k++) {
 			if (sim.y[k] > BOTTOM - sim.r[k] - 0.6) {
 				sim.drained++;
+				if (sim.heat && sim.heat.enabled) HEAT.grainGone(sim, k);
 				continue;
 			}
 			if (w !== k) {
@@ -1048,6 +1054,7 @@ const ValveSimulation = (() => {
 	const mass = grainMass(sim.color[k], rad);
 		sim.mass[k] = mass;
 		sim.invMass[k] = 1 / mass;
+		sim.gcell[k] = -1;
 		sim.injected++;
 		return k;
 	}
@@ -1135,9 +1142,29 @@ const ValveSimulation = (() => {
 
 	function drain(sim) {
 		const n = sim.count;
+		if (sim.heat && sim.heat.enabled) {
+			for (let k = 0; k < n; k++) HEAT.grainGone(sim, k);
+		}
 		sim.purged += n;
 		sim.count = 0;
 		return n;
+	}
+
+	// Batched removal over the shared grain field copy list: a melt drops its
+	// grains mid-step and every per-grain field moves down together.
+	function removeGrains(sim, dead) {
+		let w = 0;
+		for (let k = 0; k < sim.count; k++) {
+			if (dead[k]) continue;
+			if (w !== k) {
+				for (let f = 0; f < GRAIN_FIELDS.length; f++) {
+					const arr = sim[GRAIN_FIELDS[f]];
+					arr[w] = arr[k];
+				}
+			}
+			w++;
+		}
+		sim.count = w;
 	}
 
 	function reset(sim) {
@@ -1205,9 +1232,19 @@ const ValveSimulation = (() => {
 	// per-valve powers stay, so re-enabling resumes the same field.
 	function setHeat(sim, enabled) {
 		const on = !!enabled;
-		if (on && !sim.water) setWater(sim, true);
-		if (on && sim.water) WATER.setVent(sim.water, sim.water.ventColumn, false);
-		if (on && !sim.heat) sim.heat = HEAT.create(sim);
+		// Always through setWater: an existing but disabled grid must be
+		// re-enabled too, not only one that was never created.
+		if (on) setWater(sim, true);
+		if (on && sim.water) WATER.shutVents(sim.water);
+		if (on && !sim.heat) {
+			sim.heat = HEAT.create(sim);
+			// The hooks are attached once; they no-op while heat is disabled, so
+			// the books freeze instead of drifting with the still-running water.
+			const w = sim.water;
+			w.onFlow = sim.heat.onFlow;
+			w.onEnter = sim.heat.onEnter;
+			w.onLeave = sim.heat.onLeave;
+		}
 		if (!sim.heat) return null;
 		sim.heat.enabled = on;
 		return sim.heat;
@@ -1253,6 +1290,7 @@ const ValveSimulation = (() => {
 		for (let k = 0; k < sim.count; k++) {
 			if (G.cellAt(sim.x[k], sim.y[k]) === index) {
 				sim.purged++;
+				if (sim.heat && sim.heat.enabled) HEAT.grainGone(sim, k);
 				continue;
 			}
 			for (let f = 0; f < GRAIN_FIELDS.length; f++) {
@@ -1483,6 +1521,8 @@ const ValveSimulation = (() => {
 		drain,
 		reset,
 		addGrain,
+		removeGrains,
+		slotFree,
 		active,
 	};
 })();
