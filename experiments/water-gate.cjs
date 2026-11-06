@@ -71,8 +71,9 @@ function levelAt(w) {
 // Pour until the published level is this many px above the gate's top edge.
 function pourTo(sim, rate, above) {
 	const w = sim.water;
-	W.setSupply(w, rate);
+	// The vent is selected before its rate: supply is per vent now.
 	W.setVent(w, AXIS, true);
+	W.setSupply(w, rate);
 	const stop = GATE_TOP - above;
 	for (let k = 0; k < 120 * 90; k++) {
 		S.step(sim, S.STEP);

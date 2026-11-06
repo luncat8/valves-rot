@@ -236,11 +236,12 @@ const ValveInlets = (() => {
 	}
 
 	// World point in either band selects that column's mouth, present or not:
-	// hovering a dealt mouth names its owner, an empty slot stays quiet.
+	// hovering a dealt mouth names its owner, an empty slot stays quiet. The
+	// water vent strip above the pour band is not mouth territory.
 	function hit(inlets, x, y) {
 		let side = -1;
-		if (y < 0) side = TOP;
-		else if (y > G.SIZE) side = BOTTOM;
+		if (y < 0 && y >= -G.POUR) side = TOP;
+		else if (y > G.SIZE && y <= G.SIZE + G.POUR) side = BOTTOM;
 		if (side < 0) return -1;
 		const column = Math.max(0, Math.min(G.N - 1, (x / G.S) | 0));
 		return side * G.N + column;

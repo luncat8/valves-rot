@@ -188,10 +188,11 @@ const ValveRender = (() => {
 		const ctx = sheet.ctx;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.fillStyle = skin === "gpt" ? GPT_GROUT : GROUT;
-		ctx.fillRect(0, 0, SIZE, SIZE + G.POUR * 2);
+		ctx.fillRect(0, 0, SIZE, SIZE + G.POUR * 2 + G.VENT_STRIP);
 		ctx.save();
-		// Shift down once so world coordinates [-POUR, SIZE + POUR] fill the sheet.
-		ctx.translate(0, G.POUR);
+		// Shift down once so world coordinates [-POUR - VENT_STRIP, SIZE + POUR]
+		// fill the sheet; the vent strip rides above the pour band.
+		ctx.translate(0, G.POUR + G.VENT_STRIP);
 		const inset = 1.6;
 		const tile = S - inset * 2;
 		for (let k = 0; k < layout.valves.length; k++) {
@@ -268,7 +269,7 @@ const ValveRender = (() => {
 	}
 
 	function paintBackground(layout, colors, air, dpr, skin, caseTint) {
-		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2, dpr);
+		const sheet = makeCanvas(SIZE, SIZE + G.POUR * 2 + G.VENT_STRIP, dpr);
 		paintBackgroundInto(sheet, layout, colors, air, dpr, skin, caseTint);
 		return sheet;
 	}
@@ -402,8 +403,8 @@ const ValveRender = (() => {
 	}
 
 	function renderScene(ctx, layout, scene) {
-		ctx.clearRect(0, -G.POUR, SIZE, SIZE + G.POUR * 2);
-		ctx.drawImage(scene.bg, 0, -G.POUR, SIZE, SIZE + G.POUR * 2);
+		ctx.clearRect(0, -G.POUR - G.VENT_STRIP, SIZE, SIZE + G.POUR * 2 + G.VENT_STRIP);
+		ctx.drawImage(scene.bg, 0, -G.POUR - G.VENT_STRIP, SIZE, SIZE + G.POUR * 2 + G.VENT_STRIP);
 		const half = scene.sprite / 2;
 		const valves = layout.valves;
 		for (let k = 0; k < valves.length; k++) {
@@ -890,6 +891,125 @@ const ValveRender = (() => {
 		}
 	}
 
+	// ---- water source vents --------------------------------------------------
+	// One tab per column in the strip above the pour band, above the top air
+	// mouths. The tab is its own control surface: the chip shows the liquid's
+	// own normalized colour, the gauge the rate against its ceiling, a sealed
+	// vent dims and carries the same cross a sealed mouth does. While a slide is
+	// armed on the tab it draws its own affordance instead: the hue spectrum the
+	// left/right slide sweeps, with the cursor at the live hue.
+	const VENT_TAB_W = S - 4;
+	const VENT_TAB_H = 13;
+	const VENT_TAB_Y = -G.POUR - G.VENT_STRIP + 1.5;
+	const VENT_HUE_CORNERS = ["#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff"];
+	const ventColorCache = { version: -1, colors: null };
+
+	// Normalized hex of each vent's shares (strongest channel 255), rebuilt only
+	// when the shares version moves so the frame loop allocates no strings.
+	function ventColorTable(water) {
+		if (ventColorCache.colors && ventColorCache.version === water.ventVersion) return ventColorCache.colors;
+		if (!ventColorCache.colors) ventColorCache.colors = new Array(G.N);
+		for (let c = 0; c < G.N; c++) {
+			const o = c * 3;
+			const m = Math.max(water.ventShares[o], water.ventShares[o + 1], water.ventShares[o + 2]);
+			if (!(m > 0)) {
+				ventColorCache.colors[c] = "#ffffff";
+				continue;
+			}
+			const r = Math.round(255 * water.ventShares[o] / m);
+			const g = Math.round(255 * water.ventShares[o + 1] / m);
+			const b = Math.round(255 * water.ventShares[o + 2] / m);
+			ventColorCache.colors[c] = "#" + ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+		}
+		ventColorCache.version = water.ventVersion;
+		return ventColorCache.colors;
+	}
+
+	function drawVentLabel(ctx, column, water, hex, active) {
+		const x = (column + 0.5) * S;
+		let label;
+		if (active && active.armed && active.axis === 0) label = "hue " + Math.round(active.hue) + "° · " + hex;
+		else if (active && active.armed && active.axis === 1) label = "rate " + Math.round(water.ventRate[column]) + " / " + Math.round(water.rateMax) + " px²/s";
+		else label = "vent " + (column + 1) + " · " + hex + " · " + Math.round(water.ventRate[column]) + " px²/s · " + (water.ventOn[column] ? "open" : "shut");
+		ctx.font = "7px system-ui, sans-serif";
+		ctx.textBaseline = "middle";
+		ctx.textAlign = x > SIZE - 110 ? "right" : "left";
+		const tx = x > SIZE - 110 ? x - S / 2 + 4 : x + S / 2 - 4;
+		const width = label.length * 3.9;
+		roundRect(ctx, ctx.textAlign === "right" ? tx - width - 3 : tx - 3, VENT_TAB_Y, width + 6, VENT_TAB_H, 3);
+		ctx.fillStyle = "rgba(10,14,20,0.72)";
+		ctx.fill();
+		ctx.fillStyle = SELECT_C;
+		ctx.fillText(label, tx, VENT_TAB_Y + VENT_TAB_H / 2);
+	}
+
+	// `drag` is the page's live vent gesture: column, armed, axis (0 hue, 1 rate)
+	// and hue, or a resting object with column -1.
+	function renderWaterVents(ctx, water, hover, drag) {
+		if (!water || !water.enabled) return;
+		const colors = ventColorTable(water);
+		const active = drag && drag.column >= 0 ? drag : null;
+		const spectrum = active && active.armed && active.axis === 0;
+		for (let c = 0; c < G.N; c++) {
+			const x0 = c * S + 2;
+			const open = water.ventOn[c] === 1;
+			const col = colors[c];
+			ctx.globalAlpha = open ? 1 : 0.38;
+			ctx.fillStyle = "rgba(8,12,18,0.72)";
+			roundRect(ctx, x0, VENT_TAB_Y, VENT_TAB_W, VENT_TAB_H, 3);
+			ctx.fill();
+			ctx.fillStyle = col;
+			ctx.fillRect(x0 + 2, VENT_TAB_Y + 2, 10, VENT_TAB_H - 4);
+			const gy = VENT_TAB_Y + (VENT_TAB_H - 4) / 2;
+			if (spectrum && active.column === c) {
+				// The left/right slide: the tab becomes a hue bar with a cursor.
+				const bar = VENT_TAB_W - 4;
+				const seg = bar / 6;
+				for (let k = 0; k < 6; k++) {
+					ctx.fillStyle = VENT_HUE_CORNERS[k];
+					ctx.fillRect(x0 + 2 + k * seg, gy, seg, 4);
+				}
+				ctx.fillStyle = SELECT_C;
+				ctx.fillRect(x0 + 2 + (active.hue / 360) * bar - 1, VENT_TAB_Y + 2, 2, VENT_TAB_H - 4);
+			} else {
+				// The rate gauge: the up/down slide fills it live.
+				const gx = x0 + 15;
+				const gw = VENT_TAB_W - 17;
+				ctx.fillStyle = "rgba(255,255,255,0.10)";
+				ctx.fillRect(gx, gy, gw, 4);
+				const frac = Math.min(1, water.ventRate[c] / water.rateMax);
+				if (frac > 0) {
+					ctx.fillStyle = col;
+					ctx.fillRect(gx, gy, gw * frac, 4);
+				}
+			}
+			if (!open) {
+				ctx.strokeStyle = "rgba(190,202,214,0.6)";
+				ctx.lineWidth = 1.4;
+				ctx.beginPath();
+				ctx.moveTo(x0 + 3, VENT_TAB_Y + 3);
+				ctx.lineTo(x0 + 11, VENT_TAB_Y + VENT_TAB_H - 3);
+				ctx.moveTo(x0 + 11, VENT_TAB_Y + 3);
+				ctx.lineTo(x0 + 3, VENT_TAB_Y + VENT_TAB_H - 3);
+				ctx.stroke();
+			}
+			ctx.globalAlpha = 1;
+			if (c === water.ventColumn) {
+				ctx.strokeStyle = SELECT_C;
+				ctx.lineWidth = 1.2;
+				roundRect(ctx, x0, VENT_TAB_Y, VENT_TAB_W, VENT_TAB_H, 3);
+				ctx.stroke();
+			}
+			if (c === hover || (active && active.column === c)) {
+				ctx.strokeStyle = SELECT_C;
+				ctx.lineWidth = 1.6;
+				roundRect(ctx, x0 - 0.5, VENT_TAB_Y - 0.5, VENT_TAB_W + 1, VENT_TAB_H + 1, 3);
+				ctx.stroke();
+				drawVentLabel(ctx, c, water, col, active);
+			}
+		}
+	}
+
 	// Quasi-static water fill, drawn after the scene and before the grains so a
 	// submerged grain reads through the sheet. One texel per display pixel: its
 	// alpha is the depth of water above it, so a free surface is a soft edge and
@@ -1050,6 +1170,7 @@ function renderWater(map, field, view) {
 		renderPressureLegend,
 		renderInlets,
 		renderInletBadges,
+		renderWaterVents,
 		makeCanvas,
 	};
 })();

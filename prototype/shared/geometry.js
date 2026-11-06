@@ -10,6 +10,9 @@ const ValveGeometry = (() => {
 	const EDGE = 1.95;
 	const ELBOW = RV * 0.5;
 	const POUR = 30;
+	// Water source vents: one control strip above the pour band, outside the
+	// grain and mouth bands, so a vent never fights a mouth marker or a pile.
+	const VENT_STRIP = 16;
 	const TAU = Math.PI * 2;
 	const HALF_PI = Math.PI / 2;
 	const DX = [1, 0, -1, 0];
@@ -834,6 +837,7 @@ const ValveGeometry = (() => {
 		EDGE,
 		ELBOW,
 		POUR,
+		VENT_STRIP,
 		TAU,
 		HALF_PI,
 		DX,

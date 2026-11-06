@@ -10,7 +10,7 @@
 	const Water = ValveWater;
 	const $ = id => document.getElementById(id);
 
-	const HEIGHT = G.SIZE + G.POUR * 2;
+	const HEIGHT = G.SIZE + G.POUR * 2 + G.VENT_STRIP;
 	const canvas = $("c");
 	const ctx = canvas.getContext("2d");
 	const legendRange = $("legend-range");
@@ -18,7 +18,7 @@
 	const paint = { air: "#ffffff", skin: "glm" };
 	const stats = { frames: 0, clock: 0 };
 	const point = { x: 0, y: 0 };
-	const at = { inlet: -1, cell: -1 };
+	const at = { vent: -1, inlet: -1, cell: -1 };
 	// Press-drag tuning: a gesture has to travel before it does anything, and one
 	// quarter turn costs a quarter turn of the hand (plus the grip slack and the
 	// half-notch snap), so the rotor tracks the hand instead of outrunning it.
@@ -45,6 +45,35 @@
 		active: false,
 		suppressClick: false,
 	};
+	// Water source vent gesture, tuned like the valve dial: a slide arms after the
+	// same travel, locks its axis to the first dominant movement (left/right picks
+	// the hue, up/down the rate), one vent width sweeps a full hue revolution, and
+	// this much vertical travel spans the whole rate range. A press that outlives
+	// the long-click delay without moving toggles the vent.
+	const VENT_ARM = 6;
+	const VENT_LONG_PRESS = 480;
+	const VENT_HUE_DEG_PX = 360 / G.S;
+	const VENT_RATE_TRAVEL = 60;
+	const ventDrag = {
+		pointerId: -1,
+		column: -1,
+		armed: false,
+		axis: 0,
+		downX: 0,
+		downY: 0,
+		lastX: 0,
+		lastY: 0,
+		hue: 0,
+		timer: 0,
+		suppressClick: false,
+	};
+	// Reused share triple for gesture math; no allocation per move.
+	const ventShares = new Float64Array(3);
+	// Column of the vent a canvas picker session is editing.
+	let pickerColumn = -1;
+	let hoverVent = -1;
+	// Last value the global column slider showed, so a move sweeps from there.
+	let panelColumn = 5;
 
 	let layout = G.createLayout(readSeed());
 	let sim = S.create(layout);
@@ -179,12 +208,12 @@
 		$("pressure-grid").checked = sim.pressureMode === "grid";
 	}
 
-	// Pointer in world coordinates: [-POUR, SIZE + POUR] vertically.
+	// Pointer in world coordinates: [-POUR - VENT_STRIP, SIZE + POUR] vertically.
 	function worldFromPointer(event) {
 		const b = canvas.getBoundingClientRect();
 		if (!(b.width > 0 && b.height > 0)) return null;
 		point.x = ((event.clientX - b.left) / b.width) * G.SIZE;
-		point.y = ((event.clientY - b.top) / b.height) * HEIGHT - G.POUR;
+		point.y = ((event.clientY - b.top) / b.height) * HEIGHT - G.POUR - G.VENT_STRIP;
 		return point;
 	}
 
@@ -596,6 +625,8 @@
 	// Water is off by default, so the dry baseline is untouched. Turning it on
 	// parks the air backend (the two are exclusive for now) and turning it off
 	// gives the player their previous pressure mode back.
+	const picker = $("water-picker");
+
 	function syncWaterUI() {
 		const on = !!(sim.water && sim.water.enabled);
 		$("water-on").checked = on;
@@ -614,11 +645,12 @@
 		$("water-vent").checked = on && sim.water.ventOpen;
 		const rate = sim.water ? sim.water.rate : +$("water-rate").value;
 		$("water-rate-value").value = Math.round(rate) + " px²/s";
-		// The vent pours into one column, so the pour can be aimed at a shaft or a
-		// trap instead of only the middle of the field.
+		// The column slider points at the current vent: the one every other
+		// water control edits.
 		const column = sim.water ? sim.water.ventColumn : +$("water-column").value - 1;
 		$("water-column").value = String(column + 1);
 		$("water-column-value").value = String(column + 1);
+		panelColumn = column;
 		$("pressure-particles").disabled = on;
 		$("pressure-grid").disabled = on;
 		syncPressureRadios();
@@ -643,10 +675,16 @@
 		Water.setVent(sim.water, sim.water.ventColumn, $("water-vent").checked);
 		if (paused) drawFrame(false);
 	};
+	// The global column control is a brush: moving it stamps the current vent's
+	// settings onto every vent it passes, so setting red and sweeping the slider
+	// from 1 to 10 turns the whole row red. Clicking a tab on the canvas selects
+	// a vent without stamping anything.
 	$("water-column").oninput = () => {
 		if (!sim.water) return;
-		Water.setVent(sim.water, +$("water-column").value - 1, sim.water.ventOpen);
-		$("water-column-value").value = String(sim.water.ventColumn + 1);
+		Water.sweepVents(sim.water, panelColumn, +$("water-column").value - 1);
+		panelColumn = sim.water.ventColumn;
+		$("water-column-value").value = String(panelColumn + 1);
+		syncWaterUI();
 		if (paused) drawFrame(false);
 	};
 	$("water-rate").oninput = () => {
@@ -657,8 +695,10 @@
 		if (sim.water) Water.drainAll(sim.water);
 		if (paused) drawFrame(true);
 	};
-	// Pour colours split the same total rate equally; the last one stays on, and
-	// the module refuses an empty mask, so the boxes are re-synced from state.
+	// Pour colours split the current vent's rate equally; the last one stays on,
+	// and the module refuses an empty mask, so the boxes are re-synced from state.
+	// A hue-picked vent mirrors back as every channel it uses, so editing from the
+	// boxes snaps the vent to that equal-share mix.
 	function applyPour() {
 		if (!sim.water) return;
 		const mask = [0, 0, 0];
@@ -955,8 +995,21 @@
 		if (paused) drawFrame(false);
 	}
 
+	function setHoverVent(vent) {
+		if (hoverVent === vent) return;
+		hoverVent = vent;
+	}
+
+	// The water vent strip above the pour band, one tab per column.
+	function ventHit(x, y) {
+		if (!sim.water || !sim.water.enabled) return -1;
+		if (y < -G.POUR - G.VENT_STRIP || y >= -G.POUR) return -1;
+		return Math.max(0, Math.min(G.N - 1, (x / G.S) | 0));
+	}
+
 	function pointerState(event) {
 		const w = worldFromPointer(event);
+		at.vent = w ? ventHit(w.x, w.y) : -1;
 		at.inlet = w ? I.hit(sim.inlets, w.x, w.y) : -1;
 		at.cell = w ? cellFromPointer(w.x, w.y) : -1;
 		return at;
@@ -983,15 +1036,104 @@
 
 	function cursorFor() {
 		if (drag.active) return "grabbing";
+		if (at.vent >= 0) return "pointer";
 		if (at.inlet >= 0) return S.canPressInlet(sim, at.inlet, 0) ? "pointer" : "not-allowed";
 		if (at.cell >= 0 && canPlayerTurn(at.cell)) return "grab";
 		return "default";
+	}
+
+	// ---- water source vent gestures -----------------------------------------
+	// The strip tabs are controls in their own right: a plain click selects the
+	// vent the global panel edits, a slide arms like the valve dial and locks its
+	// axis (left/right sweeps the hue, up/down the rate), a double click opens the
+	// colour picker, and a press held still past the long-click delay toggles the
+	// vent open or shut. A gesture also makes its vent current, so the panel and
+	// the column slider follow the hand.
+	function ventSharesOf(column) {
+		const w = sim.water;
+		const o = column * Water.CH;
+		ventShares[0] = w.ventShares[o];
+		ventShares[1] = w.ventShares[o + 1];
+		ventShares[2] = w.ventShares[o + 2];
+		return ventShares;
+	}
+
+	function beginVentPress(event) {
+		ventDrag.pointerId = event.pointerId === undefined ? 1 : event.pointerId;
+		ventDrag.column = at.vent;
+		ventDrag.armed = false;
+		ventDrag.axis = 0;
+		ventDrag.downX = ventDrag.lastX = point.x;
+		ventDrag.downY = ventDrag.lastY = point.y;
+		ventDrag.hue = Water.sharesHue(ventSharesOf(at.vent));
+		ventDrag.suppressClick = false;
+		ventDrag.timer = setTimeout(ventLongPress, VENT_LONG_PRESS);
+	}
+
+	function ventLongPress() {
+		ventDrag.timer = 0;
+		if (ventDrag.column < 0 || ventDrag.armed) return;
+		Water.toggleVent(sim.water, ventDrag.column);
+		ventDrag.suppressClick = true;
+		if (navigator.vibrate) navigator.vibrate(10);
+		syncWaterUI();
+		if (paused) drawFrame(true);
+	}
+
+	function armVentSlide(event, w) {
+		ventDrag.armed = true;
+		// The axis is fixed by the first dominant movement, like the dial fixes
+		// hub pull against rim orbit where the press landed.
+		ventDrag.axis = Math.abs(w.x - ventDrag.downX) >= Math.abs(w.y - ventDrag.downY) ? 0 : 1;
+		ventDrag.suppressClick = true;
+		clearTimeout(ventDrag.timer);
+		ventDrag.timer = 0;
+		ventDrag.hue = Water.sharesHue(ventSharesOf(ventDrag.column));
+		// Guarded like the release in endVentPress: a pointer that is no longer
+		// active must not kill the gesture mid-arm.
+		if (canvas.setPointerCapture && event.pointerId !== undefined) {
+			try {
+				canvas.setPointerCapture(event.pointerId);
+			} catch {}
+		}
+	}
+
+	function applyVentSlide(dx, dy) {
+		const c = ventDrag.column;
+		if (ventDrag.axis === 0) {
+			ventDrag.hue = (((ventDrag.hue + dx * VENT_HUE_DEG_PX) % 360) + 360) % 360;
+			Water.setVentShares(sim.water, c, Water.hueShares(ventDrag.hue, ventShares));
+		} else {
+			Water.setVentRate(sim.water, c, sim.water.ventRate[c] - dy * (sim.water.rateMax / VENT_RATE_TRAVEL));
+		}
+		Water.selectVent(sim.water, c);
+		syncWaterUI();
+	}
+
+	function endVentPress(event) {
+		if (ventDrag.column < 0) return;
+		if (ventDrag.timer) {
+			clearTimeout(ventDrag.timer);
+			ventDrag.timer = 0;
+		}
+		if (ventDrag.armed && canvas.releasePointerCapture && event && event.pointerId !== undefined) {
+			try {
+				canvas.releasePointerCapture(event.pointerId);
+			} catch {}
+		}
+		ventDrag.column = -1;
+		ventDrag.armed = false;
+		if (paused) drawFrame(false);
 	}
 
 	canvas.onpointerdown = event => {
 		if (event.button && event.button !== 0) return;
 		if (event.ctrlKey) return;
 		pointerState(event);
+		if (at.vent >= 0) {
+			beginVentPress(event);
+			return;
+		}
 		if (at.inlet >= 0 || !canPlayerTurn(at.cell)) return;
 		selected = at.cell;
 		// A Vent turn buys exactly one detent, so the press-drag dial is off there.
@@ -1015,6 +1157,17 @@
 	};
 
 	canvas.onpointermove = event => {
+		if (ventDrag.column >= 0) {
+			const w = worldFromPointer(event);
+			if (w) {
+				if (!ventDrag.armed && Math.hypot(w.x - ventDrag.downX, w.y - ventDrag.downY) >= VENT_ARM) armVentSlide(event, w);
+				if (ventDrag.armed) applyVentSlide(w.x - ventDrag.lastX, w.y - ventDrag.lastY);
+				ventDrag.lastX = w.x;
+				ventDrag.lastY = w.y;
+			}
+			if (paused) drawFrame(ventDrag.armed);
+			return;
+		}
 		if (drag.cell >= 0) {
 			const w = worldFromPointer(event);
 			if (!w) return;
@@ -1049,7 +1202,8 @@
 		}
 		pointerState(event);
 		setHover(at.inlet);
-		selected = at.inlet >= 0 ? -1 : at.cell;
+		setHoverVent(at.vent);
+		selected = at.inlet >= 0 || at.vent >= 0 ? -1 : at.cell;
 		canvas.style.cursor = cursorFor();
 		if (paused) drawFrame(false);
 	};
@@ -1075,23 +1229,37 @@
 		if (paused) drawFrame(false);
 	}
 
-	canvas.onpointerup = endDrag;
-	canvas.onpointercancel = endDrag;
+	canvas.onpointerup = event => {
+		endVentPress(event);
+		endDrag(event);
+	};
+	canvas.onpointercancel = event => {
+		endVentPress(event);
+		endDrag(event);
+	};
 	canvas.onpointerleave = () => {
 		if (drag.active) return;
 		drag.cell = -1;
+		if (ventDrag.column >= 0 && !ventDrag.armed) {
+			if (ventDrag.timer) clearTimeout(ventDrag.timer);
+			ventDrag.timer = 0;
+			ventDrag.column = -1;
+		}
 		if (document.activeElement === canvas) return;
 		canvas.style.cursor = "default";
 		selected = -1;
 		setHover(-1);
+		setHoverVent(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onblur = () => {
 		drag.cell = -1;
 		drag.active = false;
 		drag.hub = false;
+		if (ventDrag.column >= 0) endVentPress(null);
 		selected = -1;
 		setHover(-1);
+		setHoverVent(-1);
 		if (paused) drawFrame(false);
 	};
 	canvas.onclick = event => {
@@ -1100,6 +1268,16 @@
 			return;
 		}
 		pointerState(event);
+		if (at.vent >= 0) {
+			if (ventDrag.suppressClick) {
+				ventDrag.suppressClick = false;
+				return;
+			}
+			Water.selectVent(sim.water, at.vent);
+			syncWaterUI();
+			if (paused) drawFrame(true);
+			return;
+		}
 		if (at.inlet >= 0) {
 			// A mouth answers only to the seat that owns it, and only while a person
 			// plays that seat. It keeps its in/out role, so the shift-click swap stays
@@ -1140,10 +1318,16 @@
 	}
 
 	canvas.ondblclick = event => {
-		if (game.mode !== "lab") return;
 		event.preventDefault();
 		const w = worldFromPointer(event);
 		if (!w) return;
+		// Water vents answer in every mode: water is not part of the game roster.
+		const vent = ventHit(w.x, w.y);
+		if (vent >= 0) {
+			openVentPicker(vent);
+			return;
+		}
+		if (game.mode !== "lab") return;
 		selected = cellFromPointer(w.x, w.y);
 		if (selected < 0 || event.ctrlKey) return;
 		// The first click of the gesture already turned this valve; undo that
@@ -1152,6 +1336,44 @@
 		S.turn(sim, selected, event.shiftKey ? 1 : -1);
 		placeBrushAt(selected);
 	};
+
+	// The vent's own colour picker: a hidden native color input opened at the
+	// double click. Its value starts from the vent's normalized colour, and every
+	// pick maps to proportional channel shares — pure black is refused like an
+	// empty pour mask, because there is no ink ratio in black.
+	function openVentPicker(column) {
+		pickerColumn = column;
+		const shares = ventSharesOf(column);
+		const m = Math.max(shares[0], shares[1], shares[2]);
+		if (m > 0) {
+			const r = Math.round(shares[0] / m * 255);
+			const g = Math.round(shares[1] / m * 255);
+			const b = Math.round(shares[2] / m * 255);
+			picker.value = "#" + ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+		}
+		if (picker.showPicker) {
+			try {
+				picker.showPicker();
+				return;
+			} catch {}
+		}
+		if (typeof picker.click === "function") picker.click();
+	}
+
+	function applyPickerColor() {
+		if (!sim.water || pickerColumn < 0) return;
+		const hex = picker.value;
+		if (!/^#[0-9a-f]{6}$/i.test(hex)) return;
+		ventShares[0] = parseInt(hex.slice(1, 3), 16) / 255;
+		ventShares[1] = parseInt(hex.slice(3, 5), 16) / 255;
+		ventShares[2] = parseInt(hex.slice(5, 7), 16) / 255;
+		if (!Water.setVentShares(sim.water, pickerColumn, ventShares)) return;
+		Water.selectVent(sim.water, pickerColumn);
+		syncWaterUI();
+		if (paused) drawFrame(true);
+	}
+	picker.oninput = applyPickerColor;
+	picker.onchange = applyPickerColor;
 	canvas.onkeydown = event => {
 		if (event.key === "p" || event.key === "P") {
 			if (game.mode !== "lab") return;
@@ -1262,8 +1484,8 @@
 		syncLegend();
 		syncSelectedValve();
 		ctx.save();
-		// Shift world [-POUR, SIZE + POUR] down into canvas [0, SIZE + 2 * POUR].
-		ctx.translate(0, G.POUR);
+		// Shift world [-POUR - VENT_STRIP, SIZE + POUR] down into the canvas.
+		ctx.translate(0, G.POUR + G.VENT_STRIP);
 		R.renderScene(ctx, layout, scene);
 		if ($("model").checked) drawOverlay(forceOverlay);
 		const pressure = sim.pressure;
@@ -1278,6 +1500,8 @@
 		R.renderInlets(ctx, sim.inlets, hoverInlet);
 		R.renderGrains(ctx, sim, scene);
 		R.renderInletBadges(ctx, sim.inlets, hoverInlet);
+		// The water vent strip rides above the pour band, clear of the mouths.
+		R.renderWaterVents(ctx, sim.water, hoverVent, ventDrag);
 		R.renderGoals(ctx, layout, game);
 		R.renderVents(ctx, layout, game);
 		R.renderSelection(ctx, layout, selected);
@@ -1299,7 +1523,7 @@
 				" (" + Math.round(held).toString() + " px²)" +
 				" · rgb " + rgb + "%" +
 				" · wet " + Water.wetCount(sim.water) +
-				" · vent " + (sim.water.ventOpen ? "open" : "shut") +
+				" · vents " + Water.ventOpenCount(sim.water) + " open" +
 				" · over " + Math.round(sim.water.overflowed) +
 				" · drained " + Math.round(sim.water.drained);
 		}

@@ -34,6 +34,8 @@ const ValveWater = (() => {
 	const M_PER_PX = 0.001;
 	const M3_PER_PX2 = M_PER_PX * M_PER_PX * DEPTH_PX * M_PER_PX;
 	const DEFAULT_RATE = 40; // px^2 of slice area per second
+	// Ceiling for every per-column vent rate: the page's global Rate slider max.
+	const RATE_MAX = 6000;
 	// Rows of the grid that open onto the pour/overflow band and the drain band.
 	const MOUTH_ROW = 2;
 	const OVERFLOW_ROW = 0;
@@ -176,12 +178,28 @@ const ValveWater = (() => {
 			compCount: 0,
 			built: false,
 			maskClock: 0,
+			// Input source vents: one per column above the pour band. Each vent
+			// owns an on/off flag, a rate and its own pour shares, so ten
+			// different liquids can pour at once. `ventColumn` is the vent the
+			// global panel edits; the three scalars below mirror that vent so
+			// the panel and the fixtures read one place.
 			ventColumn: (G.N / 2) | 0,
 			ventOpen: false,
 			rate: DEFAULT_RATE,
-			// Equal shares over the selected pour channels. Kept normalized by
-			// setPour; deposit normalizes again so a hand-written mask cannot
-			// change the delivered volume.
+			ventOn: new Uint8Array(G.N),
+			ventRate: new Float64Array(G.N),
+			ventShares: new Float64Array(G.N * CH),
+			// Bumped whenever any vent's shares change, so the renderer's
+			// colour cache rebuilds only on a real change.
+			ventVersion: 0,
+			// Published ceiling of every vent rate, read by the renderer and the
+			// page's vertical slide without importing this module's constant.
+			rateMax: RATE_MAX,
+			// Reused share slice of one vent, so supply allocates nothing.
+			vScratch: new Float64Array(CH),
+			// Equal shares over the selected pour channels of the current vent;
+			// the mirror of `ventShares[ventColumn]`, kept normalized by
+			// syncCurrent so the panel and the fixtures read one place.
 			pour: new Float64Array(CH),
 			pourMask: new Uint8Array(CH),
 			// Mixability flags partition the channels into phases. They are state,
@@ -220,10 +238,16 @@ const ValveWater = (() => {
 			chOverflowed: new Float64Array(CH),
 			chDrained: new Float64Array(CH),
 		};
-		w.pour.fill(1 / CH);
-		w.pourMask.fill(1);
 		w.mixable.fill(1);
 		w.band.fill(NaN);
+		for (let c = 0; c < G.N; c++) {
+			const o = c * CH;
+			w.ventRate[c] = DEFAULT_RATE;
+			w.ventShares[o] = 1 / CH;
+			w.ventShares[o + 1] = 1 / CH;
+			w.ventShares[o + 2] = 1 / CH;
+		}
+		syncCurrent(w);
 		derivePhases(w);
 		w.stamp.fill(NaN);
 		w.layoutSeen.fill(-1);
@@ -1411,29 +1435,42 @@ const ValveWater = (() => {
 
 	// ---- supply, drain, overflow -------------------------------------------
 
-	function mouthIndex(w) {
-		const x = (w.ventColumn + 0.5) * G.S;
+	function mouthCell(w, column) {
+		const x = (column + 0.5) * G.S;
 		return MOUTH_ROW * w.nx + Math.min(w.nx - 1, Math.floor(x / w.cell));
 	}
 
+	// Every open vent pours its own rate and its own shares into its column's
+	// mouth cell, through the same books and the same deposit primitive the
+	// single vent used, so the per-channel ledger closes for any number of
+	// simultaneous sources.
 	function supply(sim, h) {
 		const w = sim.water;
-		if (!w.ventOpen || w.rate <= 0) return;
-		const want = w.rate * h;
-		w.attempted += want;
-		bookArea(w.chAttempted, want, w.pour);
-		const i = mouthIndex(w);
-		// A metal mouth is blocked: the supply never enters. An open mouth admits
-		// everything; if the system below is full the relaxation backs the excess
-		// out of the top boundary as overflow, never behind a wall.
-		if (!w.air[i]) {
-			w.unadmitted += want;
-			bookArea(w.chUnadmitted, want, w.pour);
-			return;
+		for (let c = 0; c < G.N; c++) {
+			if (!w.ventOn[c]) continue;
+			const rate = w.ventRate[c];
+			if (rate <= 0) continue;
+			const o = c * CH;
+			const s = w.vScratch;
+			s[0] = w.ventShares[o];
+			s[1] = w.ventShares[o + 1];
+			s[2] = w.ventShares[o + 2];
+			const want = rate * h;
+			w.attempted += want;
+			bookArea(w.chAttempted, want, s);
+			const i = mouthCell(w, c);
+			// A metal mouth is blocked: the supply never enters. An open mouth admits
+			// everything; if the system below is full the relaxation backs the excess
+			// out of the top boundary as overflow, never behind a wall.
+			if (!w.air[i]) {
+				w.unadmitted += want;
+				bookArea(w.chUnadmitted, want, s);
+				continue;
+			}
+			deposit(w, i, want, s);
+			w.admitted += want;
+			bookArea(w.chAdmitted, want, s);
 		}
-		deposit(w, i, want, w.pour);
-		w.admitted += want;
-		bookArea(w.chAdmitted, want, w.pour);
 	}
 
 	function boundaries(sim) {
@@ -1488,25 +1525,148 @@ const ValveWater = (() => {
 		boundaries(sim);
 	}
 
+	// ---- per-vent control --------------------------------------------------
+	//
+	// The three scalars the old single vent exposed (ventOpen, rate, pour) are a
+	// mirror of the vent `ventColumn` points at, refreshed by syncCurrent, so the
+	// global panel edits the current vent and every setter keeps the mirror true.
+
+	function syncCurrent(w) {
+		const o = w.ventColumn * CH;
+		w.ventOpen = w.ventOn[w.ventColumn] === 1;
+		w.rate = w.ventRate[w.ventColumn];
+		for (let k = 0; k < CH; k++) {
+			w.pour[k] = w.ventShares[o + k];
+			w.pourMask[k] = w.ventShares[o + k] > 0 ? 1 : 0;
+		}
+	}
+
+	function clampColumn(column) {
+		return Math.max(0, Math.min(G.N - 1, column | 0));
+	}
+
+	// Selects the vent the global panel edits and sets its on/off flag.
 	function setVent(w, column, open) {
-		w.ventColumn = Math.max(0, Math.min(G.N - 1, column | 0));
-		w.ventOpen = !!open;
+		w.ventColumn = clampColumn(column);
+		w.ventOn[w.ventColumn] = open ? 1 : 0;
+		syncCurrent(w);
+	}
+
+	// Selects without touching the flag: a click on a vent tab.
+	function selectVent(w, column) {
+		w.ventColumn = clampColumn(column);
+		syncCurrent(w);
 	}
 
 	function setSupply(w, rate) {
-		w.rate = rate > 0 ? rate : 0;
+		w.ventRate[w.ventColumn] = rate > 0 ? Math.min(rate, RATE_MAX) : 0;
+		syncCurrent(w);
 	}
 
-	// Equal pour shares over the selected channels. An empty selection is refused
-	// so the inlet can never fall back to a default mix behind the player's back.
+	// Direct per-vent edits for the canvas gestures. An all-zero share triple
+	// is refused for the same reason as an empty pour mask: the inlet must not
+	// fall back to a default mix behind the player's back.
+	function setVentRate(w, column, rate) {
+		const c = clampColumn(column);
+		w.ventRate[c] = rate > 0 ? Math.min(rate, RATE_MAX) : 0;
+		if (c === w.ventColumn) syncCurrent(w);
+	}
+
+	function setVentShares(w, column, shares) {
+		const c = clampColumn(column);
+		const sum = shares[0] + shares[1] + shares[2];
+		if (!(sum > 0)) return false;
+		const o = c * CH;
+		for (let k = 0; k < CH; k++) w.ventShares[o + k] = shares[k] / sum;
+		w.ventVersion++;
+		if (c === w.ventColumn) syncCurrent(w);
+		return true;
+	}
+
+	function toggleVent(w, column) {
+		const c = clampColumn(column);
+		w.ventOn[c] = w.ventOn[c] ? 0 : 1;
+		if (c === w.ventColumn) syncCurrent(w);
+		return w.ventOn[c] === 1;
+	}
+
+	// The global column control is a brush: moving it stamps the settings of
+	// the vent it left onto every vent it passes, so one sweep sets up the whole
+	// row and a jump stamps the whole span it crossed.
+	function sweepVents(w, from, to) {
+		const a = clampColumn(from);
+		const b = clampColumn(to);
+		const lo = Math.min(a, b);
+		const hi = Math.max(a, b);
+		const src = a * CH;
+		for (let c = lo; c <= hi; c++) {
+			if (c === a) continue;
+			const o = c * CH;
+			w.ventOn[c] = w.ventOn[a];
+			w.ventRate[c] = w.ventRate[a];
+			for (let k = 0; k < CH; k++) w.ventShares[o + k] = w.ventShares[src + k];
+		}
+		w.ventVersion++;
+		w.ventColumn = b;
+		syncCurrent(w);
+	}
+
+	function ventOpenCount(w) {
+		let n = 0;
+		for (let c = 0; c < G.N; c++) n += w.ventOn[c];
+		return n;
+	}
+
+	// ---- hue <-> channel shares -------------------------------------------
+	// Sector order R→Y→G→C→B→M→R: the full channel and the ramping channel of
+	// each 60° sector, so sliding left and right sweeps the pour mix through
+	// the whole RGB wheel while the delivered volume stays constant.
+	const HUE_FULL = [[0, 1], [1, 0], [1, 2], [2, 1], [2, 0], [0, 2]];
+
+	function hueShares(hue, out) {
+		const h = ((hue % 360) + 360) % 360;
+		const x = 1 - Math.abs((h / 60) % 2 - 1);
+		const k = (h / 60) | 0;
+		out[0] = 0;
+		out[1] = 0;
+		out[2] = 0;
+		out[HUE_FULL[k][0]] = 1;
+		out[HUE_FULL[k][1]] = x;
+		return out;
+	}
+
+	// Inverse for the hue cursor and the picker's opening value. Grey shares
+	// have no hue; they report 0 so a cursor sits at red until the first slide.
+	function sharesHue(shares) {
+		const r = shares[0];
+		const g = shares[1];
+		const b = shares[2];
+		const m = Math.max(r, g, b);
+		if (!(m > 0)) return 0;
+		const d = m - Math.min(r, g, b);
+		if (d <= 0) return 0;
+		let hue;
+		if (m === r) hue = 60 * (((g - b) / d) % 6);
+		else if (m === g) hue = 60 * ((b - r) / d + 2);
+		else hue = 60 * ((r - g) / d + 4);
+		return ((hue % 360) + 360) % 360;
+	}
+
+	// Equal pour shares over the selected channels of the current vent. An
+	// empty selection is refused so the inlet can never fall back to a default
+	// mix behind the player's back.
 	function setPour(w, mask) {
 		let n = 0;
 		for (let k = 0; k < CH; k++) n += mask && mask[k] ? 1 : 0;
 		if (n === 0) return false;
+		const o = w.ventColumn * CH;
 		for (let k = 0; k < CH; k++) {
-			w.pourMask[k] = mask && mask[k] ? 1 : 0;
-			w.pour[k] = w.pourMask[k] ? 1 / n : 0;
+			const on = mask && mask[k] ? 1 : 0;
+			w.pourMask[k] = on;
+			w.pour[k] = on ? 1 / n : 0;
+			w.ventShares[o + k] = w.pour[k];
 		}
+		w.ventVersion++;
 		return true;
 	}
 
@@ -1598,7 +1758,10 @@ const ValveWater = (() => {
 		w.chUnadmitted.fill(0);
 		w.chOverflowed.fill(0);
 		w.chDrained.fill(0);
-		w.ventOpen = false;
+		// Reset shuts every vent but keeps each one's rate and colour, like the
+		// single vent kept its rate and pour.
+		w.ventOn.fill(0);
+		syncCurrent(w);
 		w.built = false;
 		w.maskClock = 0;
 		w.stamp.fill(NaN);
@@ -1618,12 +1781,13 @@ const ValveWater = (() => {
 	}
 
 	return {
-		CELL, SUBDIV, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RELAX_ITERS, MASK_DT, DRY_SKIP,
+		CELL, SUBDIV, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RATE_MAX, RELAX_ITERS, MASK_DT, DRY_SKIP,
 		LIQUID_DENSITY, MIXED_DENSITY, SWAP_FRAC,
 		create, step, rebuild, relax, settle, displace, clearLevels, publishLevels, publishBands,
 		makeDisplay, sampleDisplay, solidAt, segFraction, submerged,
-		setVent, setSupply, setPour, setMixable, supplyFromSI, volumeSI, drainAll, reset,
-		totalVol, storedVol, wetCount, surface, surfaceAt, mouthIndex,
+		setVent, selectVent, setSupply, setPour, setVentRate, setVentShares, toggleVent, sweepVents,
+		ventOpenCount, hueShares, sharesHue, setMixable, supplyFromSI, volumeSI, drainAll, reset,
+		totalVol, storedVol, wetCount, surface, surfaceAt, mouthCell,
 		deposit, move, movePhase, setLiquid, inject, channelTotals, residual, CH,
 		derivePhases, phaseVol, phaseVols,
 	};

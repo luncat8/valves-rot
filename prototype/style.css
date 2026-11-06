@@ -530,3 +530,21 @@ button[aria-pressed="true"] {
 	align-items: center;
 	gap: 8px;
 }
+
+/* The vent gesture hint sits under the water controls, small like the drawer hints. */
+.water-controls .hint {
+	flex-basis: 100%;
+	margin: 0;
+	font-size: 12px;
+}
+
+/* The vent colour picker is driven from canvas double clicks: keep it rendered
+   (showPicker refuses an input that is not) but out of sight and out of the way. */
+#water-picker {
+	position: absolute;
+	width: 0;
+	height: 0;
+	padding: 0;
+	border: 0;
+	opacity: 0;
+}

@@ -97,7 +97,7 @@ function element(id) {
 	if (elements[id]) return elements[id];
 	const el = {
 		id,
-		value: id === "seed" ? "7" : id === "lube-stress" ? "0" : id === "speed" || id === "force" || id === "lube" ? "1" : "",
+		value: id === "seed" ? "7" : id === "lube-stress" ? "0" : id === "speed" || id === "force" || id === "lube" ? "1" : id === "water-column" ? "6" : "",
 		checked: id === "pressure-grid" || id === "pressure-draw",
 		textContent: "",
 		width: 0,
@@ -109,7 +109,7 @@ function element(id) {
 		getAttribute(name) { return this.attributes[name] ?? null; },
 		addEventListener() {},
 		focus() {},
-		getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: 780 }),
+		getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: G.SIZE + G.POUR * 2 + G.VENT_STRIP }),
 	};
 	if (id === "c") el.getContext = () => recordingContext(true);
 	elements[id] = el;
@@ -240,11 +240,11 @@ assert.equal(map.canvas.width, Math.ceil(G.SIZE / 4));
 const alpha = map.img.data.filter((_, k) => k % 4 === 3 && map.img.data[k] > 0).length;
 assert.ok(alpha > 1000, "air model must mark air pixels");
 
-// Drive the page: check frame transform (+POUR, never -POUR), steady overlay and controls.
+// Drive the page: check frame transform (+POUR +VENT_STRIP, never negative), steady overlay and controls.
 let now = performance.now();
 mainTranslates.length = 0;
 frames.shift()((now += 16.7));
-assert.deepEqual(mainTranslates[0], [0, G.POUR], "root frame transform must shift down by +POUR");
+assert.deepEqual(mainTranslates[0], [0, G.POUR + G.VENT_STRIP], "root frame transform must shift down by +POUR +VENT_STRIP");
 
 for (let i = 0; i < 5; i++) {
 	const fn = frames.shift();
@@ -259,7 +259,9 @@ for (let i = 0; i < 3; i++) {
 	mainDrawImages.length = 0;
 	frames.shift()((now += 16.7));
 	assert.equal(mainDrawImages.length, 103, "bg + 100 rotors + steady air and gas overlays every frame");
-	assert.deepEqual(mainDrawImages[0], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
+	// The background sheet covers the vent strip too; the air and gas overlays
+	// still cover only the field and its bands.
+	assert.deepEqual(mainDrawImages[0], [0, -G.POUR - G.VENT_STRIP, G.SIZE, G.SIZE + G.POUR * 2 + G.VENT_STRIP]);
 	assert.deepEqual(mainDrawImages[101], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 	assert.deepEqual(mainDrawImages[102], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 }
@@ -291,7 +293,8 @@ assert.equal(element("pressure-span").getAttribute("aria-invalid"), null);
 
 const c = element("c");
 function clickMouth(side, column) {
-	c.onclick({ clientX: (column + 0.5) * G.S, clientY: side === 0 ? 2 : G.SIZE + G.POUR * 2 - 2, shiftKey: false, detail: 1 });
+	// The vent strip sits above the pour band, so the top band starts below it.
+	c.onclick({ clientX: (column + 0.5) * G.S, clientY: side === 0 ? G.VENT_STRIP + 2 : G.SIZE + G.POUR * 2 + G.VENT_STRIP - 2, shiftKey: false, detail: 1 });
 }
 for (let side = 0; side < 2; side++) {
 	for (let column = 0; column < G.N; column++) {
@@ -377,7 +380,9 @@ assert.ok(
 );
 
 const cellX = 4.5 * G.S;
-const cellY = G.POUR + 2.5 * G.S;
+// Client coordinates map through the vent strip now, so the exact valve centre
+// the press-drag arcs orbit sits below it.
+const cellY = G.VENT_STRIP + G.POUR + 2.5 * G.S;
 c.onpointermove({ clientX: cellX, clientY: cellY });
 c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
 c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
@@ -684,7 +689,7 @@ assert.ok((penSegments.get(R.WATER_SURFACE) || 0) > 5, "the free surface line fo
 assert.ok(calls.total > 0);
 assert.ok(element("water-rate-value").value.includes("2000"));
 const statsLine = element("stats").textContent;
-assert.ok(statsLine.includes("water") && statsLine.includes("vent open"), "stats line reports water: " + statsLine);
+assert.ok(statsLine.includes("water") && statsLine.includes("vents") && statsLine.includes("open"), "stats line reports water: " + statsLine);
 // Pour colours and the view toggle are real controls: the boxes reach the
 // solver's shares, and the last colour cannot be switched off (the page re-syncs
 // from the module, so a refused mask shows up as a box that comes back checked).
@@ -701,6 +706,40 @@ pourR.checked = false;
 pourR.onchange();
 assert.equal(pourR.checked, true, "the last pour colour comes back on");
 assert.equal(pourG.checked || pourB.checked, false, "the refused selection is not resurrected");
+// Water source vents: the strip above the pour band is its own control surface.
+// A click selects the vent the panel edits; a slide arms like the valve dial and
+// locks its axis; the picker input lands a picked colour; the column slider has
+// already stamped its sweep, which a clicked vent reads back.
+const ventX = column => (column + 0.5) * G.S;
+c.onclick({ clientX: ventX(3), clientY: 8, detail: 1 });
+assert.equal(element("water-column-value").value, "4", "a vent click selects it as the current vent");
+assert.equal(element("water-vent").checked, false, "an untouched vent is shut");
+assert.ok(element("water-rate-value").value.includes("40"), "an untouched vent keeps the default rate");
+c.onclick({ clientX: ventX(7), clientY: 8, detail: 1 });
+assert.equal(element("water-vent").checked, true, "a vent the column slider stamped is open");
+assert.ok(element("water-rate-value").value.includes("2000"), "a swept vent carries the stamped rate");
+// Hue slide: 36 px right of white sweeps 180° to cyan (G+B).
+c.onpointerdown({ pointerId: 21, button: 0, clientX: ventX(5), clientY: 8 });
+c.onpointermove({ pointerId: 21, clientX: ventX(5) + 36, clientY: 9 });
+c.onpointerup({ pointerId: 21 });
+assert.equal(element("water-column-value").value, "6", "the slide makes its vent current");
+assert.equal(element("water-pour-r").checked, false, "cyan has no red channel");
+assert.equal(element("water-pour-g").checked && element("water-pour-b").checked, true, "cyan is green and blue");
+assert.ok(element("water-rate-value").value.includes("2000"), "a hue slide does not touch the rate");
+// Rate slide: 30 px up adds half the ceiling to the current rate.
+c.onpointerdown({ pointerId: 22, button: 0, clientX: ventX(5), clientY: 8 });
+c.onpointermove({ pointerId: 22, clientX: ventX(5) + 1, clientY: 8 - 30 });
+c.onpointerup({ pointerId: 22 });
+assert.ok(element("water-rate-value").value.includes("5000"), "an upward slide raises the rate");
+// Double-click opens the picker prefilled with the vent's normalized colour,
+// and a picked colour maps to proportional channel shares.
+c.ondblclick({ clientX: ventX(2), clientY: 8, preventDefault() {} });
+assert.equal(element("water-picker").value, "#ffffff", "the picker opens on the vent's own colour");
+element("water-picker").value = "#ff8000";
+element("water-picker").oninput();
+assert.equal(element("water-column-value").value, "3", "the picker edits its own vent");
+assert.equal(element("water-pour-r").checked && element("water-pour-g").checked, true, "an orange pick is red and green");
+assert.equal(element("water-pour-b").checked, false, "an orange pick has no blue");
 // Mixability boxes regroup the phases without refusal: any combination holds,
 // including none mixable.
 const mixR = element("water-mix-r");

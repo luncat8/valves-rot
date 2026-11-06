@@ -395,8 +395,9 @@ function assertUnchanged(w, snap, tag) {
 	for (let j = 1; j < N - 1; j++) spec["4," + j] = ["hollow", [3, 1], RV * 0.5];
 	const { sim, w } = makeSim(spec);
 	W.setLiquid(w, cellAt(w, valve(sim.layout, 4, 5).cx, valve(sim.layout, 4, 5).cy), 3000, [1, 1, 1]);
-	W.setPour(w, [1, 0, 1]);
+	// Pour shares are per vent, so the vent column is selected before its mix.
 	W.setVent(w, 4, true);
+	W.setPour(w, [1, 0, 1]);
 	W.setSupply(w, 800);
 	for (let k = 0; k < 120 * 20; k++) S.step(sim, S.STEP);
 	const held = books(w, "20 s closed box");
