@@ -151,7 +151,7 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "water.js", "simulation.js", "game.js", "app.js"]) {
+for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "water.js", "heat.js", "simulation.js", "game.js", "app.js"]) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }

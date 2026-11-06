@@ -17,7 +17,7 @@ let maxAbs = 0;
 let maxRel = 0;
 let maxCache = 0;
 let minChannel = Infinity;
-let negativeScans = 0;
+let minStep = 0;
 let steps = 0;
 for (let second = 0; second < 60; second++) {
 	const ch = w.ch.slice();
@@ -31,11 +31,16 @@ for (let second = 0; second < 60; second++) {
 		S.step(sim, S.STEP);
 		steps++;
 		const ch = w.ch;
+		let invalid = -1;
 		for (let i = 0; i < ch.length; i++) {
 			const value = ch[i];
-			if (value < minChannel) minChannel = value;
+			if (!Number.isFinite(value) || value < 0) { invalid = i; break; }
+			if (value < minChannel) {
+				minChannel = value;
+				minStep = steps;
+			}
 		}
-		if (minChannel < 0) negativeScans++;
+		assert.equal(invalid, -1, `step ${steps}: channel ${invalid} must be finite and nonnegative`);
 	}
 	W.channelTotals(w, totals);
 	for (let k = 0; k < 3; k++) {
@@ -47,12 +52,12 @@ for (let second = 0; second < 60; second++) {
 	}
 	maxCache = Math.max(maxCache, W.residual(w));
 }
-assert.ok(minChannel >= 0, `no channel may go negative (minimum \\${minChannel.toExponential(6)} px²)`);
+assert.ok(minChannel >= 0, `no channel may go negative (minimum ${minChannel.toExponential(6)} px²)`);
 assert.ok(maxRel < 1e-9 && maxAbs < 1e-5, "closed-box ledger");
 assert.ok(maxCache < 1e-9, "cell cache residual");
 assert.equal(w.overflowed + w.drained + w.admitted, 0, "closed box has no flows across its boundary");
 console.log(`node ${process.version}; ${os.cpus()[0].model}; seed 3; dt ${S.STEP}; 60 s; 60 toggles; every step scanned`);
 console.log(`max ledger absolute ${maxAbs.toExponential(6)} px²; relative ${maxRel.toExponential(6)}; cache ${maxCache.toExponential(6)} px²`);
-console.log(`minimum channel ${minChannel.toExponential(6)} px² over ${steps} steps (0 negative scans)`);
+console.log(`minimum channel ${minChannel.toExponential(6)} px² at step ${minStep}, across ${steps} fully finite/nonnegative scans`);
 console.log("limits: absolute 1e-5 px²; relative 1e-9; cache 1e-9 px²; negative none");
 console.log("OK  closed-box channel balance, bit-exact toggles and nonnegative inventories");

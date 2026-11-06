@@ -141,6 +141,7 @@ const ValveHeat = (() => {
 	function neededSubsteps(p, cMin, dt, cell) {
 		const perPx = p.conductLiquid > p.conductMetal ? p.conductLiquid : p.conductMetal;
 		const gMax = 4 * (cell * perPx + cell * p.ambientRate);
+		if (!(gMax > 0)) return 1;
 		const c = cMin < DRY_CAP ? cMin : DRY_CAP;
 		return Math.ceil(dt / ((STABILITY * c) / gMax));
 	}
@@ -267,10 +268,22 @@ const ValveHeat = (() => {
 
 	// Parameters are refused, not clamped, when they would need more substeps
 	// than the budget at the smallest capacity the field can have.
+	function validParams(p) {
+		if (!Number.isFinite(p.ambient)) return false;
+		if (!(Number.isFinite(p.metalHeat) && p.metalHeat > 0)) return false;
+		if (!(Number.isFinite(p.liquidHeat) && p.liquidHeat > 0)) return false;
+		if (!(Number.isFinite(p.metalMass) && p.metalMass > 0)) return false;
+		if (!(Number.isFinite(p.conductMetal) && p.conductMetal >= 0)) return false;
+		if (!(Number.isFinite(p.conductLiquid) && p.conductLiquid >= 0)) return false;
+		if (!(Number.isFinite(p.ambientRate) && p.ambientRate >= 0)) return false;
+		if (!(Number.isInteger(p.substepCap) && p.substepCap >= 1)) return false;
+		return true;
+	}
+
 	function setParams(h, next) {
 		const p = copyParams();
 		for (const k in next) if (k in p) p[k] = next[k];
-		if (p.substepCap < 1) p.substepCap = 1;
+		if (!validParams(p)) return false;
 		if (neededSubsteps(p, DRY_CAP, STEP, h.cell) > p.substepCap) return false;
 		for (const k in p) h.p[k] = p[k];
 		return true;
