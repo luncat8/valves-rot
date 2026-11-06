@@ -360,3 +360,7 @@
   the first second after a pour came out 0.26-0.44 ms across identical runs. Take
   a median of 5 fresh scenes, report it, and say in the log that deltas under
   0.1 ms are run-to-run noise, so nobody reads 0.03 ms as a regression.
+
+## Classic-script page wiring
+- The shared modules resolve dependencies with `typeof ValveX !== "undefined" ? ValveX : require("./x.js")`. In a classic-script page a missing `<script>` tag does not fail as a module load; it fails as `require is not defined` at the dependency line, aborts that file, and leaves its global in a half-initialized state. Every later module then reports a misleading `X is not defined` at its own dependency line. Read the page's script list, not just the module, when a global is missing.
+- `experiments/render-smoke.cjs` now derives the script list from `index.html` and `air-scale.html` and asserts dependency order, so a stale page list fails the smoke test instead of the browser. Keep new shared modules in both the page and this guard.

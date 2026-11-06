@@ -151,7 +151,28 @@ global.Path2D = class {
 };
 global.performance.now = () => Date.now();
 
-for (const file of ["geometry.js", "inlets.js", "air.js", "gas.js", "calibration.js", "render.js", "water.js", "heat.js", "simulation.js", "game.js", "app.js"]) {
+// The page is a classic-script global scope: a missing <script> tag leaves the
+// next file's `typeof ValveX` fallback to call require() in the browser. Read
+// the declared list and check every dependency fallback against its position.
+const pageHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const scriptFiles = [...pageHtml.matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => path.basename(m[1]));
+assert.ok(scriptFiles.length >= 8, "page declares its script list");
+function checkScriptOrder(files, label) {
+	for (let i = 0; i < files.length; i++) {
+		const code = fs.readFileSync(path.join(root, files[i]), "utf8");
+		const deps = /const\s+\w+\s*=\s*typeof\s+(\w+)\s*!==\s*"undefined"\s*\?\s*\1\s*:\s*require\("\.\/([^"]+)"\)/g;
+		for (const m of code.matchAll(deps)) {
+			const at = files.indexOf(m[2]);
+			assert.ok(at >= 0 && at < i, label + ": " + files[i] + " needs " + m[2] + " loaded before it");
+		}
+	}
+}
+checkScriptOrder(scriptFiles, "index.html");
+assert.ok(scriptFiles.indexOf("heat.js") < scriptFiles.indexOf("simulation.js"), "heat.js is loaded before simulation.js");
+const airFiles = [...fs.readFileSync(path.join(root, "..", "..", "experiments", "air-scale.html"), "utf8")
+	.matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => path.basename(m[1]));
+checkScriptOrder(airFiles, "air-scale.html");
+for (const file of scriptFiles) {
 	const code = fs.readFileSync(path.join(root, file), "utf8");
 	vm.runInThisContext(code, { filename: file });
 }
@@ -166,7 +187,7 @@ assert.ok(calls.total > 0, "startup must draw");
 
 // Static help lives in the Help drawer, and the valve drawer lists every
 // catalogue type with a clipboard copy button for its name.
-const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const html = pageHtml;
 for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "valve-types", "dir-picker", "brush-summary", "selected-valve"]) {
 	assert.ok(html.includes('id="' + id + '"'), "page has #" + id);
 }
