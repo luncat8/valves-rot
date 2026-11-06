@@ -292,3 +292,35 @@
 - The surface must not outrun the slowest float: net buoyancy `0.2 g` at 6 /s
   drag caps a green float near 19 px/s, so a vent rate that lifts the level
   faster than that leaves the layer behind. Stage a slow final raise.
+
+## Water colour phases (0.3-water-color slice 2)
+- Vertical swaps alone cannot settle a basin: heavy beside light at one surface
+  is the lock-exchange setup, the surface solver reads it as settled and
+  freezes, and the light phase stays trapped sideways. Trade heavy for light
+  down the lateral mean-density gradient in equal areas with an exact
+  non-crossing cap, and let the vertical swaps cash the result into sorted
+  columns. Equal-density phases must never trade, or a mixed pool stirs itself.
+- Gate settling with centroid order plus the heavy-over-light residue across
+  open vertical faces, never with a flat depth-thirds fraction: side pools
+  perched on sills with dry centres read 41% "wrong" while every column is
+  locally sorted. Gate the residue at 1e-3 px², not zero: settled dust sits at
+  ~1e-6, below the swap gate, and never reads exact zero.
+- A below-surface cell that empties into a hole keeps no bands of its own; if
+  nothing inherits the water below it, buoyancy reads NaN and the trajectories
+  diverge from the single-liquid solver. Inherit bands (and level) from below,
+  and prove bit-identity per step, not just at the end.
+- `G.setAngle` without `S.setTarget` swings back on `S.step`: the per-step
+  rotor update animates every valve toward its target, so a fixture that snaps
+  a gate shut and then steps watches the gate slowly reopen (here: a phantom
+  20 px² "leak" through a perfectly tight connector). Snap the angle and set
+  the target together. `W.settle` does not step, so settle-only cases are safe.
+- Place probe grains by absolute dust, not by share: the interface cell reads
+  99% red and passes a ratio test while straddling the split. Require the
+  foreign channel under 1e-6, use one fresh settled pool per grain (a disc's
+  own displacement shifts the interface for the next placement), and assert
+  display texels away from the band split — float dust decides the boundary
+  texel either way.
+- When a regenerated picture differs from its committed blob, sample pixels
+  before believing your eyes about which is which: image-viewer ordering
+  misled twice, and both times the blob was the stale one (blue water from
+  before slice 1) while the fresh output was the correct gray.

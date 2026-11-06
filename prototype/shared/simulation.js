@@ -730,14 +730,13 @@ const ValveSimulation = (() => {
 		sim.vy[k] = vy + kick * STRESS_DROP;
 	}
 
-	// Archimedes on the grain's own material: with F_b = rho_w g V_sub and
-	// m = rho_g V, the vertical acceleration is g (1 - rho_w/rho_g f), where f is
-	// the submerged fraction. Fully submerged that reads directly off the palette:
-	// buoyant blue -g, neutral teal 0, dense red +0.5 g. Water density cancels
-	// against the solver's mass scale, so no per-grain mass is needed here.
-	function buoyantGravity(sim, k, f) {
-		return GRAVITY * (1 - (WATER_DENSITY / materialDensity(sim.color[k])) * f);
-	}
+	// Archimedes on the grain's own material: with F_b = rho_l g V_sub and
+	// m = rho_g V, the vertical acceleration is g (1 - sum(rho_layer/rho_g f_layer)),
+	// where f_layer is the fraction of the disc inside one phase band. Fully
+	// submerged in one liquid that reads off the palette: buoyant blue -g, neutral
+	// teal 0, dense red +0.5 g. Density cancels against the solver's mass scale, so
+	// no per-grain mass is needed. The sum is inlined in integrate(): it runs per
+	// grain per step and the bands are already published.
 
 	function integrate(sim, h) {
 		const damp = 1 - DAMPING * h;
@@ -746,6 +745,8 @@ const ValveSimulation = (() => {
 		const nx = water ? water.nx : 0;
 		const ny = water ? water.ny : 0;
 		const levelUp = water ? water.levelUp : null;
+		const bands = water ? water.band : null;
+		const bandRho = water ? water.bandRho : null;
 		const waterDrag = sim.waterDrag;
 		for (let k = 0; k < sim.count; k++) {
 			let gravity = GRAVITY;
@@ -754,11 +755,34 @@ const ValveSimulation = (() => {
 			if (water) {
 				const gx = (sim.x[k] / cell) | 0;
 				const gy = ((sim.y[k] + POUR) / cell) | 0;
+				const y = sim.y[k];
+				const rad = sim.r[k];
 				if (gx >= 0 && gx < nx && gy >= 0 && gy < ny) {
-					const level = levelUp[gy * nx + gx];
-					if (level === level) wet = submergedFraction(sim.r[k], sim.y[k] - level);
+					const idx = gy * nx + gx;
+					const level = levelUp[idx];
+					if (level === level) wet = submergedFraction(rad, y - level);
+					// Layered displacement: each phase band lifts by its own density,
+					// so a grain in a heavy layer below a light one is pushed harder
+					// than the wetted fraction of one uniform liquid would say. The
+					// band tops are the published snapshot and the top rank is the
+					// waterline, so the fractions sum to the wetted fraction exactly.
+					if (wet > 0) {
+						const base = idx * 3;
+						const rho = materialDensity(sim.color[k]);
+						let rel = 0;
+						let prev = 0;
+						for (let b = 0; b < 3; b++) {
+							const top = bands[base + b];
+							if (top !== top) break;
+							const f = submergedFraction(rad, y - top);
+							if (f > prev) {
+								rel += (bandRho[base + b] / rho) * (f - prev);
+								prev = f;
+							}
+						}
+						gravity = GRAVITY * (1 - rel);
+					}
 				}
-				if (wet > 0) gravity = buoyantGravity(sim, k, wet);
 			}
 			sim.vx[k] *= damp;
 			sim.vy[k] = (sim.vy[k] + gravity * h) * damp;
@@ -1385,6 +1409,7 @@ const ValveSimulation = (() => {
 
 	return {
 		STEP,
+		DAMPING,
 		MAX_STEPS,
 		CAPACITY,
 		R_MIN,

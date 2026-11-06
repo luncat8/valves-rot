@@ -68,6 +68,8 @@
 	const waterChannels = new Float64Array(3);
 	// Inlet colour boxes: element id and the channel it selects.
 	const POUR_IDS = [["water-pour-r", 0], ["water-pour-g", 1], ["water-pour-b", 2]];
+	// Mixability boxes: element id and the channel it flags.
+	const MIX_IDS = [["water-mix-r", 0], ["water-mix-g", 1], ["water-mix-b", 2]];
 	let previous = performance.now();
 	let overlayTick = 0;
 	let overlayDirty = true;
@@ -605,6 +607,10 @@
 			$(id).disabled = !on;
 			$(id).checked = sim.water ? !!sim.water.pourMask[k] : $(id).checked;
 		}
+		for (const [id, k] of MIX_IDS) {
+			$(id).disabled = !on;
+			$(id).checked = sim.water ? !!sim.water.mixable[k] : $(id).checked;
+		}
 		$("water-vent").checked = on && sim.water.ventOpen;
 		const rate = sim.water ? sim.water.rate : +$("water-rate").value;
 		$("water-rate-value").value = Math.round(rate) + " px²/s";
@@ -661,6 +667,17 @@
 		syncWaterUI();
 	}
 	for (const [id] of POUR_IDS) $(id).onchange = applyPour;
+	// Mixability regroups the channels into phases; every combination holds,
+	// including none mixable, so the boxes are never refused or re-synced. The
+	// partition redraws at once: the same channels read as different layers.
+	function applyMix() {
+		if (!sim.water) return;
+		const mask = [0, 0, 0];
+		for (const [id, k] of MIX_IDS) mask[k] = $(id).checked ? 1 : 0;
+		Water.setMixable(sim.water, mask);
+		if (paused) drawFrame(false);
+	}
+	for (const [id] of MIX_IDS) $(id).onchange = applyMix;
 	const applyView = () => {
 		waterView = $("water-view-pigment").checked ? 1 : 0;
 		if (paused) drawFrame(false);

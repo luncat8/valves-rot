@@ -44,6 +44,17 @@ const ValveWater = (() => {
 	const PI = Math.PI;
 	// Red, green, blue channels per cell: the conserved liquid state.
 	const CH = 3;
+	// Effective densities of the liquid families, from the grain palette, so a
+	// melt or a freeze moves between materials of one density family: dense red,
+	// neutral (the *teal* grain's value, not the 800 green one) and buoyant blue.
+	// The colours are named by hue, the densities by family.
+	const LIQUID_DENSITY = [2000, 1000, 500];
+	// Every mixable channel is one homogeneous phase at this density, so the
+	// all-mixable case is exactly the single-liquid solver of the baseline.
+	const MIXED_DENSITY = 1000;
+	// Share of the smaller cell's capacity a vertical pair may exchange per pass.
+	// Bounded so a swap is a quasi-static settle step, not a teleport.
+	const SWAP_FRAC = 0.5;
 	// Ids of the two books a whole cell can be emptied into.
 	const OVERFLOW = 0;
 	const DRAINED = 1;
@@ -173,10 +184,27 @@ const ValveWater = (() => {
 			// change the delivered volume.
 			pour: new Float64Array(CH),
 			pourMask: new Uint8Array(CH),
-			// Mixability flags partition the channels into phases (slice 2). They
-			// are state, but the phases themselves are derived, so a toggle can
-			// neither move nor lose liquid.
+			// Mixability flags partition the channels into phases. They are state,
+			// but the phases themselves are derived, so a toggle can neither move
+			// nor lose liquid: only the table below is rewritten.
 			mixable: new Uint8Array(CH),
+			// Derived partition, rebuilt by setMixable: the phase of each channel,
+			// that phase's density, the phase ids in density order (densest first)
+			// and how many phases there are. One phase => the mixed baseline.
+			phaseOf: new Int32Array(CH),
+			phaseRho: new Float64Array(CH),
+			order: new Int32Array(CH),
+			phaseCount: 0,
+			// Published per cell, one slot per rank in density order: the top y of
+			// that phase's band (NaN = the rank is absent) and its density. The
+			// bands are what buoyancy and the layered fill read, so a cell's layers
+			// are a snapshot of the last step like the waterline.
+			band: new Float64Array(count * CH),
+			bandRho: new Float64Array(count * CH),
+			// Scratch phase volumes of one cell, and of a pair, so a pass allocates
+			// nothing.
+			pvA: new Float64Array(CH),
+			pvB: new Float64Array(CH),
 			attempted: 0,
 			admitted: 0,
 			unadmitted: 0,
@@ -195,6 +223,8 @@ const ValveWater = (() => {
 		w.pour.fill(1 / CH);
 		w.pourMask.fill(1);
 		w.mixable.fill(1);
+		w.band.fill(NaN);
+		derivePhases(w);
 		w.stamp.fill(NaN);
 		w.layoutSeen.fill(-1);
 		w.levels.fill(NaN);
@@ -260,6 +290,106 @@ const ValveWater = (() => {
 		w.vol[to] += area;
 	}
 
+	// ---- phases ------------------------------------------------------------
+	//
+	// A phase is a group of channels, not a stored fluid: the mixability flags
+	// partition R/G/B into at most three groups, so toggling a checkbox rewrites
+	// this table and nothing else. A phase's volume in a cell is the sum of its
+	// channels, which means split and merge are bit-neutral by construction.
+
+	function derivePhases(w) {
+		const mixable = w.mixable;
+		const of = w.phaseOf;
+		const rho = w.phaseRho;
+		let mixId = -1;
+		let n = 0;
+		for (let k = 0; k < CH; k++) {
+			if (mixable[k]) {
+				if (mixId < 0) {
+					mixId = n++;
+					rho[mixId] = MIXED_DENSITY;
+				}
+				of[k] = mixId;
+				continue;
+			}
+			of[k] = n;
+			rho[n++] = LIQUID_DENSITY[k];
+		}
+		// Density order, densest first (insertion sort; at most three entries).
+		const order = w.order;
+		for (let i = 0; i < n; i++) order[i] = i;
+		for (let i = 1; i < n; i++) {
+			const p = order[i];
+			let j = i - 1;
+			while (j >= 0 && rho[order[j]] < rho[p]) { order[j + 1] = order[j]; j--; }
+			order[j + 1] = p;
+		}
+		w.phaseCount = n;
+	}
+
+	// Phase volumes of one cell into `out` (indexed by phase id).
+	function phaseVols(w, i, out) {
+		const of = w.phaseOf;
+		const ch = w.ch;
+		const o = i * CH;
+		const n = w.phaseCount;
+		for (let p = 0; p < n; p++) out[p] = 0;
+		for (let k = 0; k < CH; k++) out[of[k]] += ch[o + k];
+	}
+
+	function phaseVol(w, i, p) {
+		const of = w.phaseOf;
+		const ch = w.ch;
+		const o = i * CH;
+		let v = 0;
+		for (let k = 0; k < CH; k++) if (of[k] === p) v += ch[o + k];
+		return v;
+	}
+
+	// Move `area` of ONE phase, split across that phase's channels in proportion;
+	// the last channel of the phase takes the remainder so the moved area is
+	// exact. A phase that leaves completely moves its channels exactly, so no
+	// rounding residue stays in an emptied cell.
+	function movePhase(w, from, to, p, area) {
+		if (!(area > 0)) return;
+		const of = w.phaseOf;
+		const ch = w.ch;
+		const f = from * CH;
+		const t = to * CH;
+		let pv = 0;
+		let last = -1;
+		for (let k = 0; k < CH; k++) {
+			if (of[k] !== p) continue;
+			pv += ch[f + k];
+			last = k;
+		}
+		if (!(pv > 0)) return;
+		if (area > pv) area = pv;
+		let moved = 0;
+		if (area >= pv) {
+			for (let k = 0; k < CH; k++) {
+				if (of[k] !== p) continue;
+				const v = ch[f + k];
+				ch[f + k] = 0;
+				ch[t + k] += v;
+				moved += v;
+			}
+		} else {
+			const r = area / pv;
+			let acc = 0;
+			for (let k = 0; k < CH; k++) {
+				if (of[k] !== p) continue;
+				const m = k === last ? area - acc : ch[f + k] * r;
+				ch[f + k] -= m;
+				ch[t + k] += m;
+				acc += m;
+			}
+			moved = acc;
+		}
+		w.vol[from] -= moved;
+		w.vol[to] += moved;
+	}
+
 	// A closing wall's unreachable remainder: the rotor carries exactly the
 	// composition it could not route.
 	function trap(w, i) {
@@ -306,16 +436,19 @@ const ValveWater = (() => {
 	}
 
 	// Impose a cell's liquid from outside (a fixture, a scenario, a future melt),
-	// split by `shares`. Replaces whatever was there and books the change as an
-	// opening inventory term; overwriting a cell with less books a negative one,
-	// because an outside edit is a boundary term, not a solver transfer.
+	// split by `shares`. Replaces whatever was there and books the actual channel
+	// change as an opening inventory term, so replacing one mixture with another
+	// still closes the ledger per channel.
 	function setLiquid(w, i, area, shares) {
 		const o = i * CH;
-		const before = w.vol[i];
-		for (let k = 0; k < CH; k++) w.ch[o + k] = 0;
+		const before = w.pvB;
+		for (let k = 0; k < CH; k++) {
+			before[k] = w.ch[o + k];
+			w.ch[o + k] = 0;
+		}
 		w.vol[i] = 0;
 		deposit(w, i, area, shares);
-		bookArea(w.chInitial, w.vol[i] - before, shares || w.pour);
+		for (let k = 0; k < CH; k++) w.chInitial[k] += w.ch[o + k] - before[k];
 	}
 
 	// Add liquid from outside and book it as an opening inventory term.
@@ -563,18 +696,137 @@ const ValveWater = (() => {
 	}
 
 	// Vertical face: the two cells act as one column, filling the lower first.
+	// The liquid that leaves a cell is its bottom-most layer first going down,
+	// so a donor keeps its lightest phase and the heavy one pools below; an
+	// overfull lower cell sheds the top of its column going up.
 	function verticalTransfer(w, u, d) {
 		const total = w.vol[u] + w.vol[d];
 		if (total <= EPS) return;
 		const capD = effCap(w, d);
 		const newD = total < capD ? total : capD;
 		const delta = newD - w.vol[d];
-		if (delta > 0) move(w, u, d, delta);
-		else if (delta < 0) move(w, d, u, -delta);
+		if (delta > 0) drain(w, u, d, delta, true);
+		else if (delta < 0) drain(w, d, u, -delta, false);
+	}
+
+	// Move `area` out of a cell in density order: heaviest first downward, from
+	// the donor's bottom, lightest first upward, off the top of the column. One
+	// phase is the mixed baseline, which stays on move() so the reference
+	// solver is untouched.
+	function drain(w, from, to, area, down) {
+		if (w.phaseCount < 2) {
+			move(w, from, to, area);
+			return;
+		}
+		const order = w.order;
+		const n = w.phaseCount;
+		for (let k = 0; k < n && area > EPS; k++) {
+			const p = down ? order[k] : order[n - 1 - k];
+			const v = phaseVol(w, from, p);
+			if (!(v > 0)) continue;
+			const take = v < area ? v : area;
+			movePhase(w, from, to, p, take);
+			area -= take;
+		}
+	}
+
+	// A heavier phase sitting above a lighter one is unstable. Swap equal slice
+	// areas across an open vertical face, heavy down and light up: both cells
+	// keep their total, so the published surface does not move with a swap.
+	function verticalOrder(w, u, d) {
+		const n = w.phaseCount;
+		if (n < 2) return;
+		const order = w.order;
+		const uv = w.pvA;
+		const dv = w.pvB;
+		phaseVols(w, u, uv);
+		phaseVols(w, d, dv);
+		let ph = -1;
+		let pl = -1;
+		for (let r = 0; r < n; r++) {
+			if (uv[order[r]] > EPS) { ph = order[r]; break; }
+		}
+		for (let r = n - 1; r >= 0; r--) {
+			if (dv[order[r]] > EPS) { pl = order[r]; break; }
+		}
+		if (ph < 0 || pl < 0 || ph === pl) return;
+		if (!(w.phaseRho[ph] > w.phaseRho[pl])) return;
+		let amount = uv[ph] < dv[pl] ? uv[ph] : dv[pl];
+		const capU = effCap(w, u);
+		const capD = effCap(w, d);
+		const cap = SWAP_FRAC * (capU < capD ? capU : capD);
+		if (amount > cap) amount = cap;
+		if (amount <= EPS) return;
+		movePhase(w, u, d, ph, amount);
+		movePhase(w, d, u, pl, amount);
+	}
+
+	// Heavy beside light at one surface is the lock-exchange setup: the surface
+	// solver reads it as settled and freezes, with the light phase trapped
+	// beside the heavy one instead of above it. Trade heavy for light down the
+	// lateral mean-density gradient: the heavier cell gives its heaviest phase
+	// and the lighter cell its lightest, in equal areas so both totals keep.
+	// The bound below lands the means at worst equal, never crossed — the
+	// totals keep, so the means move linearly and the cap is exact — which is
+	// what keeps the trade from oscillating around equality. Each firing
+	// strictly narrows the contrast, and the vertical swaps then cash the
+	// traded phases into sorted columns. Equal-density phases never trade, so
+	// a mixed pool stays still.
+	function horizontalOrder(w, l, r) {
+		const n = w.phaseCount;
+		if (n < 2) return;
+		const vl = w.vol[l];
+		const vr = w.vol[r];
+		if (!(vl > EPS) || !(vr > EPS)) return;
+		const lv = w.pvA;
+		const rv = w.pvB;
+		phaseVols(w, l, lv);
+		phaseVols(w, r, rv);
+		let ml = 0;
+		let mr = 0;
+		for (let p = 0; p < n; p++) {
+			ml += lv[p] * w.phaseRho[p];
+			mr += rv[p] * w.phaseRho[p];
+		}
+		ml /= vl;
+		mr /= vr;
+		if (ml === mr) return;
+		const heavyLeft = ml > mr;
+		const av = heavyLeft ? lv : rv;
+		const bv = heavyLeft ? rv : lv;
+		const ai = heavyLeft ? l : r;
+		const bi = heavyLeft ? r : l;
+		const order = w.order;
+		let ph = -1;
+		let pl = -1;
+		for (let k = 0; k < n; k++) {
+			if (av[order[k]] > EPS) { ph = order[k]; break; }
+		}
+		for (let k = n - 1; k >= 0; k--) {
+			if (bv[order[k]] > EPS) { pl = order[k]; break; }
+		}
+		if (ph < 0 || pl < 0) return;
+		const drho = w.phaseRho[ph] - w.phaseRho[pl];
+		if (!(drho > 0)) return;
+		const diff = heavyLeft ? ml - mr : mr - ml;
+		const va = heavyLeft ? vl : vr;
+		const vb = heavyLeft ? vr : vl;
+		let amount = diff / (drho * (1 / va + 1 / vb));
+		const avail = av[ph] < bv[pl] ? av[ph] : bv[pl];
+		if (amount > avail) amount = avail;
+		const capA = effCap(w, ai);
+		const capB = effCap(w, bi);
+		const cap = SWAP_FRAC * (capA < capB ? capA : capB);
+		if (amount > cap) amount = cap;
+		if (amount <= EPS) return;
+		movePhase(w, ai, bi, ph, amount);
+		movePhase(w, bi, ai, pl, amount);
 	}
 
 	// Horizontal face: equalize surfaces, but the source cannot drain below the
-	// face sill and the destination cannot exceed its capacity.
+	// face sill and the destination cannot exceed its capacity. Only the phases
+	// that reach above the sill spill, lightest first: the top of a stratified
+	// column is what crosses a lip.
 	function horizontalTransfer(w, l, r, sill) {
 		const total = w.vol[l] + w.vol[r];
 		if (total <= EPS) return;
@@ -595,7 +847,25 @@ const ValveWater = (() => {
 		if (amt > avail) amt = avail;
 		if (amt > capDst) amt = capDst;
 		if (amt <= EPS) return;
-		move(w, src, dst, amt);
+		if (w.phaseCount < 2) {
+			move(w, src, dst, amt);
+			return;
+		}
+		// The spill walks the source's phases top-down against one budget: amt is
+		// already capped by the receiver's room, so each phase is capped by its
+		// own volume and what the budget still allows.
+		const order = w.order;
+		const sv = w.pvA;
+		phaseVols(w, src, sv);
+		let budget = amt;
+		for (let k = w.phaseCount - 1; k >= 0 && budget > EPS; k--) {
+			const p = order[k];
+			let take = sv[p];
+			if (take > budget) take = budget;
+			if (take <= EPS) continue;
+			movePhase(w, src, dst, p, take);
+			budget -= take;
+		}
 	}
 
 	// openS/openE are only set where a face exists, so they encode the boundary;
@@ -610,11 +880,18 @@ const ValveWater = (() => {
 			const i = reverse ? list[n - 1 - k] : list[k];
 			if (w.openS[i]) {
 				const d = i + nx;
-				if (vol[i] > EPS || vol[d] > EPS) verticalTransfer(w, i, d);
+				if (vol[i] > EPS || vol[d] > EPS) {
+					verticalTransfer(w, i, d);
+					// A swap needs liquid on both sides of the face to exchange.
+					if (vol[i] > EPS && vol[d] > EPS) verticalOrder(w, i, d);
+				}
 			}
 			if (w.openE[i]) {
 				const r = i + 1;
-				if (vol[i] > EPS || vol[r] > EPS) horizontalTransfer(w, i, r, w.sillE[i]);
+				if (vol[i] > EPS || vol[r] > EPS) {
+					horizontalTransfer(w, i, r, w.sillE[i]);
+					if (vol[i] > EPS && vol[r] > EPS) horizontalOrder(w, i, r);
+				}
 			}
 		}
 	}
@@ -664,6 +941,51 @@ const ValveWater = (() => {
 	// then flips a floating grain between fully dry and fully submerged every time
 	// it crosses a cell edge. Filling the run from its floor instead gives one
 	// smooth level for the pool, with the displacement included where it happens.
+	// Per-cell phase bands, densest first, as the top y of each rank's layer and
+	// that layer's density. A cell's liquid is stratified here, not stored: the
+	// bands are a monotone partition of the occupied height by phase volume, so
+	// an absent phase has no slot and the ranks stay contiguous. The top rank's
+	// boundary is the published waterline, so a brim-full cell's disc reads the
+	// liquid covering it instead of a ceiling.
+	function publishBands(w, i, level) {
+		const base = i * CH;
+		const pv = w.pvA;
+		phaseVols(w, i, pv);
+		let v = 0;
+		for (let p = 0; p < w.phaseCount; p++) v += pv[p];
+		if (!(v > EPS)) {
+			for (let r = 0; r < CH; r++) w.band[base + r] = NaN;
+			return 0;
+		}
+		const order = w.order;
+		const floor = w.floor[i];
+		// The splits partition the cell's own occupied height, so a full cell
+		// deep in the pool keeps its layers inside itself; only the top rank
+		// reaches the run waterline, so a grain there still reads the liquid
+		// covering it. A split above the waterline is a transient overfull cell
+		// and clamps to the waterline, keeping the bands monotone.
+		let occ = v / w.width[i];
+		const tall = floor - w.ceil[i];
+		if (occ > tall) occ = tall;
+		let cum = 0;
+		let rank = 0;
+		let light = 0;
+		for (let r = 0; r < w.phaseCount; r++) {
+			const p = order[r];
+			const vp = pv[p];
+			if (!(vp > EPS)) continue;
+			cum += vp;
+			let top = cum >= v ? level : floor - occ * cum / v;
+			if (top < level) top = level;
+			w.band[base + rank] = top;
+			w.bandRho[base + rank] = w.phaseRho[p];
+			light = w.phaseRho[p];
+			rank++;
+		}
+		for (let r = rank; r < CH; r++) w.band[base + r] = NaN;
+		return light;
+	}
+
 	function publishLevels(w) {
 		const levels = w.levels;
 		const up = w.levelUp;
@@ -684,6 +1006,7 @@ const ValveWater = (() => {
 				if (!air[i]) {
 					levels[i] = NaN;
 					up[i] = NaN;
+					for (let r = 0; r < CH; r++) w.band[i * CH + r] = NaN;
 					row++;
 					continue;
 				}
@@ -714,19 +1037,50 @@ const ValveWater = (() => {
 					liquid = 0;
 					fillTop = r;
 				}
-				for (let r = row; r <= end; r++) {
+				let light = 0;
+				let below = -1;
+				for (let r = end; r >= fillTop; r--) {
 					const j = r * nx + gx;
-					if (r >= fillTop) {
-						levels[j] = level;
-						up[j] = level;
-					} else {
-						// Dry air above this run's waterline. The relaxation may still
-						// owe it water (and the cell a grain sits in may be one of
-						// them), so a short gap still sees the pool; a long dry shaft
-						// must not borrow a level from below.
-						levels[j] = NaN;
-						up[j] = fillTop - r <= DRY_SKIP ? level : NaN;
+					levels[j] = level;
+					up[j] = level;
+					const rho = publishBands(w, j, level);
+					if (rho > 0) {
+						if (light <= 0 || rho < light) light = rho;
+						below = j;
+						continue;
 					}
+					// A hole inside the pool: at or below the surface but holding
+					// no liquid of its own, transiently or emptied by the grain in
+					// it. Its waterline reads wet, so its bands must too: it borrows
+					// the water below it, which is what a grain there stands in.
+					const dst = j * CH;
+					if (below < 0) {
+						w.band[dst] = level;
+						w.bandRho[dst] = MIXED_DENSITY;
+						for (let s = 1; s < CH; s++) w.band[dst + s] = NaN;
+						continue;
+					}
+					const src = below * CH;
+					for (let s = 0; s < CH; s++) {
+						w.band[dst + s] = w.band[src + s];
+						w.bandRho[dst + s] = w.bandRho[src + s];
+					}
+				}
+				for (let r = row; r < fillTop; r++) {
+					const j = r * nx + gx;
+					// Dry air above this run's waterline. The relaxation may still
+					// owe it water (and the cell a grain sits in may be one of
+					// them), so a short gap still sees the pool; a long dry shaft
+					// must not borrow a level from below.
+					levels[j] = NaN;
+					const reach = fillTop - r <= DRY_SKIP;
+					up[j] = reach ? level : NaN;
+					// A cell that is dry but inside the pool's reach is one layer:
+					// the liquid's lightest phase sits on top of the run.
+					const base = j * CH;
+					w.band[base] = reach ? level : NaN;
+					w.bandRho[base] = light > 0 ? light : MIXED_DENSITY;
+					for (let s = 1; s < CH; s++) w.band[base + s] = NaN;
 				}
 				row = end + 1;
 			}
@@ -890,11 +1244,17 @@ const ValveWater = (() => {
 			solid: new Uint8Array(n),
 			level: new Float32Array(n),
 			surf: new Float32Array(nx),
-			// Normalized channel triple per water cell (dominant = 255), computed
-			// once a frame so a texel copies bytes instead of dividing channels.
-			color: new Uint8Array(w.count * 3),
-			// Channel-triple offset of each display row and column, so the texel
-			// loop addresses the colour table with two adds and no multiply.
+			// Normalized channel triple of each phase layer, one slot per density
+			// rank (rank * 3 + channel), computed once a frame so a texel copies
+			// bytes instead of dividing channels. A rank is a phase's own channels,
+			// so a separated layer reads its hue and a mixture keeps its ratio.
+			color: new Uint8Array(w.count * CH * CH),
+			// Bands are the solver's snapshot, not a copy: the texel loop only reads
+			// the top y of each layer and the rank count.
+			band: w.band,
+			rank: new Uint8Array(w.count),
+			// Triple offset of each display row and column, so the texel loop
+			// addresses the colour table with two adds and no multiply.
 			crow: new Int32Array(ny),
 			ccol: new Int32Array(nx),
 			// Water cell row/column of each display row/column, and the fine sample
@@ -902,15 +1262,23 @@ const ValveWater = (() => {
 			wrow: new Int32Array(ny),
 			wcol: new Int32Array(nx),
 			frow: new Int32Array(ny),
+			// Water-cell, colour-slot and band-slot offsets, so the texel loop adds
+			// instead of multiplying.
+			crowCell: new Int32Array(ny),
+			brow: new Int32Array(ny),
+			bcol: new Int32Array(nx),
 		};
 		for (let gx = 0; gx < nx; gx++) {
 			field.wcol[gx] = Math.min(w.nx - 1, Math.floor(((gx + 0.5) * cell) / w.cell));
-			field.ccol[gx] = field.wcol[gx] * 3;
+			field.ccol[gx] = field.wcol[gx] * CH * CH;
+			field.bcol[gx] = field.wcol[gx] * CH;
 		}
 		for (let gy = 0; gy < ny; gy++) {
 			const y = (gy + 0.5) * cell - G.POUR;
 			field.wrow[gy] = Math.min(w.ny - 1, Math.max(0, Math.floor((y + G.POUR) / w.cell)));
-			field.crow[gy] = field.wrow[gy] * w.nx * 3;
+			field.crow[gy] = field.wrow[gy] * w.nx * CH * CH;
+			field.crowCell[gy] = field.wrow[gy] * w.nx;
+			field.brow[gy] = field.wrow[gy] * w.nx * CH;
 			// The display grid is the sample grid, so the fine row is the display row
 			// itself as long as it stays inside the mask.
 			field.frow[gy] = gy < w.fny ? gy : w.fny - 1;
@@ -925,27 +1293,43 @@ const ValveWater = (() => {
 	// how far up its level reaches inside one vertical run.
 	function sampleDisplay(sim, field) {
 		const w = sim.water;
-		// One normalized triple per water cell: I[k] = 255 * ch[k] / max(ch). Equal
-		// shares read white and a dilute colour keeps its hue, which is what makes
-		// a red pour read red at any dilution; it is a picture, not an intensity.
+		// One normalized triple per phase layer of each water cell: I[k] = 255 *
+		// ch[k] / max(ch over that phase). Equal shares read white, a dilute colour
+		// keeps its hue at any dilution, and a separated layer reads its own channel
+		// because a phase is a group of channels and nothing else. A picture, not an
+		// intensity: the solver's channels decide, this only maps them to bytes.
 		const color = field.color;
+		const rank = field.rank;
 		const ch = w.ch;
-		for (let k = 0, n = w.airCount; k < n; k++) {
-			const o = w.airList[k] * 3;
-			const r = ch[o];
-			const g = ch[o + 1];
-			const b = ch[o + 2];
-			let m = r > g ? r : g;
-			if (b > m) m = b;
-			if (m <= EPS) {
-				color[o] = 0;
-				color[o + 1] = 0;
-				color[o + 2] = 0;
-				continue;
+		const of = w.phaseOf;
+		const pv = w.pvA;
+		const n = w.phaseCount;
+		for (let k = 0, count = w.airCount; k < count; k++) {
+			const i = w.airList[k];
+			const base = i * CH * CH;
+			phaseVols(w, i, pv);
+			let slot = 0;
+			for (let r = 0; r < n; r++) {
+				const p = w.order[r];
+				if (!(pv[p] > EPS)) continue;
+				const o = i * CH;
+				let m = 0;
+				for (let c = 0; c < CH; c++) {
+					if (of[c] === p && ch[o + c] > m) m = ch[o + c];
+				}
+				const out = base + slot * CH;
+				for (let c = 0; c < CH; c++) {
+					color[out + c] = of[c] === p ? Math.round(255 * ch[o + c] / m) : 0;
+				}
+				slot++;
 			}
-			color[o] = Math.round(255 * r / m);
-			color[o + 1] = Math.round(255 * g / m);
-			color[o + 2] = Math.round(255 * b / m);
+			for (let s = slot; s < CH; s++) {
+				const out = base + s * CH;
+				color[out] = 0;
+				color[out + 1] = 0;
+				color[out + 2] = 0;
+			}
+			rank[i] = slot;
 		}
 		const nx = field.nx;
 		const ny = field.ny;
@@ -1089,9 +1473,11 @@ const ValveWater = (() => {
 	}
 
 	// Mixability is state, but the phases are derived from it, so this only
-	// records the flags: no channel moves and no volume can change.
+	// records the flags and rebuilds the partition table: no channel moves and no
+	// volume can change, so split and merge cannot lose a drop.
 	function setMixable(w, mask) {
 		for (let k = 0; k < CH; k++) w.mixable[k] = mask && mask[k] ? 1 : 0;
+		derivePhases(w);
 	}
 
 	// Per-channel stored area, including what rotors are carrying, into `out`.
@@ -1181,7 +1567,9 @@ const ValveWater = (() => {
 		w.layoutSeen.fill(-1);
 		w.levels.fill(NaN);
 		w.levelUp.fill(NaN);
+		w.band.fill(NaN);
 		w.levelsLive = false;
+		derivePhases(w);
 	}
 
 	// True where a display texel is inside the metal: the fill must never paint
@@ -1193,11 +1581,13 @@ const ValveWater = (() => {
 
 	return {
 		CELL, SUBDIV, WATER_MIN, DEPTH_PX, M_PER_PX, M3_PER_PX2, DEFAULT_RATE, RELAX_ITERS, MASK_DT, DRY_SKIP,
-		create, step, rebuild, relax, settle, displace, clearLevels, publishLevels,
+		LIQUID_DENSITY, MIXED_DENSITY, SWAP_FRAC,
+		create, step, rebuild, relax, settle, displace, clearLevels, publishLevels, publishBands,
 		makeDisplay, sampleDisplay, solidAt, segFraction, submerged,
 		setVent, setSupply, setPour, setMixable, supplyFromSI, volumeSI, drainAll, reset,
 		totalVol, storedVol, wetCount, surface, surfaceAt, mouthIndex,
-		deposit, move, setLiquid, inject, channelTotals, residual, CH,
+		deposit, move, movePhase, setLiquid, inject, channelTotals, residual, CH,
+		derivePhases, phaseVol, phaseVols,
 	};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = ValveWater;

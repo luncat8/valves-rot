@@ -524,6 +524,7 @@ button[aria-pressed="true"] {
 
 /* Water colour pickers stay on one row inside the wrapped control bar. */
 .pour-colors,
+.mix-colors,
 .water-views {
 	display: flex;
 	align-items: center;

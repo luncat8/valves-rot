@@ -81,6 +81,13 @@ function books(w, tag) {
 	return held;
 }
 
+// The display table holds one triple per phase layer, rank * 3 + channel; with
+// every colour mixable there is one layer and it sits at rank 0.
+function triple(field, cell, rank) {
+	const o = (cell * 3 + (rank || 0)) * 3;
+	return [...field.color.slice(o, o + 3)];
+}
+
 function snapshot(w) {
 	return { ch: w.ch.slice(), vol: w.vol.slice(), trappedCh: w.trappedCh.slice() };
 }
@@ -283,12 +290,12 @@ function assertUnchanged(w, snap, tag) {
 	W.sampleDisplay(sim, field);
 	const i = fullest(w);
 	assert.ok(w.vol[i] > 0);
-	const tri = [...field.color.slice(i * 3, i * 3 + 3)];
+	const tri = triple(field, i);
 	assert.deepEqual(tri, [255, 255, 255], "equal shares display white");
 	// Every wet cell keeps that triple: a proportional mix moves without splitting.
 	for (let c = 0; c < w.count; c++) {
 		if (w.vol[c] <= 1e-9) continue;
-		assert.deepEqual([...field.color.slice(c * 3, c * 3 + 3)], [255, 255, 255], `cell ${c} keeps the mix`);
+		assert.deepEqual(triple(field, c), [255, 255, 255], `cell ${c} keeps the mix`);
 	}
 	const map = { nx: field.nx, ny: field.ny, img: { data: new Uint8ClampedArray(field.nx * field.ny * 4) }, ctx: { putImageData() {} } };
 	const color = new Uint8ClampedArray(field.nx * field.ny * 4);
@@ -332,7 +339,7 @@ function assertUnchanged(w, snap, tag) {
 	const snap = snapshot(w);
 	const field = W.makeDisplay(w);
 	W.sampleDisplay(sim, field);
-	assert.deepEqual([...field.color.slice(i * 3, i * 3 + 3)], [255, 128, 0], "2:1:0 displays orange");
+	assert.deepEqual(triple(field, i), [255, 128, 0], "2:1:0 displays orange");
 	const map = { nx: field.nx, ny: field.ny, img: { data: new Uint8ClampedArray(field.nx * field.ny * 4) }, ctx: { putImageData() {} } };
 	R.renderWater(map, field, 0);
 	R.renderWater(map, field, 1);
@@ -341,7 +348,7 @@ function assertUnchanged(w, snap, tag) {
 	// A pure primary reads full in the colour view and light in pigment.
 	W.setLiquid(w, i, 200, [1, 0, 0]);
 	W.sampleDisplay(sim, field);
-	assert.deepEqual([...field.color.slice(i * 3, i * 3 + 3)], [255, 0, 0], "a pure channel is its own hue");
+	assert.deepEqual(triple(field, i), [255, 0, 0], "a pure channel is its own hue");
 	assert.equal((R.pigmentLevel(255, 0, 0) + 0.5) | 0, 255, "a pure primary is light in pigment view");
 	console.log("ok  ratios survive normalization; pigment anchors and view toggling leave state alone");
 }

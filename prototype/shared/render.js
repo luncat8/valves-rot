@@ -918,53 +918,73 @@ const ValveRender = (() => {
 		return l < 0 ? 0 : l > 255 ? 255 : l;
 	}
 
-	// view 0 paints the channels, view 1 paints the pigment level.
-	function renderWater(map, field, view) {
-		const data = map.img.data;
-		const air = field.air;
-		const solid = field.solid;
-		const level = field.level;
-		const color = field.color;
-		const crow = field.crow;
-		const ccol = field.ccol;
-		const cell = field.cell;
-		const nx = map.nx;
-		const band = WATER_BAND;
-		const pigment = view === 1;
-		let o = 0;
-		for (let gy = 0; gy < map.ny; gy++) {
-			const y = (gy + 0.5) * cell - G.POUR;
-			const row = crow[gy];
-			for (let gx = 0; gx < nx; gx++, o += 4) {
-				const k = gy * nx + gx;
-				if (!air[k] || solid[k]) {
-					data[o + 3] = 0;
-					continue;
-				}
-				const depth = y - level[k];
-				if (!(depth > 0)) {
-					data[o + 3] = 0;
-					continue;
-				}
-				let t = depth / band;
-				if (t > 1) t = 1;
-				const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
-				const c = row + ccol[gx];
-				if (pigment) {
-					const l = (pigmentLevel(color[c], color[c + 1], color[c + 2]) + 0.5) | 0;
-					data[o] = l;
-					data[o + 1] = l;
-					data[o + 2] = l;
-				} else {
-					data[o] = color[c] * WATER_SHADE;
-					data[o + 1] = color[c + 1] * WATER_SHADE;
-					data[o + 2] = color[c + 2] * WATER_SHADE;
-				}
-				data[o + 3] = (a * 255) | 0;
+// view 0 paints the channels, view 1 paints the pigment level. A texel takes the
+// colour of the phase layer its own y falls in, so a stratified column draws as
+// bands instead of one blended sheet.
+function renderWater(map, field, view) {
+	const data = map.img.data;
+	const air = field.air;
+	const solid = field.solid;
+	const level = field.level;
+	const color = field.color;
+	const crow = field.crow;
+	const ccol = field.ccol;
+	const brow = field.brow;
+	const bcol = field.bcol;
+	const crowCell = field.crowCell;
+	const wcol = field.wcol;
+	const rank = field.rank;
+	const bands = field.band;
+	const cell = field.cell;
+	const nx = map.nx;
+	const band = WATER_BAND;
+	const pigment = view === 1;
+	let o = 0;
+	for (let gy = 0; gy < map.ny; gy++) {
+		const y = (gy + 0.5) * cell - G.POUR;
+		const row = crow[gy];
+		const rowBand = brow[gy];
+		const rowCell = crowCell[gy];
+		for (let gx = 0; gx < nx; gx++, o += 4) {
+			const k = gy * nx + gx;
+			if (!air[k] || solid[k]) {
+				data[o + 3] = 0;
+				continue;
 			}
+			const depth = y - level[k];
+			if (!(depth > 0)) {
+				data[o + 3] = 0;
+				continue;
+			}
+			let t = depth / band;
+			if (t > 1) t = 1;
+			const a = WATER_ALPHA_MIN + (WATER_ALPHA_FULL - WATER_ALPHA_MIN) * t;
+			let c = row + ccol[gx];
+			const layers = rank[rowCell + wcol[gx]];
+			if (layers > 1) {
+				// Ranks run densest (bottom) to lightest; a band top is the y above
+				// which the next, lighter layer starts.
+				const b = rowBand + bcol[gx];
+				for (let r = 0; r < layers - 1; r++) {
+					if (!(y < bands[b + r])) break;
+					c += 3;
+				}
+			}
+			if (pigment) {
+				const l = (pigmentLevel(color[c], color[c + 1], color[c + 2]) + 0.5) | 0;
+				data[o] = l;
+				data[o + 1] = l;
+				data[o + 2] = l;
+			} else {
+				data[o] = color[c] * WATER_SHADE;
+				data[o + 1] = color[c + 1] * WATER_SHADE;
+				data[o + 2] = color[c + 2] * WATER_SHADE;
+			}
+			data[o + 3] = (a * 255) | 0;
 		}
-		map.ctx.putImageData(map.img, 0, 0);
 	}
+	map.ctx.putImageData(map.img, 0, 0);
+}
 
 	// Surface line: connect the free surface of neighbouring water columns, so a
 	// pool reads as a level even where the sheet is too thin to see behind a

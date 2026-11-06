@@ -680,6 +680,22 @@ pourR.checked = false;
 pourR.onchange();
 assert.equal(pourR.checked, true, "the last pour colour comes back on");
 assert.equal(pourG.checked || pourB.checked, false, "the refused selection is not resurrected");
+// Mixability boxes regroup the phases without refusal: any combination holds,
+// including none mixable.
+const mixR = element("water-mix-r");
+const mixG = element("water-mix-g");
+const mixB = element("water-mix-b");
+assert.equal(mixR.checked && mixG.checked && mixB.checked, true, "all three colours mix by default");
+mixR.checked = false;
+mixR.onchange();
+mixG.checked = false;
+mixG.onchange();
+mixB.checked = false;
+mixB.onchange();
+assert.equal(mixR.checked || mixG.checked || mixB.checked, false, "every mix box can be switched off");
+mixR.checked = true;
+mixR.onchange();
+assert.equal(mixR.checked, true, "a mix box can be switched back on");
 element("water-view-pigment").checked = true;
 element("water-view-pigment").onchange();
 frames.shift()((now += 16.7));
