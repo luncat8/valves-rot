@@ -45,12 +45,12 @@ function background(sim, view, scale, wdt, hgt) {
 
 // Water as the page paints it: the display field the buoyancy reads, painted by
 // render.js, composited over the scene at its own alpha.
-function sheet(sim, view, scale, wdt, hgt, px) {
+function sheet(sim, view, scale, wdt, hgt, px, pigment) {
 	if (!sim.water || !sim.water.enabled) return;
 	const field = W.makeDisplay(sim.water);
 	W.sampleDisplay(sim, field);
 	const map = { nx: field.nx, ny: field.ny, img: { data: new Uint8ClampedArray(field.nx * field.ny * 4) }, ctx: { putImageData() {} } };
-	R.renderWater(map, field);
+	R.renderWater(map, field, pigment ? 1 : 0);
 	const data = map.img.data;
 	const cell = field.cell;
 	for (let y = 0; y < hgt; y++) {
@@ -89,11 +89,11 @@ function grains(sim, view, scale, wdt, hgt, px) {
 }
 
 // view: {x0, y0, w, h} in field coordinates. scale 1 is one pixel per field px.
-function panel(sim, view, scale) {
+function panel(sim, view, scale, pigment) {
 	const wdt = Math.round(view.w * scale);
 	const hgt = Math.round(view.h * scale);
 	const px = background(sim, view, scale, wdt, hgt);
-	sheet(sim, view, scale, wdt, hgt, px);
+	sheet(sim, view, scale, wdt, hgt, px, pigment);
 	grains(sim, view, scale, wdt, hgt, px);
 	return { rgb: px, w: wdt, h: hgt };
 }
