@@ -791,9 +791,16 @@ element("water-view-color").onchange();
 // Heat: enabling it turns water on with every vent shut, the power slider
 // edits the selected valve and survives a disable, the view toggle dims the
 // sheet and paints the °C legend, the ambient input rebases the field at
-// once, and turning water off parks heat.
+// once, and turning water off parks heat. The slider's scale ships with the
+// heat balance: ±5000 E/s, the scale heat-balance.cjs tuned against the melt
+// work — at a third of it a frozen pool never melts back.
 assert.equal(element("heat-on").checked, false, "heat starts off");
 assert.equal(element("heat-power").disabled, true, "no valve is selected yet");
+const powerSlider = pageHtml.match(/<input id="heat-power" type="range" min="(-?\d+)" max="(-?\d+)" step="(\d+)"/);
+assert.ok(powerSlider, "the page declares the power slider");
+assert.equal(powerSlider[1], "-5000", "the power slider ships at the balanced scale (min)");
+assert.equal(powerSlider[2], "5000", "the power slider ships at the balanced scale (max)");
+assert.equal(powerSlider[3], "50", "the power slider steps in 50 E/s");
 element("water-on").checked = false;
 element("water-on").onchange();
 element("heat-on").checked = true;

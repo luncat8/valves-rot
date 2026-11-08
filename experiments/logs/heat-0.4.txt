@@ -1,9 +1,10 @@
-heat 0.4 picture and measurement, seed 3, 12 s at 120 Hz
+heat 0.4 picture and measurement, seed 3, 30 s at 120 Hz
 params {"ambient":20,"metalHeat":0.5,"liquidHeat":4.2,"grainHeat":1.2,"metalMass":2.7,"conductMetal":0.9,"conductLiquid":0.8,"ambientRate":0.05,"substepCap":4,"latent":[60,55,50],"melt":[120,100,80]}
-heater valve 53 at +150 E/s, cooler valve 56 at -150 E/s, ambient 20 °C
-ledger: initial 714908 source 0 ambient -0 material 717
-residual 1.24e-8 (tolerance 1e-9 relative)
-channels R 162.4 G 0.0 B 403.6 px², grains 28, melted 3.6 mg, frozen 337.6 mg
-mean field temperature 23.35 °C, substeps 1
-left chamber T 120.0 °C, right chamber T 97.8 °C
-step cost with heat on: 0.997 ms/step (grains 28, wet 56)
+heater valve 53 at +5000 E/s, cooler valve 56 at -5000 E/s, ambient 20 °C
+ledger: initial 519759 source -0 ambient -22 material 476
+residual -2.65e-9 (tolerance 1e-9 relative)
+channels R 150.0 G 0.0 B 122.3 px², grains 14, melted 2.4 mg, frozen 30.1 mg
+mean field temperature 22.50 °C, substeps 1
+left chamber T 99.0 °C wet mean (91..110) — the heater climbs to the melt pins of the grains it still holds
+right chamber T 20.0 °C wet mean (20..20) — the cooler froze its pool and the remainder pins at the freeze point
+step cost with heat on: 0.907 ms/step (grains 14, wet 27)

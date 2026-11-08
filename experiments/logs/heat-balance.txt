@@ -1,0 +1,31 @@
+heat balance, shaft scene, room 20 °C, pour 40 px²/s for 6 s at the mouth of column 3, cooler on the chamber valve (3,5) only
+params {"ambient":20,"metalHeat":0.5,"liquidHeat":4.2,"grainHeat":1.2,"metalMass":2.7,"conductMetal":0.9,"conductLiquid":0.8,"ambientRate":0.05,"substepCap":4,"latent":[60,55,50],"melt":[120,100,80]}
+
+freeze: power	first	frozen@10s	frozen@20s	frozen@50s mg	chamber liq px²	grains	min field °C
+-150	0.87s	11	19	46	180	15	18
+-500	0.47s	23	51	86	148	24	12
+-1500	0.28s	59	97	97	133	26	-13
+-5000	0.17s	85	111	111	121	29	-74
+-20000	0.10s	91	91	91	131	25	-569
+
+melt-back: power	first melt	all gone	frozen mg	melted mg	liquid px²
++150	never	>cap	28	0	212
++1500	143.7s	>cap	97	8	151
++5000	49.4s	103.4s	111	111	240
++20000	33.6s	43.1s	91	91	240
+
+running pour: cooler	poured px²	frozen mg (share)	shaft liq	chamber liq	shaft grains	chamber grains
+-5000 @40/s	1200	426 (36%)	388	338	58	41
+-5000 @100/s	3000	702 (23%)	1596	539	134	30
+-5000 @200/s	6000	726 (12%)	4602	358	124	41
+
+latent at -5000: scale	frozen@20s	frozen@50s mg	grains
+x0.5	98	101	27
+x1	111	111	29
+x2	94	102	30
+work ratio channel 0: freeze 120, melt 420 E/px² (x3.50)
+work ratio channel 1: freeze 115, melt 355 E/px² (x3.09)
+work ratio channel 2: freeze 110, melt 290 E/px² (x2.64)
+
+shipped default ±5000 E/s: freeze 111 mg by 20 s (first 0.17 s), melt-back 103 s, one cooler takes 36% of a default pour
+OK heat balance (114667 ms)
