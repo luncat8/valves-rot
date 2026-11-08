@@ -213,9 +213,13 @@ const dry = { "4,5": ["hollow", [0], RV * 0.7] };
 	assert.ok(changed > 0, "the rebuilt capacity differs somewhere");
 	books(h, "turn");
 	H.reset(h);
-	assert.equal(H.stored(h), 0, "reset empties the field");
-	assert.equal(H.residual(h), 0, "and its books");
-	console.log(`ok  turn keeps ${before.toFixed(1)} units through a mask rebuild; reset clears`);
+	// Reset re-opens the emptied field at the room temperature, not at 0 °C:
+	// the machine sits in the room, and a zero field needed the outer ring's
+	// ~36-minute warm-up — which read as supply arriving cold.
+	assert.equal(H.stored(h), h.initial, "reset re-opens the field at the room");
+	assert.equal(H.residual(h), 0, "and its books close on the new opening stock");
+	assert.ok(Math.abs(h.T[cell] - h.p.ambient) <= 1e-9, `the field reads the room (${h.T[cell].toFixed(1)} °C)`);
+	console.log(`ok  turn keeps ${before.toFixed(1)} units through a mask rebuild; reset re-opens at ${h.p.ambient} °C`);
 }
 
 // 7. Timestep refinement: for this first-order explicit scheme, halving dt
@@ -475,8 +479,8 @@ const sums = { h: 0, vol: 0, cap: 0 };
 	books(h, "resume after disable");
 	assert.ok(h.source > frozen.source, "the source book resumed");
 	H.reset(h);
-	assert.equal(H.stored(h), 0, "reset empties the field");
-	assert.equal(H.residual(h), 0, "and its books");
+	assert.equal(H.stored(h), h.initial, "reset re-opens the field at the room");
+	assert.equal(H.residual(h), 0, "and its books close on the new opening stock");
 	assert.equal(h.power[5 * N + 4], 50, "the valve keeps its power");
 	console.log(`ok  lifecycle: books frozen while off, resumed on, reset keeps powers`);
 }

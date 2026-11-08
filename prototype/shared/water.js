@@ -748,6 +748,12 @@ const ValveWater = (() => {
 		}
 		if (!any && w.built) return false;
 		const first = !w.built;
+		// The serial is the "samples changed" signal the heat field keys
+		// its mask resample on, and the first build is the biggest change
+		// of all — from the unsampled zero state to the real geometry —
+		// so it bumps too. Without it a field created before the first
+		// build kept its zero-sample capacity until some rotor turned.
+		const serial = ++w.serial;
 		if (first) {
 			for (let i = 0; i < w.count; i++) sampleCell(sim, w, i);
 			for (let i = 0; i < w.count; i++) {
@@ -755,7 +761,6 @@ const ValveWater = (() => {
 				if ((i / w.nx | 0) + 1 < w.ny) sampleSouthFace(sim, w, i);
 			}
 		} else {
-			const serial = ++w.serial;
 			for (let v = 0; v < valves.length; v++) {
 				if (!w.dirty[v]) continue;
 				const end = w.blockStart[v + 1];

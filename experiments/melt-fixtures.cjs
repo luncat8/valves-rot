@@ -3,8 +3,11 @@
 // conversion is internal — the field's energy, each channel's mass and the
 // material book are checked as equations, not sampled. The melt is a
 // whole-grain threshold with a pinned plateau; the freeze is per channel,
-// highest plateau first, with clamped radii, a fractional inventory and
-// deterministic deferral when no valid grain can be placed.
+// highest plateau first, at the LOWER of the plateau and the room temperature
+// (supply at ambient must not refreeze on arrival), with clamped radii, a
+// fractional inventory and deterministic deferral when no valid grain can be
+// placed. The freeze gates park the room at or above the plateau they drive,
+// so the plateau — not the room — is the governing freeze point there.
 // Run: node experiments/melt-fixtures.cjs
 const assert = require("node:assert/strict");
 const G = require("../prototype/shared/geometry.js");
@@ -233,6 +236,9 @@ function settleGrain(sim, h) {
 	const { sim, h, w } = makeSim();
 	const cell = centreCell(sim);
 	H.fill(h, 118);
+	// The freeze point is the lower of the plateau and the room, so the room
+	// parks at red's plateau: the liquid below it still freezes, pinned there.
+	H.setAmbient(h, 120, undefined, false);
 	H.setCell(h, sim, cell, 30, [1, 0, 0], 110);
 	for (let k = 0; k < 240 && sim.count === 0; k++) S.step(sim, S.STEP);
 	assert.ok(sim.count >= 1, "a grain froze");
@@ -257,6 +263,8 @@ function settleGrain(sim, h) {
 	// 60 px² so each pooled cell keeps an R share above red's minimum grain
 	// mass; a thinner pool would let green win on its smaller minimum alone.
 	H.fill(h, 95);
+	// Room at red's plateau, so the 120/100 points govern, not the room.
+	H.setAmbient(h, 120, undefined, false);
 	H.setCell(h, sim, cell, 60, [0.5, 0.5, 0], 95);
 	let first = -1;
 	for (let k = 0; k < 600 && first < 0; k++) {
@@ -284,6 +292,8 @@ function settleGrain(sim, h) {
 	const { sim, h, w } = makeSim();
 	const cell = centreCell(sim);
 	H.fill(h, 20);
+	// Room at red's plateau: the hot pool freezes as it cools below 120.
+	H.setAmbient(h, 120, undefined, false);
 	H.setCell(h, sim, cell, 100, [1, 0, 0], 125);
 	for (let k = 0; k < 2400; k++) S.step(sim, S.STEP);
 	assert.ok(sim.count >= 2, `grains formed (${sim.count})`);
@@ -308,6 +318,9 @@ function settleGrain(sim, h) {
 	const { sim, h, w } = makeSim({ "4,5": ["hollow", [0], RV * 0.2], "6,5": ["hollow", [0], RV * 0.75] });
 	const cell = centreCell(sim);
 	const v = sim.layout.valves[5 * N + 4];
+	// Room at red's plateau for the whole gate: above it nothing freezes,
+	// below it the intent accumulates — the plateau governs, not the room.
+	H.setAmbient(h, 120, undefined, false);
 	H.fill(h, 125);
 	H.setCell(h, sim, cell, 20, [1, 0, 0], 125);
 	for (let k = 0; k < 60; k++) S.step(sim, S.STEP);
@@ -349,6 +362,9 @@ function settleGrain(sim, h) {
 	const { sim, h, w } = makeSim();
 	const cell = centreCell(sim);
 	const v = sim.layout.valves[5 * N + 4];
+	// Room at blue's plateau for the whole gate: the freeze half of every
+	// cycle freezes below 80, the melt half at 200 is unaffected by it.
+	H.setAmbient(h, 80, undefined, false);
 	let placed = 0;
 	for (const [dx, dy] of [[-6, -5], [6, -5], [-6, 5], [6, 5]]) {
 		if (S.addGrain(sim, v.cx + dx, v.cy + dy, 2.7, 3) >= 0) placed++;
@@ -388,6 +404,8 @@ function settleGrain(sim, h) {
 	assert.equal(added, 6, "six amber grains were placed");
 	settleGrain(sim, h);
 	const total = 6 * grainMassOf(1, 2.7);
+	// Room at red's plateau: both halves freeze below their own points.
+	H.setAmbient(h, 120, undefined, false);
 	H.fill(h, 500);
 	for (let k = 0; k < 600 && sim.count > 0; k++) S.step(sim, S.STEP);
 	assert.equal(sim.count, 0, "the amber grains melted");
@@ -416,7 +434,11 @@ function settleGrain(sim, h) {
 	const v = sim.layout.valves[4 * N + 4];
 	S.addGrain(sim, v.cx, v.cy, 2.7, 0);
 	settleGrain(sim, h);
-	H.fill(h, 300);
+	// 500 °C: the whole-grain threshold is met by the fill alone. (The old
+	// 300 °C relied on a pricing bug — a grain crossing a fully-open dry
+	// cell was priced over a capacity of its own CG only, so it swept the
+	// donor's whole book along and the sweep donated the missing excess.)
+	H.fill(h, 500);
 	for (let k = 0; k < 120 && sim.count > 0; k++) S.step(sim, S.STEP);
 	assert.equal(sim.count, 0, "the grain melted in the top chamber");
 	// The field is hot, so the melt stays liquid while it falls to the lower

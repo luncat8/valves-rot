@@ -11,6 +11,12 @@
 // its sensible energy exactly once. Phase change converts whole grains into
 // channel liquid and channel liquid back into primary grains through the same
 // enthalpy ledger with no external term: conversions are internal and cancel.
+// A channel's freeze point is the LOWER of its melt plateau and the room
+// temperature, so supply spawned at ambient can never refreeze on arrival
+// (the plateaus sit above any ordinary room), while a hot melt still refreezes
+// as it cools to the room and a cooler — or a room below the plateau — freezes
+// a pool; in a room hotter than the plateaus the points are the plateaus
+// themselves and the highest-first ordering shows as before.
 //
 // Illustrative units, shared with the water grid: 1 mm/px, 10 mm slice depth,
 // 1 mg per mass unit, so a px² of reference-density liquid is one mass unit
@@ -67,9 +73,10 @@ const ValveHeat = (() => {
                 latent: [60, 55, 50],
                 melt: [120, 100, 80],
         };
-        // Explicit diffusion margin, the nominal capacity of an empty passage, the
-        // fixed step the parameter gate is validated against, and the channel
-        // volume below which liquid is not a freezing reservoir.
+        // Explicit diffusion margin, the nominal heat capacity an open passage
+        // keeps whether it is wet or dry, the fixed step the parameter gate is
+        // validated against, and the channel volume below which liquid is not a
+        // freezing reservoir.
         const STABILITY = 0.45;
         const DRY_CAP = 0.6;
         const STEP = 1 / 120;
@@ -214,12 +221,18 @@ const ValveHeat = (() => {
         }
 
         // Capacity: metal where the cell is not open, the liquid it holds (free
-        // and rotor-carried), its grains, and a nominal floor so an empty passage
-        // still has a finite temperature.
+        // and rotor-carried), its grains, and the nominal passage capacity an open
+        // cell keeps whether it is wet or dry. The nominal used to be a floor
+        // that vanished the moment liquid arrived, so a dry cell's booked base
+        // energy was left over a denominator that no longer contained it: every
+        // parcel through a transit cell left priced at the inflated blend and
+        // bled the base away (the pour band slid below the room and froze).
+        // Keeping the nominal alongside the liquid makes the blend exact: supply
+        // at ambient passing through a cell at ambient leaves it at ambient.
         function capacityAt(h, i) {
                 const w = h.w;
                 const p = h.p;
-                let c = p.metalMass * p.metalHeat * (1 - h.open[i]) + p.liquidHeat * (w.vol[i] + w.trapped[i]) + h.CG[i];
+                let c = p.metalMass * p.metalHeat * (1 - h.open[i]) + p.liquidHeat * (w.vol[i] + w.trapped[i]) + h.CG[i] + DRY_CAP * h.open[i];
                 return c < DRY_CAP ? DRY_CAP : c;
         }
 
@@ -341,10 +354,13 @@ const ValveHeat = (() => {
 
         // Derived temperature with both plateau pins: a cell cannot read above the
         // melt point of a grain it still holds (the excess is pending latent
-        // energy), nor below the plateau of a channel it can still freeze (the
-        // deficit is a freeze in progress). Conduction, sources and the room trade
-        // at the pinned temperature, which is what makes a plateau a buffer
-        // instead of a display trick.
+        // energy), nor below the freeze point of a channel it can still freeze
+        // (the deficit is a freeze in progress). The freeze point is the lower
+        // of the channel plateau and the room: the plateaus sit above any
+        // ordinary room, and pinning there would freeze supply the moment it
+        // arrives at ambient. Conduction, sources and the room trade at the
+        // pinned temperature, which is what makes a plateau a buffer instead of
+        // a display trick.
         function publish(h) {
                 const H = h.H;
                 const C = h.C;
@@ -353,6 +369,7 @@ const ValveHeat = (() => {
                 const tc = h.w.trappedCh;
                 const p = h.p;
                 const minMelt = h.minMelt;
+                const room = p.ambient;
                 for (let i = 0; i < h.count; i++) {
                         const o = i * CH;
                         let lat = 0;
@@ -360,9 +377,9 @@ const ValveHeat = (() => {
                         const a0 = ch[o] + tc[o];
                         const a1 = ch[o + 1] + tc[o + 1];
                         const a2 = ch[o + 2] + tc[o + 2];
-                        if (a0 > CH_EPS) { lat += p.latent[0] * a0; if (p.melt[0] > pin) pin = p.melt[0]; }
-                        if (a1 > CH_EPS) { lat += p.latent[1] * a1; if (p.melt[1] > pin) pin = p.melt[1]; }
-                        if (a2 > CH_EPS) { lat += p.latent[2] * a2; if (p.melt[2] > pin) pin = p.melt[2]; }
+                        if (a0 > CH_EPS) { lat += p.latent[0] * a0; const f0 = p.melt[0] < room ? p.melt[0] : room; if (f0 > pin) pin = f0; }
+                        if (a1 > CH_EPS) { lat += p.latent[1] * a1; const f1 = p.melt[1] < room ? p.melt[1] : room; if (f1 > pin) pin = f1; }
+                        if (a2 > CH_EPS) { lat += p.latent[2] * a2; const f2 = p.melt[2] < room ? p.melt[2] : room; if (f2 > pin) pin = f2; }
                         let t = (H[i] - lat) / C[i];
                         if (pin > t) t = pin;
                         if (minMelt[i] < t) t = minMelt[i];
@@ -382,7 +399,10 @@ const ValveHeat = (() => {
         function liveT(h, i) {
                 const p = h.p;
                 const vol = h.w.vol[i] + h.w.trapped[i];
-                let c = p.metalMass * p.metalHeat * (1 - h.open[i]) + p.liquidHeat * vol + h.CG[i];
+                // The same capacity formula as capacityAt, nominal passage term
+                // included: pricing a parcel at a capacity that dropped the
+                // nominal would overcharge the donor and bleed its base.
+                let c = p.metalMass * p.metalHeat * (1 - h.open[i]) + p.liquidHeat * vol + h.CG[i] + DRY_CAP * h.open[i];
                 if (c < DRY_CAP) c = DRY_CAP;
                 return (h.H[i] - latentOf(h, i)) / c;
         }
@@ -633,13 +653,18 @@ const ValveHeat = (() => {
         }
 
         // Freeze per cell, highest plateau first: the mass the deficit below the
-        // plateau supports, capped by the channel's liquid, accumulates into the
-        // cell's inventory and becomes grains when a valid one fits.
+        // freeze point supports, capped by the channel's liquid, accumulates into
+        // the cell's inventory and becomes grains when a valid one fits. The
+        // point is the lower of the channel's plateau and the room, so liquid
+        // sitting at the room temperature — supply spawns exactly there — never
+        // freezes on arrival; a hot melt refreezes as it cools to the room, and
+        // the plateaus themselves govern only in rooms hotter than they are.
         function freezePass(sim, h) {
                 const w = h.w;
                 const p = h.p;
                 const ch = w.ch;
                 const order = h.freezeOrder;
+                const room = p.ambient;
                 let frozen = 0;
                 for (let i = 0; i < h.count; i++) {
                         if (!(w.vol[i] > CH_EPS)) continue;
@@ -647,7 +672,7 @@ const ValveHeat = (() => {
                         for (let r = 0; r < CH; r++) {
                                 const k = order[r];
                                 if (!(ch[o + k] > CH_EPS)) continue;
-                                const plateau = p.melt[k];
+                                const plateau = p.melt[k] < room ? p.melt[k] : room;
                                 const lat = latentOf(h, i);
                                 const t = (h.H[i] - lat) / h.C[i];
                                 if (t >= plateau) continue;
@@ -825,22 +850,20 @@ const ValveHeat = (() => {
         }
 
         // Reset empties the field and its books but keeps the per-valve powers and
-        // every parameter, like the water reset keeps rates and colours. An empty
-        // field reads 0 °C; the room warms it back through the exterior ring.
+        // every parameter, like the water reset keeps rates and colours. The
+        // machine sits in the room, so the emptied field re-opens at the room
+        // temperature: a zero field would read 0 °C and need the outer ring's
+        // ~36-minute warm-up, which made fresh supply look like it arrived cold.
         function reset(h) {
-                h.H.fill(0);
-                h.T.fill(0);
                 h.CG.fill(0);
                 h.minMelt.fill(Infinity);
                 h.cgCount = 0;
                 h.frac.fill(0);
-                h.initial = 0;
-                h.source = 0;
-                h.ambient = 0;
-                h.material = 0;
-                h.melted = 0;
-                h.frozen = 0;
-                h.substeps = 0;
+                // Resample from the water grid's surviving samples before filling:
+                // heat's own cached `open` can be older than them, and the refill
+                // must be booked against the capacity the next step will use.
+                rebuild(h);
+                fill(h, h.p.ambient);
                 h.maskSerial = -1;
         }
 

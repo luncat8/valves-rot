@@ -1237,6 +1237,12 @@ const ValveSimulation = (() => {
 		if (on) setWater(sim, true);
 		if (on && sim.water) WATER.shutVents(sim.water);
 		if (on && !sim.heat) {
+			// The heat field samples the water mask when it is created,
+			// and an unbuilt grid samples as solid metal everywhere —
+			// the opening book would then be priced against a phantom
+			// capacity and jump on the first real sample. Sample the
+			// mask first; over a built grid this is a no-op.
+			WATER.rebuild(sim);
 			sim.heat = HEAT.create(sim);
 			// The hooks are attached once; they no-op while heat is disabled, so
 			// the books freeze instead of drifting with the still-running water.
