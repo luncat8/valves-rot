@@ -23,6 +23,8 @@ const ValveRender = (() => {
 	const WALL_V = "#c6cfd9";
 	const WALL_H = "#98a3af";
 	const SELECT_C = "#efc179";
+	// The multi-selection's non-anchor cells: same family, quieter.
+	const SELECT_SET_C = "rgba(126,214,255,0.8)";
 	const RIM_BAND = 1.1;
 	// Water fill: the sheet is translucent enough to read grains under it, but the
 	// alpha ramps in over a short band so the free surface keeps a soft edge
@@ -445,12 +447,38 @@ const ValveRender = (() => {
 		}
 	}
 
-	function renderSelection(ctx, layout, selected) {
+	// The selection: a strong ring on the anchor and a lighter ring on every
+	// other selected cell, so a multi-selection reads as a set with a head —
+	// the head is what the keyboard and the readout edit, the set is what
+	// the Heat panel's Power slider edits.
+	function renderSelection(ctx, layout, selected, set) {
+		if (set) {
+			for (const k of set) {
+				if (k === selected || k < 0 || k >= layout.valves.length) continue;
+				const v = layout.valves[k];
+				roundRect(ctx, v.cx - S / 2 + 2.9, v.cy - S / 2 + 2.9, S - 5.8, S - 5.8, 5);
+				ctx.strokeStyle = SELECT_SET_C;
+				ctx.lineWidth = 1.3;
+				ctx.stroke();
+			}
+		}
 		if (selected < 0 || selected >= layout.valves.length) return;
 		const v = layout.valves[selected];
 		roundRect(ctx, v.cx - S / 2 + 2.2, v.cy - S / 2 + 2.2, S - 4.4, S - 4.4, 5);
 		ctx.strokeStyle = SELECT_C;
 		ctx.lineWidth = 1.8;
+		ctx.stroke();
+	}
+
+	// The hovered cell: a faint inner ring that marks where a click would
+	// land without committing to anything. Selection is explicit, so the
+	// cursor needs its own marker that a selection never shadows.
+	function renderHover(ctx, layout, cell) {
+		if (cell < 0 || cell >= layout.valves.length) return;
+		const v = layout.valves[cell];
+		roundRect(ctx, v.cx - S / 2 + 3.6, v.cy - S / 2 + 3.6, S - 7.2, S - 7.2, 5);
+		ctx.strokeStyle = "rgba(255,255,255,0.32)";
+		ctx.lineWidth = 1;
 		ctx.stroke();
 	}
 
@@ -810,9 +838,12 @@ const ValveRender = (() => {
 
 	// Source badges: a heater or cooler disc in the case corner of every valve
 	// with a nonzero power, arrow up for heating and down for cooling, with a
-	// ring on the valve the panel is editing.
+	// ring on every selected valve — the panel edits the whole selection, so
+	// every cell it will touch wears the ring. `selected` is the selection
+	// Set from the page; a bare index keeps working for other callers.
 	function renderHeatBadges(ctx, layout, heat, selected) {
 		const power = heat.power;
+		const picked = selected instanceof Set ? k => selected.has(k) : k => k === selected;
 		for (let k = 0; k < layout.valves.length; k++) {
 			const pw = power[k];
 			if (!pw) continue;
@@ -824,7 +855,7 @@ const ValveRender = (() => {
 			ctx.arc(x, y, 5.4, 0, TAU);
 			ctx.fillStyle = hot ? "rgba(255,106,77,0.92)" : "rgba(88,183,255,0.92)";
 			ctx.fill();
-			if (k === selected) {
+			if (picked(k)) {
 				ctx.beginPath();
 				ctx.arc(x, y, 7.2, 0, TAU);
 				ctx.strokeStyle = "rgba(255,255,255,0.9)";
@@ -1268,6 +1299,7 @@ function renderWater(map, field, view, dim) {
 		rebuildRotor,
 		renderScene,
 		renderSelection,
+		renderHover,
 		renderDrag,
 		renderGoals,
 		renderVents,

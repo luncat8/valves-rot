@@ -525,10 +525,17 @@ button[aria-pressed="true"] {
 /* Water colour pickers stay on one row inside the wrapped control bar. */
 .pour-colors,
 .mix-colors,
-.water-views {
+.water-views,
+.heat-select {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+}
+
+/* The heat bulk-selection buttons are compact panel tools next to the slider. */
+.heat-select button {
+	padding: 4px 10px;
+	font-size: 12px;
 }
 
 /* The vent gesture hint sits under the water controls, small like the drawer hints. */

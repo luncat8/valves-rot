@@ -45,6 +45,13 @@
                 hub: false,
                 active: false,
                 suppressClick: false,
+                // A Lab press held still arms the selection long press; the
+                // pre-press selection is remembered because the press itself
+                // selects, and the toggle has to be relative to what was there.
+                holdTimer: 0,
+                holdCell: -1,
+                selectBefore: -1,
+                setBefore: null,
         };
         // Water source vent gesture, tuned like the valve dial: a slide arms after the
         // same travel, locks its axis to the first dominant movement (left/right picks
@@ -53,6 +60,7 @@
         // the long-click delay without moving toggles the vent.
         const VENT_ARM = 6;
         const VENT_LONG_PRESS = 480;
+        const VALVE_LONG_PRESS = 480;
         const VENT_HUE_DEG_PX = 360 / G.S;
         const VENT_RATE_TRAVEL = 60;
         const ventDrag = {
@@ -82,6 +90,34 @@
         let scene = null;
         let paused = false;
         let selected = -1;
+        // Selection is explicit state, never a hover: `selected` is the anchor
+        // the keyboard and the panels edit, and `selectedSet` is every cell the
+        // Heat panel's Power slider applies to (the anchor is always its newest
+        // member). A plain click replaces the set; Shift-click in Lab, a still
+        // ~½ s press, or the panel buttons change it; nothing follows the cursor,
+        // so a selection survives moving the hand away to reach a control.
+        const selectedSet = new Set();
+        let selectionVersion = 0;
+        let hoverCell = -1;
+
+        function setSelection(cell) {
+                selected = cell;
+                selectedSet.clear();
+                if (cell >= 0) selectedSet.add(cell);
+                selectionVersion++;
+        }
+
+        function toggleSelection(cell) {
+                if (cell < 0) return;
+                if (selectedSet.has(cell)) {
+                        selectedSet.delete(cell);
+                        if (selected === cell) selected = selectedSet.size ? selectedSet.values().next().value : -1;
+                } else {
+                        selectedSet.add(cell);
+                        selected = cell;
+                }
+                selectionVersion++;
+        }
         let hoverInlet = -1;
         let fieldMap = null;
         let pressureSpan = Number(C.DEFAULT_SPAN.toPrecision(6));
@@ -98,7 +134,7 @@
         // liquid sheet dims while the temperature view is on so both read.
         let heatViewOn = false;
         let heatMap = null;
-        let heatSelSeen = -2;
+        let heatSelSeen = -1;
         // Reused for the per-channel readout, so the status line allocates no array.
         const waterChannels = new Float64Array(3);
         // Inlet colour boxes: element id and the channel it selects.
@@ -115,6 +151,7 @@
         let openDrawerId = null;
         let shownValve = null;
         let shownIndex = -2;
+        let shownSelSize = -1;
         let shownQuarter = -1;
         let shownGameVersion = -1;
         let shownRosterVersion = -1;
@@ -476,7 +513,7 @@
                 if (!row) return;
                 const seat = game.vent.seats[Number(row.dataset.seat)];
                 if (!seat || seat.bottle < 0) return;
-                selected = seat.bottle;
+                setSelection(seat.bottle);
                 canvas.focus();
                 if (paused) drawFrame(false);
         };
@@ -494,7 +531,7 @@
                                 Game.consumeDirty(game, scene);
                                 syncPressureRadios();
                                 for (let k = 0; k < game.quests.length; k++) {
-                                        if (game.quests[k].id === id && game.quests[k].cellCount > 0) selected = game.quests[k].cells[0];
+                                        if (game.quests[k].id === id && game.quests[k].cellCount > 0) setSelection(game.quests[k].cells[0]);
                                 }
                                 overlayDirty = true;
                                 shownIndex = -2;
@@ -511,7 +548,7 @@
                         const id = Number(locateBtn.dataset.locate);
                         for (let k = 0; k < game.quests.length; k++) {
                                 if (game.quests[k].id === id && game.quests[k].cellCount > 0) {
-                                        selected = game.quests[k].cells[0];
+                                        setSelection(game.quests[k].cells[0]);
                                         canvas.focus();
                                         if (paused) drawFrame(false);
                                         break;
@@ -740,8 +777,10 @@
         // ---- heat -------------------------------------------------------------
         // Heat lives on the water grid: enabling it enables water with every vent
         // shut, and disabling water disables heat while each valve keeps its power.
-        // The Power slider edits the SELECTED valve, like the water panel edits the
-        // current vent; a selection change re-reads it.
+        // The Power slider edits EVERY selected valve — click selects one,
+        // Shift-click or a long press builds a multi-selection, and the Select
+        // all / Unselect buttons set or clear it; a selection change re-reads
+        // the anchor's power and the set's size.
         function syncHeatUI() {
                 const h = sim.heat;
                 const on = !!(h && h.enabled);
@@ -749,12 +788,16 @@
                 // Heat rides the water grid, so it parks with water outside Lab.
                 $("heat-on").disabled = game.mode !== "lab";
                 $("heat-power").disabled = !on || selected < 0;
+                // The bulk-selection buttons are heat-panel tools: they edit the
+                // set the Power slider applies to.
+                $("heat-select-all").disabled = !on || game.mode !== "lab";
+                $("heat-unselect").disabled = !on;
                 $("heat-ambient").disabled = !on;
                 $("heat-view").disabled = !on;
                 if (on) {
                         if (selected >= 0) {
                                 $("heat-power").value = String(h.power[selected]);
-                                $("heat-power-value").value = Math.round(h.power[selected]) + " E/s";
+                                $("heat-power-value").value = Math.round(h.power[selected]) + " E/s" + (selectedSet.size > 1 ? " · " + selectedSet.size + " valves" : "");
                         } else {
                                 // The slider is disabled with no valve selected, so its
                                 // numeric value is meaningless; say so instead of showing
@@ -779,8 +822,28 @@
         $("heat-on").onchange = applyHeat;
         $("heat-power").oninput = () => {
                 if (!sim.heat || selected < 0) return;
-                Heat.setPower(sim.heat, selected, +$("heat-power").value);
-                $("heat-power-value").value = Math.round(+$("heat-power").value) + " E/s";
+                const value = +$("heat-power").value;
+                // One sweep heats or cools the whole selection: every cell in the
+                // set takes the slider's value.
+                for (const k of selectedSet) Heat.setPower(sim.heat, k, value);
+                $("heat-power-value").value = Math.round(value) + " E/s" + (selectedSet.size > 1 ? " · " + selectedSet.size + " valves" : "");
+                if (paused) drawFrame(false);
+        };
+        // Bulk selection from the panel: every valve at once, or none. Select all
+        // keeps the current anchor so the readout keeps its context, and falls
+        // back to the field's centre cell — the keyboard's default — when nothing
+        // is selected.
+        $("heat-select-all").onclick = () => {
+                if (game.mode !== "lab" || !(sim.heat && sim.heat.enabled)) return;
+                const keep = selected >= 0 ? selected : (((G.N >> 1) - 1) * G.N + (G.N >> 1) - 1);
+                selectedSet.clear();
+                for (let k = 0; k < layout.valves.length; k++) selectedSet.add(k);
+                selected = selectedSet.has(keep) ? keep : 0;
+                selectionVersion++;
+                if (paused) drawFrame(false);
+        };
+        $("heat-unselect").onclick = () => {
+                setSelection(-1);
                 if (paused) drawFrame(false);
         };
         $("heat-ambient").oninput = () => {
@@ -1029,23 +1092,30 @@
                 return "cell (" + (v.i + 1) + "," + (v.j + 1) + ") · " + type.name + " · ports " + G.portsText(G.worldPorts(v, quarter)) + " · " + dir + tint;
         }
 
-        // Refreshed from drawFrame only when the selection, valve or its target
-        // detent changed, so the frame loop keeps building no strings.
+        // Refreshed from drawFrame only when the selection, valve, its target
+        // detent or the set size changed, so the frame loop keeps building no
+        // strings.
         function syncSelectedValve() {
                 if (selected < 0) {
-                        if (shownIndex === -1) return;
+                        if (shownIndex === -1 && shownSelSize === 0) return;
                         shownIndex = -1;
+                        shownSelSize = 0;
                         shownValve = null;
-                        $("selected-valve").textContent = "Hover or select a valve on the field.";
+                        $("selected-valve").textContent = "Click a valve to select it — Shift-click or hold to add more.";
                         return;
                 }
                 const v = sim.layout.valves[selected];
                 const quarter = G.quarterOf(sim.target[selected]);
-                if (shownIndex === selected && shownValve === v && shownQuarter === quarter) return;
+                const size = selectedSet.size;
+                if (shownIndex === selected && shownValve === v && shownQuarter === quarter && shownSelSize === size) return;
                 shownIndex = selected;
                 shownValve = v;
                 shownQuarter = quarter;
-                $("selected-valve").textContent = valveText(selected);
+                shownSelSize = size;
+                // The anchor's card, with the set's size appended when the
+                // selection is more than one cell: the Power slider edits every
+                // cell the count names.
+                $("selected-valve").textContent = valveText(selected) + (size > 1 ? " · " + size + " cells selected" : "");
         }
 
         $("use-selected").onclick = () => {
@@ -1160,6 +1230,27 @@
                 if (paused) drawFrame(true);
         }
 
+        // A Lab press held still past the delay toggles its cell into the
+        // selection — the touch answer to Shift-click. The press itself had
+        // selected the cell, so the pre-press selection is restored first and
+        // the toggle is relative to it; the release's click is consumed, so the
+        // hold never turns the valve.
+        function valveLongPress() {
+                drag.holdTimer = 0;
+                if (drag.holdCell < 0 || drag.active) return;
+                const cell = drag.holdCell;
+                drag.holdCell = -1;
+                selected = drag.selectBefore;
+                selectedSet.clear();
+                if (drag.setBefore) for (const k of drag.setBefore) selectedSet.add(k);
+                toggleSelection(cell);
+                drag.suppressClick = true;
+                drag.cell = -1;
+                canvas.style.cursor = cursorFor();
+                if (navigator.vibrate) navigator.vibrate(10);
+                if (paused) drawFrame(false);
+        }
+
         function armVentSlide(event, w) {
                 ventDrag.armed = true;
                 // The axis is fixed by the first dominant movement, like the dial fixes
@@ -1214,8 +1305,22 @@
                         beginVentPress(event);
                         return;
                 }
-                if (at.inlet >= 0 || !canPlayerTurn(at.cell)) return;
-                selected = at.cell;
+                if (at.inlet >= 0) return;
+                // In Lab a Shift press is the selection toggle, not a turn, so it
+                // must not replace the set the release's click will toggle. Game
+                // and Vent keep Shift as the reverse turn and the turn gate as
+                // before.
+                const shifting = event.shiftKey && game.mode === "lab" && at.cell >= 0;
+                if (!shifting && !canPlayerTurn(at.cell)) return;
+                drag.selectBefore = selected;
+                drag.setBefore = new Set(selectedSet);
+                if (!shifting) setSelection(at.cell);
+                // A Lab press held still past the delay toggles its cell into the
+                // selection; any movement cancels it when the drag arms.
+                if (game.mode === "lab" && at.cell >= 0 && !event.shiftKey) {
+                        drag.holdCell = at.cell;
+                        drag.holdTimer = setTimeout(valveLongPress, VALVE_LONG_PRESS);
+                }
                 // A Vent turn buys exactly one detent, so the press-drag dial is off there.
                 if (game.mode === "vent") return;
                 const v = layout.valves[at.cell];
@@ -1254,6 +1359,13 @@
                         const moved = Math.hypot(w.x - drag.downX, w.y - drag.downY);
                         if (!drag.active && moved >= DRAG_ARM) {
                                 drag.active = true;
+                                // A turn gesture cancels the pending selection hold: the
+                                // press has become a drag, not a long press.
+                                if (drag.holdTimer) {
+                                        clearTimeout(drag.holdTimer);
+                                        drag.holdTimer = 0;
+                                        drag.holdCell = -1;
+                                }
                                 canvas.style.cursor = "grabbing";
                                 if (canvas.setPointerCapture && event.pointerId !== undefined) canvas.setPointerCapture(event.pointerId);
                         }
@@ -1283,12 +1395,21 @@
                 pointerState(event);
                 setHover(at.inlet);
                 setHoverVent(at.vent);
-                selected = at.inlet >= 0 || at.vent >= 0 ? -1 : at.cell;
+                // Selection never follows the cursor: the hover ring marks the
+                // cell under the hand without committing to anything, and a
+                // selection made by click, Shift-click or a long press survives
+                // the hand moving away.
+                hoverCell = at.cell;
                 canvas.style.cursor = cursorFor();
                 if (paused) drawFrame(false);
         };
 
         function endDrag(event) {
+                if (drag.holdTimer) {
+                        clearTimeout(drag.holdTimer);
+                        drag.holdTimer = 0;
+                }
+                drag.holdCell = -1;
                 if (drag.cell < 0) return;
                 if (drag.active) {
                         drag.suppressClick = true;
@@ -1319,6 +1440,11 @@
         };
         canvas.onpointerleave = () => {
                 if (drag.active) return;
+                if (drag.holdTimer) {
+                        clearTimeout(drag.holdTimer);
+                        drag.holdTimer = 0;
+                        drag.holdCell = -1;
+                }
                 drag.cell = -1;
                 if (ventDrag.column >= 0 && !ventDrag.armed) {
                         if (ventDrag.timer) clearTimeout(ventDrag.timer);
@@ -1327,7 +1453,7 @@
                 }
                 if (document.activeElement === canvas) return;
                 canvas.style.cursor = "default";
-                selected = -1;
+                hoverCell = -1;
                 setHover(-1);
                 setHoverVent(-1);
                 if (paused) drawFrame(false);
@@ -1336,8 +1462,13 @@
                 drag.cell = -1;
                 drag.active = false;
                 drag.hub = false;
+                if (drag.holdTimer) {
+                        clearTimeout(drag.holdTimer);
+                        drag.holdTimer = 0;
+                        drag.holdCell = -1;
+                }
                 if (ventDrag.column >= 0) endVentPress(null);
-                selected = -1;
+                hoverCell = -1;
                 setHover(-1);
                 setHoverVent(-1);
                 if (paused) drawFrame(false);
@@ -1375,7 +1506,15 @@
                         if (paused) drawFrame(pressed);
                         return;
                 }
-                selected = at.cell;
+                // Lab Shift-click toggles the cell in the multi-selection without
+                // turning it, so a heater bank can be picked without disturbing the
+                // rotors. Game and Vent keep Shift-click as the reverse turn.
+                if (event.shiftKey && game.mode === "lab" && at.cell >= 0) {
+                        toggleSelection(at.cell);
+                        if (paused) drawFrame(false);
+                        return;
+                }
+                setSelection(at.cell);
                 if (selected < 0 || event.detail > 1) return;
                 if (event.ctrlKey) {
                         if (game.mode === "lab") S.fillValve(sim, selected);
@@ -1408,7 +1547,7 @@
                         return;
                 }
                 if (game.mode !== "lab") return;
-                selected = cellFromPointer(w.x, w.y);
+                setSelection(cellFromPointer(w.x, w.y));
                 if (selected < 0 || event.ctrlKey) return;
                 // The first click of the gesture already turned this valve; undo that
                 // turn so the brush (notably direction "not change") is measured from
@@ -1458,26 +1597,29 @@
                 if (event.key === "p" || event.key === "P") {
                         if (game.mode !== "lab") return;
                         event.preventDefault();
-                        if (selected < 0) selected = 44;
+                        if (selected < 0) setSelection(44);
                         placeBrushAt(selected);
                         return;
                 }
                 if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        if (selected < 0) selected = 44;
+                        if (selected < 0) setSelection(44);
                         turnSelected(event.shiftKey ? -1 : 1);
                         return;
                 }
                 if (!event.key.startsWith("Arrow")) return;
                 event.preventDefault();
-                if (selected < 0) selected = 44;
+                // The keyboard is a single-cursor tool: the arrows move the anchor
+                // and collapse the set to it, so navigation can never smear a
+                // multi-selection across the grid.
+                if (selected < 0) setSelection(44);
                 let row = (selected / G.N) | 0;
                 let col = selected % G.N;
                 if (event.key === "ArrowUp" && row > 0) row--;
                 else if (event.key === "ArrowDown" && row < G.N - 1) row++;
                 else if (event.key === "ArrowLeft" && col > 0) col--;
                 else if (event.key === "ArrowRight" && col < G.N - 1) col++;
-                selected = row * G.N + col;
+                setSelection(row * G.N + col);
                 if (paused) drawFrame(false);
         };
 
@@ -1561,8 +1703,11 @@
         }
 
         function drawFrame(forceOverlay) {
-                if (selected !== heatSelSeen) {
-                        heatSelSeen = selected;
+                // The heat panel re-reads the selection whenever it changed — a
+                // version counter, because a multi-selection can change without
+                // the anchor moving (Shift-click off the anchor's cell).
+                if (selectionVersion !== heatSelSeen) {
+                        heatSelSeen = selectionVersion;
                         if (sim.heat && sim.heat.enabled) syncHeatUI();
                 }
                 syncLegend();
@@ -1590,9 +1735,12 @@
                 R.renderWaterVents(ctx, sim.water, hoverVent, ventDrag);
                 R.renderGoals(ctx, layout, game);
                 R.renderVents(ctx, layout, game);
-                R.renderSelection(ctx, layout, selected);
+                // The faint hover ring sits under the selection: it marks where a
+                // click would land without ever committing to it.
+                R.renderHover(ctx, layout, hoverCell >= 0 && !selectedSet.has(hoverCell) ? hoverCell : -1);
+                R.renderSelection(ctx, layout, selected, selectedSet);
                 R.renderDrag(ctx, layout, sim, drag);
-                if (heatOn) R.renderHeatBadges(ctx, layout, sim.heat, selected);
+                if (heatOn) R.renderHeatBadges(ctx, layout, sim.heat, selectedSet);
                 if (heatOn && heatViewOn) R.renderHeatLegend(ctx);
                 if (drawPressure && pressure.kind === "grid") R.renderPressureLegend(ctx, pressureSpanLabel);
                 ctx.restore();
@@ -1620,11 +1768,11 @@
                         let sum = 0;
                         for (let i = 0; i < sim.heat.count; i++) sum += sim.heat.T[i];
                         heat = " · heat " + (sum / sim.heat.count).toFixed(1) + " °C mean"
-				+ " · room " + Math.round(sim.heat.p.ambient) + " °C"
-				+ " · src " + Math.round(sim.heat.source)
-				+ " · net " + Math.round(sim.heat.ambient)
-				+ " · mat " + Math.round(sim.heat.material)
-				+ " · res " + Number(Heat.residual(sim.heat)).toExponential(0);
+                                + " · room " + Math.round(sim.heat.p.ambient) + " °C"
+                                + " · src " + Math.round(sim.heat.source)
+                                + " · net " + Math.round(sim.heat.ambient)
+                                + " · mat " + Math.round(sim.heat.material)
+                                + " · res " + Number(Heat.residual(sim.heat)).toExponential(0);
                 }
                 let gas = "";
                 if (sim.pressure && sim.pressure.kind === "grid") {

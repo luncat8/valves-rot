@@ -8,6 +8,13 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..", "prototype", "shared");
 const calls = { total: 0, stroke: 0, fill: 0, drawImage: 0, putImageData: 0, arc: 0, fillRect: 0, canvases: 0 };
+// fill() calls per fillStyle on the MAIN context, so a scenario can prove how
+// many discs of one exact colour a frame drew (the heat badge colours are
+// unique strings in render.js).
+const fillCounts = new Map();
+function countFill(style) {
+        fillCounts.set(style, (fillCounts.get(style) || 0) + 1);
+}
 const mainTranslates = [];
 const strokeStyles = new Set();
 // Segments drawn per pen colour, so a layer can be shown to have drawn geometry
@@ -19,6 +26,7 @@ const mainTexts = [];
 const gradient = { addColorStop() {} };
 
 function recordingContext(isMain) {
+        let currentFill = null;
         const target = {
                 createLinearGradient: () => gradient,
                 createRadialGradient: () => gradient,
@@ -73,7 +81,10 @@ function recordingContext(isMain) {
                 if (drawOps.indexOf(prop) >= 0) {
                                 return () => {
                                         if (prop === "stroke") calls.stroke++;
-                                        if (prop === "fill") calls.fill++;
+                                        if (prop === "fill") {
+                                                calls.fill++;
+                                                if (isMain) countFill(currentFill);
+                                        }
                                         calls.total++;
                                 };
                         }
@@ -82,11 +93,13 @@ function recordingContext(isMain) {
                         };
                 },
                 set(obj, prop, value) {
-                        // Record pen colours so a scenario can prove which layer was drawn.
+                        // Record pen colours so a scenario can prove which layer was drawn,
+                        // and the current fill colour so fill() can be counted per style.
                         if (prop === "strokeStyle") {
                                 currentPen = value;
                                 if (isMain) strokeStyles.add(value);
                         }
+                        if (prop === "fillStyle") currentFill = value;
                         return true;
                 },
         });
@@ -188,7 +201,7 @@ assert.ok(calls.total > 0, "startup must draw");
 // Static help lives in the Help drawer, and the valve drawer lists every
 // catalogue type with a clipboard copy button for its name.
 const html = pageHtml;
-for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "valve-types", "dir-picker", "brush-summary", "selected-valve"]) {
+for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "valve-types", "dir-picker", "brush-summary", "selected-valve", "heat-select-all", "heat-unselect"]) {
         assert.ok(html.includes('id="' + id + '"'), "page has #" + id);
 }
 assert.ok(html.indexOf("Shortcuts") > html.indexOf('id="help-drawer"'), "shortcuts are inside the Help drawer");
@@ -340,22 +353,31 @@ field.p[0] = 0;
 R.renderField(fieldMap, field);
 assert.notEqual(fieldMap.img.data[2], lowColor, "the texel follows the live pressure");
 
-// Pointer and keyboard valve selection + rotation.
-c.onpointermove({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S });
-const strokesPreSelect = calls.stroke;
+// Pointer and keyboard valve selection + rotation. Selection is explicit and
+// sticky: a click selects (and turns), the hover ring marks the cell under the
+// cursor without committing, and moving the cursor or leaving the canvas never
+// changes the selection.
+const selClient = { clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S };
+c.onclick({ ...selClient, shiftKey: false });
 frames.shift()((now += 16.7));
-assert.ok(calls.stroke > strokesPreSelect, "selected valve must render highlight");
-c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, shiftKey: false });
+const stickyText = element("selected-valve").textContent;
+assert.ok(stickyText.includes("cell ("), "a click selects its valve: " + stickyText);
+const strokesPreSelect = calls.stroke;
+c.onpointermove({ clientX: 2.5 * G.S, clientY: G.POUR + 6.5 * G.S });
+frames.shift()((now += 16.7));
+assert.ok(calls.stroke > strokesPreSelect, "the hovered cell renders its ring");
+assert.equal(element("selected-valve").textContent, stickyText, "moving the cursor does not change the selection");
+c.onpointerleave();
+assert.equal(element("selected-valve").textContent, stickyText, "leaving the canvas keeps the selection");
 c.onkeydown({ key: "ArrowRight", preventDefault() {} });
 c.onkeydown({ key: "Enter", shiftKey: true, preventDefault() {} });
-c.onpointerleave();
 for (const skin of ["glm", "combined", "gpt"]) {
         element("skin").value = skin;
         element("skin").onchange();
         frames.shift()((now += 16.7));
 }
-c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, ctrlKey: true, detail: 1 });
-c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault() {} });
+c.onclick({ ...selClient, ctrlKey: true, detail: 1 });
+c.ondblclick({ ...selClient, preventDefault() {} });
 
 // Valve brush picking through the delegated drawer handlers, clipboard copy
 // as text, and placement by a real click + double-click gesture.
@@ -788,6 +810,73 @@ assert.ok(element("heat-power-value").value.includes("0 E/s"), "with a valve sel
 element("heat-power").value = "120";
 element("heat-power").oninput();
 assert.ok(element("heat-power-value").value.includes("120"), "the power readout follows the slider");
+// Multi-selection: Lab Shift-click toggles cells into the set without turning
+// them, the Power slider edits every selected valve at once, a still ~½ s press
+// toggles like Shift-click (the touch answer) and consumes its release click,
+// and the panel buttons select all or none. The set's size reads in the valve
+// readout and in the power readout.
+const cellB = { clientX: 2.5 * G.S, clientY: G.POUR + 5.5 * G.S };
+const cellC = { clientX: 6.5 * G.S, clientY: G.POUR + 7.5 * G.S };
+c.onclick({ ...cellB, shiftKey: true, detail: 1 });
+frames.shift()((now += 16.7));
+const shiftedText = element("selected-valve").textContent;
+assert.ok(shiftedText.includes("2 cells selected"), "Shift-click adds a second cell: " + shiftedText);
+// The toggle never turns: shift B off and on again, and B's card is identical
+// (a turn would have changed its ports).
+c.onclick({ ...cellB, shiftKey: true, detail: 1 });
+c.onclick({ ...cellB, shiftKey: true, detail: 1 });
+frames.shift()((now += 16.7));
+assert.equal(element("selected-valve").textContent, shiftedText, "Shift-click toggles without turning");
+// One sweep heats or cools the whole set at once. The badge disc colours are
+// unique strings, so counting fills of the cooler colour across one frame
+// proves the power landed on BOTH valves: two coolers drawn per frame after
+// the sweep, none before it (the single heater was hot).
+const COOL_BADGE = "rgba(88,183,255,0.92)";
+const HOT_BADGE = "rgba(255,106,77,0.92)";
+const coolsPre = fillCounts.get(COOL_BADGE) || 0;
+element("heat-power").value = "-60";
+element("heat-power").oninput();
+frames.shift()((now += 16.7));
+assert.equal((fillCounts.get(COOL_BADGE) || 0) - coolsPre, 2, "both selected valves drew their cooler badge");
+assert.ok(element("heat-power-value").value.includes("-60 E/s · 2 valves"), "the power readout counts the set: " + element("heat-power-value").value);
+// A still ~½ s press toggles its cell in like Shift-click; the release's click
+// is consumed without turning or re-selecting. The hold timer is captured by
+// stubbing setTimeout for the press only.
+let holdFire = null;
+const realSetTimeout = global.setTimeout;
+global.setTimeout = fn => { holdFire = fn; return 1; };
+c.onpointerdown({ ...cellC, button: 0, pointerId: 31 });
+assert.ok(holdFire, "the press armed the hold timer");
+holdFire();
+global.setTimeout = realSetTimeout;
+frames.shift()((now += 16.7));
+const heldText = element("selected-valve").textContent;
+assert.ok(heldText.includes("3 cells selected"), "the long press toggled its cell in: " + heldText);
+c.onclick({ ...cellC, shiftKey: false, detail: 1 });
+assert.equal(element("selected-valve").textContent, heldText, "the release click was consumed without turning");
+c.onpointerup({ pointerId: 31 });
+// Select all takes the whole field; Unselect empties it and the slider asks
+// for a valve again.
+element("heat-select-all").onclick();
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("100 cells selected"), "Select all takes every valve: " + element("selected-valve").textContent);
+const hotsPre = fillCounts.get(HOT_BADGE) || 0;
+element("heat-power").value = "15";
+element("heat-power").oninput();
+frames.shift()((now += 16.7));
+assert.equal((fillCounts.get(HOT_BADGE) || 0) - hotsPre, 100, "every valve on the field drew its heater badge");
+assert.ok(element("heat-power-value").value.includes("15 E/s · 100 valves"), "the power readout counts the field: " + element("heat-power-value").value);
+element("heat-unselect").onclick();
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("Click a valve"), "Unselect empties the selection: " + element("selected-valve").textContent);
+assert.ok(!element("selected-valve").textContent.includes("cells selected"), "the size suffix is gone with the set");
+assert.equal(element("heat-power").disabled, true, "the slider is disabled with nothing selected");
+assert.ok(element("heat-power-value").value.includes("select a valve"), "the power readout prompts again");
+// Restore the single selected heater valve at 120 for the assertions below.
+c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, shiftKey: false, detail: 1 });
+frames.shift()((now += 16.7));
+element("heat-power").value = "120";
+element("heat-power").oninput();
 // Ambient one-shot shift: typing a new room temperature rebases the field at
 // once, so the user sees the change instead of waiting minutes for the slow
 // boundary. The readout names the room setting separately from the cumulative
