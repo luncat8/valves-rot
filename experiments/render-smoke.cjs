@@ -19,135 +19,135 @@ const mainTexts = [];
 const gradient = { addColorStop() {} };
 
 function recordingContext(isMain) {
-	const target = {
-		createLinearGradient: () => gradient,
-		createRadialGradient: () => gradient,
-		createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }),
-		getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
-		putImageData: () => {
-			calls.putImageData++;
-			calls.total++;
-		},
-	};
-	const drawOps = ["fill", "stroke", "beginPath", "clearRect", "save", "restore", "rotate", "scale", "setTransform", "clip", "closePath"];
-	return new Proxy(target, {
-		get(obj, prop) {
-			if (prop in obj) return obj[prop];
-			if (prop === "translate") {
-				return (tx, ty) => {
-					if (isMain) mainTranslates.push([tx, ty]);
-					calls.total++;
-				};
-			}
-			if (prop === "arc") {
-				return () => {
-					calls.arc++;
-					calls.total++;
-				};
-			}
-			if (prop === "fillRect") {
-				return () => {
-					calls.fillRect++;
-					calls.total++;
-				};
-			}
-			if (prop === "drawImage") {
-				return (img, x, y, w, h) => {
-					if (isMain) mainDrawImages.push([x, y, w, h]);
-					calls.drawImage++;
-					calls.total++;
-				};
-			}
-			if (prop === "fillText") {
-				return text => {
-					if (isMain) mainTexts.push(text);
-					calls.total++;
-				};
-			}
-			if (prop === "lineTo" || prop === "moveTo") {
-			return () => {
-				if (isMain && prop === "lineTo") penSegments.set(currentPen, (penSegments.get(currentPen) || 0) + 1);
-				calls.total++;
-			};
-		}
-		if (drawOps.indexOf(prop) >= 0) {
-				return () => {
-					if (prop === "stroke") calls.stroke++;
-					if (prop === "fill") calls.fill++;
-					calls.total++;
-				};
-			}
-			return () => {
-				calls.total++;
-			};
-		},
-		set(obj, prop, value) {
-			// Record pen colours so a scenario can prove which layer was drawn.
-			if (prop === "strokeStyle") {
-				currentPen = value;
-				if (isMain) strokeStyles.add(value);
-			}
-			return true;
-		},
-	});
+        const target = {
+                createLinearGradient: () => gradient,
+                createRadialGradient: () => gradient,
+                createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }),
+                getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+                putImageData: () => {
+                        calls.putImageData++;
+                        calls.total++;
+                },
+        };
+        const drawOps = ["fill", "stroke", "beginPath", "clearRect", "save", "restore", "rotate", "scale", "setTransform", "clip", "closePath"];
+        return new Proxy(target, {
+                get(obj, prop) {
+                        if (prop in obj) return obj[prop];
+                        if (prop === "translate") {
+                                return (tx, ty) => {
+                                        if (isMain) mainTranslates.push([tx, ty]);
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "arc") {
+                                return () => {
+                                        calls.arc++;
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "fillRect") {
+                                return () => {
+                                        calls.fillRect++;
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "drawImage") {
+                                return (img, x, y, w, h) => {
+                                        if (isMain) mainDrawImages.push([x, y, w, h]);
+                                        calls.drawImage++;
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "fillText") {
+                                return text => {
+                                        if (isMain) mainTexts.push(text);
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "lineTo" || prop === "moveTo") {
+                        return () => {
+                                if (isMain && prop === "lineTo") penSegments.set(currentPen, (penSegments.get(currentPen) || 0) + 1);
+                                calls.total++;
+                        };
+                }
+                if (drawOps.indexOf(prop) >= 0) {
+                                return () => {
+                                        if (prop === "stroke") calls.stroke++;
+                                        if (prop === "fill") calls.fill++;
+                                        calls.total++;
+                                };
+                        }
+                        return () => {
+                                calls.total++;
+                        };
+                },
+                set(obj, prop, value) {
+                        // Record pen colours so a scenario can prove which layer was drawn.
+                        if (prop === "strokeStyle") {
+                                currentPen = value;
+                                if (isMain) strokeStyles.add(value);
+                        }
+                        return true;
+                },
+        });
 }
 
 const elements = {};
 function element(id) {
-	if (elements[id]) return elements[id];
-	const el = {
-		id,
-		value: id === "seed" ? "7" : id === "lube-stress" ? "0" : id === "speed" || id === "force" || id === "lube" ? "1" : id === "water-column" ? "6" : "",
-		checked: id === "pressure-grid" || id === "pressure-draw",
-		textContent: "",
-		width: 0,
-		height: 0,
-		style: {},
-		attributes: {},
-		setAttribute(name, value) { this.attributes[name] = value; },
-		removeAttribute(name) { delete this.attributes[name]; },
-		getAttribute(name) { return this.attributes[name] ?? null; },
-		addEventListener() {},
-		focus() {},
-		getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: G.SIZE + G.POUR * 2 + G.VENT_STRIP }),
-	};
-	if (id === "c") el.getContext = () => recordingContext(true);
-	elements[id] = el;
-	return el;
+        if (elements[id]) return elements[id];
+        const el = {
+                id,
+                value: id === "seed" ? "7" : id === "lube-stress" ? "0" : id === "speed" || id === "force" || id === "lube" ? "1" : id === "water-column" ? "6" : "",
+                checked: id === "pressure-grid" || id === "pressure-draw",
+                textContent: "",
+                width: 0,
+                height: 0,
+                style: {},
+                attributes: {},
+                setAttribute(name, value) { this.attributes[name] = value; },
+                removeAttribute(name) { delete this.attributes[name]; },
+                getAttribute(name) { return this.attributes[name] ?? null; },
+                addEventListener() {},
+                focus() {},
+                getBoundingClientRect: () => ({ left: 0, top: 0, width: 720, height: G.SIZE + G.POUR * 2 + G.VENT_STRIP }),
+        };
+        if (id === "c") el.getContext = () => recordingContext(true);
+        elements[id] = el;
+        return el;
 }
 
 const frames = [];
 const windowListeners = {};
 global.window = {
-	devicePixelRatio: 2,
-	addEventListener: (ev, fn) => {
-		windowListeners[ev] = fn;
-	},
+        devicePixelRatio: 2,
+        addEventListener: (ev, fn) => {
+                windowListeners[ev] = fn;
+        },
 };
 const copiedTexts = [];
 Object.defineProperty(global, "navigator", {
-	value: { clipboard: { writeText: text => { copiedTexts.push(text); return Promise.resolve(); } } },
-	configurable: true,
+        value: { clipboard: { writeText: text => { copiedTexts.push(text); return Promise.resolve(); } } },
+        configurable: true,
 });
 global.document = {
-	activeElement: null,
-	hidden: false,
-	getElementById: element,
-	// Generated picker buttons exist only as innerHTML in this stub; brush
-	// state is exercised through the delegated handlers below instead.
-	querySelectorAll: () => [],
-	createElement: tag => {
-		if (tag !== "canvas") return {};
-		calls.canvases++;
-		return { width: 0, height: 0, getContext: () => recordingContext(false) };
-	},
-	addEventListener() {},
+        activeElement: null,
+        hidden: false,
+        getElementById: element,
+        // Generated picker buttons exist only as innerHTML in this stub; brush
+        // state is exercised through the delegated handlers below instead.
+        querySelectorAll: () => [],
+        createElement: tag => {
+                if (tag !== "canvas") return {};
+                calls.canvases++;
+                return { width: 0, height: 0, getContext: () => recordingContext(false) };
+        },
+        addEventListener() {},
 };
 global.requestAnimationFrame = fn => frames.push(fn);
 global.Path2D = class {
-	moveTo() {}
-	lineTo() {}
-	arc() {}
+        moveTo() {}
+        lineTo() {}
+        arc() {}
 };
 global.performance.now = () => Date.now();
 
@@ -158,23 +158,23 @@ const pageHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const scriptFiles = [...pageHtml.matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => path.basename(m[1]));
 assert.ok(scriptFiles.length >= 8, "page declares its script list");
 function checkScriptOrder(files, label) {
-	for (let i = 0; i < files.length; i++) {
-		const code = fs.readFileSync(path.join(root, files[i]), "utf8");
-		const deps = /const\s+\w+\s*=\s*typeof\s+(\w+)\s*!==\s*"undefined"\s*\?\s*\1\s*:\s*require\("\.\/([^"]+)"\)/g;
-		for (const m of code.matchAll(deps)) {
-			const at = files.indexOf(m[2]);
-			assert.ok(at >= 0 && at < i, label + ": " + files[i] + " needs " + m[2] + " loaded before it");
-		}
-	}
+        for (let i = 0; i < files.length; i++) {
+                const code = fs.readFileSync(path.join(root, files[i]), "utf8");
+                const deps = /const\s+\w+\s*=\s*typeof\s+(\w+)\s*!==\s*"undefined"\s*\?\s*\1\s*:\s*require\("\.\/([^"]+)"\)/g;
+                for (const m of code.matchAll(deps)) {
+                        const at = files.indexOf(m[2]);
+                        assert.ok(at >= 0 && at < i, label + ": " + files[i] + " needs " + m[2] + " loaded before it");
+                }
+        }
 }
 checkScriptOrder(scriptFiles, "index.html");
 assert.ok(scriptFiles.indexOf("heat.js") < scriptFiles.indexOf("simulation.js"), "heat.js is loaded before simulation.js");
 const airFiles = [...fs.readFileSync(path.join(root, "..", "..", "experiments", "air-scale.html"), "utf8")
-	.matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => path.basename(m[1]));
+        .matchAll(/<script src="([^"]+)"><\/script>/g)].map(m => path.basename(m[1]));
 checkScriptOrder(airFiles, "air-scale.html");
 for (const file of scriptFiles) {
-	const code = fs.readFileSync(path.join(root, file), "utf8");
-	vm.runInThisContext(code, { filename: file });
+        const code = fs.readFileSync(path.join(root, file), "utf8");
+        vm.runInThisContext(code, { filename: file });
 }
 
 const G = vm.runInThisContext("ValveGeometry");
@@ -189,7 +189,7 @@ assert.ok(calls.total > 0, "startup must draw");
 // catalogue type with a clipboard copy button for its name.
 const html = pageHtml;
 for (const id of ["help-drawer", "valve-drawer", "open-help", "open-valves", "valve-types", "dir-picker", "brush-summary", "selected-valve"]) {
-	assert.ok(html.includes('id="' + id + '"'), "page has #" + id);
+        assert.ok(html.includes('id="' + id + '"'), "page has #" + id);
 }
 assert.ok(html.indexOf("Shortcuts") > html.indexOf('id="help-drawer"'), "shortcuts are inside the Help drawer");
 assert.ok(html.indexOf('id="calibration-note"') > html.indexOf('id="help-drawer"'), "calibration note moved into Help");
@@ -231,8 +231,8 @@ R.renderScene(ctx, layout, scene);
 assert.equal(calls.drawImage - before.drawImage, 101, "one background plus one sprite per valve");
 
 for (const air of ["#000000", "#ffffff"]) {
-	const s = R.buildScene(layout, air, 2);
-	assert.equal(s.sprites.length, 100);
+        const s = R.buildScene(layout, air, 2);
+        assert.equal(s.sprites.length, 100);
 }
 const map = R.makeAirMap(4);
 R.renderAirMap(map, layout);
@@ -247,23 +247,23 @@ frames.shift()((now += 16.7));
 assert.deepEqual(mainTranslates[0], [0, G.POUR + G.VENT_STRIP], "root frame transform must shift down by +POUR +VENT_STRIP");
 
 for (let i = 0; i < 5; i++) {
-	const fn = frames.shift();
-	assert.ok(fn, "page must schedule animation frames");
-	fn((now += 16.7));
+        const fn = frames.shift();
+        assert.ok(fn, "page must schedule animation frames");
+        fn((now += 16.7));
 }
 
 // Overlay must draw every frame at (0, -POUR) without strobing, while throttling putImageData.
 element("model").checked = true;
 element("model").onchange();
 for (let i = 0; i < 3; i++) {
-	mainDrawImages.length = 0;
-	frames.shift()((now += 16.7));
-	assert.equal(mainDrawImages.length, 103, "bg + 100 rotors + steady air and gas overlays every frame");
-	// The background sheet covers the vent strip too; the air and gas overlays
-	// still cover only the field and its bands.
-	assert.deepEqual(mainDrawImages[0], [0, -G.POUR - G.VENT_STRIP, G.SIZE, G.SIZE + G.POUR * 2 + G.VENT_STRIP]);
-	assert.deepEqual(mainDrawImages[101], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
-	assert.deepEqual(mainDrawImages[102], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
+        mainDrawImages.length = 0;
+        frames.shift()((now += 16.7));
+        assert.equal(mainDrawImages.length, 103, "bg + 100 rotors + steady air and gas overlays every frame");
+        // The background sheet covers the vent strip too; the air and gas overlays
+        // still cover only the field and its bands.
+        assert.deepEqual(mainDrawImages[0], [0, -G.POUR - G.VENT_STRIP, G.SIZE, G.SIZE + G.POUR * 2 + G.VENT_STRIP]);
+        assert.deepEqual(mainDrawImages[101], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
+        assert.deepEqual(mainDrawImages[102], [0, -G.POUR, G.SIZE, G.SIZE + G.POUR * 2]);
 }
 
 // The calibrated legend is visible and editable while paused. Sealing every
@@ -293,24 +293,24 @@ assert.equal(element("pressure-span").getAttribute("aria-invalid"), null);
 
 const c = element("c");
 function clickMouth(side, column) {
-	// The vent strip sits above the pour band, so the top band starts below it.
-	c.onclick({ clientX: (column + 0.5) * G.S, clientY: side === 0 ? G.VENT_STRIP + 2 : G.SIZE + G.POUR * 2 + G.VENT_STRIP - 2, shiftKey: false, detail: 1 });
+        // The vent strip sits above the pour band, so the top band starts below it.
+        c.onclick({ clientX: (column + 0.5) * G.S, clientY: side === 0 ? G.VENT_STRIP + 2 : G.SIZE + G.POUR * 2 + G.VENT_STRIP - 2, shiftKey: false, detail: 1 });
 }
 for (let side = 0; side < 2; side++) {
-	for (let column = 0; column < G.N; column++) {
-		if (side === 1 && column === G.N - 1) {
-			mainTexts.length = 0;
-			mainDrawImages.length = 0;
-		}
-		clickMouth(side, column);
-	}
+        for (let column = 0; column < G.N; column++) {
+                if (side === 1 && column === G.N - 1) {
+                        mainTexts.length = 0;
+                        mainDrawImages.length = 0;
+                }
+                clickMouth(side, column);
+        }
 }
 assert.ok(mainTexts.includes("eq. Pa"), "the ramp still describes the trapped air");
 assert.equal(element("legend-range").textContent, "· 0–1.25 Pa equivalent · all mouths sealed");
 // The overlay keeps drawing trapped pressure instead of hiding the field.
 for (let i = 0; i < 20; i++) {
-	mainDrawImages.length = 0;
-	frames.shift()((now += 16.7));
+        mainDrawImages.length = 0;
+        frames.shift()((now += 16.7));
 }
 assert.equal(mainDrawImages.length, 103, "a sealed grid still draws the air field");
 
@@ -323,10 +323,10 @@ mainTexts.length = 0;
 clickMouth(0, 0);
 assert.ok(mainTexts.includes("eq. Pa") && mainTexts.includes("1.25"), "reopening a mouth restores the selected scale");
 for (let side = 0; side < 2; side++) {
-	for (let column = 0; column < G.N; column++) {
-		if (side === 0 && column === 0) continue;
-		clickMouth(side, column);
-	}
+        for (let column = 0; column < G.N; column++) {
+                if (side === 0 && column === 0) continue;
+                clickMouth(side, column);
+        }
 }
 element("pause").onclick();
 
@@ -350,9 +350,9 @@ c.onkeydown({ key: "ArrowRight", preventDefault() {} });
 c.onkeydown({ key: "Enter", shiftKey: true, preventDefault() {} });
 c.onpointerleave();
 for (const skin of ["glm", "combined", "gpt"]) {
-	element("skin").value = skin;
-	element("skin").onchange();
-	frames.shift()((now += 16.7));
+        element("skin").value = skin;
+        element("skin").onchange();
+        frames.shift()((now += 16.7));
 }
 c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, ctrlKey: true, detail: 1 });
 c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault() {} });
@@ -360,10 +360,10 @@ c.ondblclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, preventDefault()
 // Valve brush picking through the delegated drawer handlers, clipboard copy
 // as text, and placement by a real click + double-click gesture.
 function pickType(type) {
-	element("valve-types").onclick({ target: { closest: sel => (sel === "[data-type]" ? { dataset: { type } } : null) } });
+        element("valve-types").onclick({ target: { closest: sel => (sel === "[data-type]" ? { dataset: { type } } : null) } });
 }
 function pickDir(dir) {
-	element("dir-picker").onclick({ target: { closest: () => ({ dataset: { dir } }) } });
+        element("dir-picker").onclick({ target: { closest: () => ({ dataset: { dir } }) } });
 }
 pickType("random");
 assert.ok(element("brush-summary").textContent.includes("keep current type"), "re-clicking the selected ? unselects the type");
@@ -375,8 +375,8 @@ element("copy-brush").onclick();
 assert.ok(copiedTexts.some(text => text.includes("solid elbow (ports E,S)")), "brush name copied as text");
 element("valve-types").onclick({ target: { closest: sel => (sel === "[data-copy-type]" ? { dataset: { copyType: "hollow-tee" } } : null) } });
 assert.ok(
-	copiedTexts.includes("hollow tee · direction ↓ S · 90° (ports S,W,N)"),
-	"a type row copy includes the selected direction and its ports, got: " + copiedTexts[copiedTexts.length - 1],
+        copiedTexts.includes("hollow tee · direction ↓ S · 90° (ports S,W,N)"),
+        "a type row copy includes the selected direction and its ports, got: " + copiedTexts[copiedTexts.length - 1],
 );
 
 const cellX = 4.5 * G.S;
@@ -518,11 +518,11 @@ assert.ok(ventRoster.includes('data-remove="0" disabled'), "your own seat cannot
 assert.equal(element("add-seat").disabled, true, "vent mode caps the seat list at two");
 
 function seatCell(seat) {
-	element("vent-list").onclick({ target: { closest: sel => (sel === "[data-seat]" ? { dataset: { seat: String(seat) } } : null) } });
-	frames.shift()((now += 16.7));
-	const cell = element("selected-valve").textContent.match(/cell \(?(\d+),(\d+)\)?/);
-	assert.ok(cell, "the collector cell is named in the valve readout");
-	return { column: Number(cell[1]) - 1, row: Number(cell[2]) - 1 };
+        element("vent-list").onclick({ target: { closest: sel => (sel === "[data-seat]" ? { dataset: { seat: String(seat) } } : null) } });
+        frames.shift()((now += 16.7));
+        const cell = element("selected-valve").textContent.match(/cell \(?(\d+),(\d+)\)?/);
+        assert.ok(cell, "the collector cell is named in the valve readout");
+        return { column: Number(cell[1]) - 1, row: Number(cell[2]) - 1 };
 }
 const mine = seatCell(0);
 const rival = seatCell(1);
@@ -539,11 +539,11 @@ assert.ok(element("game-status").textContent.includes("stay fixed"), "the status
 // and the turn ends by itself.
 let turnedCell = null;
 for (let k = 0; k < 100 && turnedCell === null; k++) {
-	const col = k % G.N;
-	const row = (k / G.N) | 0;
-	c.onclick({ clientX: (col + 0.5) * G.S, clientY: G.POUR + (row + 0.5) * G.S, shiftKey: false, detail: 1 });
-	frames.shift()((now += 16.7));
-	if (element("game-status").textContent.includes("turn ends")) turnedCell = { col, row };
+        const col = k % G.N;
+        const row = (k / G.N) | 0;
+        c.onclick({ clientX: (col + 0.5) * G.S, clientY: G.POUR + (row + 0.5) * G.S, shiftKey: false, detail: 1 });
+        frames.shift()((now += 16.7));
+        if (element("game-status").textContent.includes("turn ends")) turnedCell = { col, row };
 }
 assert.ok(turnedCell, "the seat on turn rotates one unlocked valve");
 const turnedText = element("selected-valve").textContent;
@@ -553,13 +553,13 @@ assert.equal(element("selected-valve").textContent, turnedText, "the same turn c
 assert.ok(/handed|its turn/.test(element("game-status").textContent), "the turn passed to the other seat");
 
 function findMouth(predicate) {
-	for (let side = 0; side < 2; side++) {
-		for (let column = 0; column < G.N; column++) {
-			clickMouth(side, column);
-			if (predicate(element("game-status").textContent, side, column)) return { side, column };
-		}
-	}
-	return null;
+        for (let side = 0; side < 2; side++) {
+                for (let column = 0; column < G.N; column++) {
+                        clickMouth(side, column);
+                        if (predicate(element("game-status").textContent, side, column)) return { side, column };
+                }
+        }
+        return null;
 }
 const botMouth = findMouth(text => text.includes("bot controlled"));
 assert.ok(botMouth, "a bot-controlled seat's own mouth refuses a human click");
@@ -649,11 +649,11 @@ for (let i = 0; i < 3; i++) frames.shift()((now += 33));
 // surface line, draining empties it, and switching water off restores the air
 // mode the player had.
 const water = {
-	on: element("water-on"),
-	vent: element("water-vent"),
-	column: element("water-column"),
-	rate: element("water-rate"),
-	drain: element("water-drain"),
+        on: element("water-on"),
+        vent: element("water-vent"),
+        column: element("water-column"),
+        rate: element("water-rate"),
+        drain: element("water-drain"),
 };
 water.on.checked = true;
 water.on.onchange();
@@ -768,7 +768,8 @@ element("water-view-color").onchange();
 
 // Heat: enabling it turns water on with every vent shut, the power slider
 // edits the selected valve and survives a disable, the view toggle dims the
-// sheet and paints the °C legend, and turning water off parks heat.
+// sheet and paints the °C legend, the ambient input rebases the field at
+// once, and turning water off parks heat.
 assert.equal(element("heat-on").checked, false, "heat starts off");
 assert.equal(element("heat-power").disabled, true, "no valve is selected yet");
 element("water-on").checked = false;
@@ -781,11 +782,33 @@ assert.equal(element("pressure-grid").disabled, true, "heat keeps the pressure r
 c.onclick({ clientX: 4.5 * G.S, clientY: G.POUR + 2.5 * G.S, shiftKey: false, detail: 1 });
 frames.shift()((now += 16.7));
 assert.equal(element("heat-power").disabled, false, "a selected valve takes a power");
+// With a valve selected and its power still 0, the readout shows "0 E/s"
+// instead of the no-selection prompt, so the slider and the readout agree.
+assert.ok(element("heat-power-value").value.includes("0 E/s"), "with a valve selected the readout shows its power: " + element("heat-power-value").value);
 element("heat-power").value = "120";
 element("heat-power").oninput();
 assert.ok(element("heat-power-value").value.includes("120"), "the power readout follows the slider");
-element("heat-ambient").value = "30";
+// Ambient one-shot shift: typing a new room temperature rebases the field at
+// once, so the user sees the change instead of waiting minutes for the slow
+// boundary. The readout names the room setting separately from the cumulative
+// room transfer (room X°C · net Y E), and the mean field temperature follows
+// the new room.
+element("heat-ambient").value = "130";
 element("heat-ambient").oninput();
+assert.equal(element("heat-ambient").value, "130", "the input kept the new room temperature");
+// The ambient shift happens synchronously in setAmbient, so the field's mean
+// temperature is already updated before the next frame.
+for (let i = 0; i < 30; i++) frames.shift()((now += 16.7));
+const heatReadout = element("heat-readout").textContent;
+assert.ok(heatReadout.includes("room 130 °C"), "the readout reports the current room setting: " + heatReadout);
+assert.ok(heatReadout.includes("net "), "the readout separates the room setting from the cumulative transfer: " + heatReadout);
+const heatStatsLine = element("stats").textContent;
+// The mean field temperature should be near 130 °C after the +110 °C shift
+// from the 20 °C opening. The "heat X °C mean" term reports it.
+const meanMatch = heatStatsLine.match(/heat ([\-\d.]+) °C mean/);
+assert.ok(meanMatch, "the stats line reports a mean temperature: " + heatStatsLine);
+const meanT = parseFloat(meanMatch[1]);
+assert.ok(meanT > 100, `the ambient shift raised the mean field temperature to ${meanT.toFixed(1)} °C (wanted near 130): ${heatStatsLine}`);
 element("heat-view").checked = true;
 element("heat-view").onchange();
 mainTexts.length = 0;
@@ -810,16 +833,16 @@ const b = G.createLayout(321);
 assert.equal(JSON.stringify(a.valves.map(G.describe)), JSON.stringify(b.valves.map(G.describe)));
 assert.ok(madeFrames > 0);
 console.log(
-	"OK  shared page smoke: sprites 100, drawCalls " +
-		calls.total +
-		" stroke " +
-		calls.stroke +
-		" fill " +
-		calls.fill +
-		" fillRect " +
-		calls.fillRect +
-		" drawImage " +
-		calls.drawImage +
-		" overlay " +
-		calls.putImageData,
+        "OK  shared page smoke: sprites 100, drawCalls " +
+                calls.total +
+                " stroke " +
+                calls.stroke +
+                " fill " +
+                calls.fill +
+                " fillRect " +
+                calls.fillRect +
+                " drawImage " +
+                calls.drawImage +
+                " overlay " +
+                calls.putImageData,
 );
