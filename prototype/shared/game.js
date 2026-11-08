@@ -499,10 +499,19 @@ const ValveGame = (() => {
 		if (from === "game") clearActiveGoals(game, false);
 		game.mode = mode;
 		if (mode === "vent") {
+			// Vent seats read the grid gas, which is exclusive with water.
+			// Park the user's water (and heat) so the pressure backend can
+			// come up; the field state survives and the Lab panel's checkbox
+			// re-enables it.
+			S.setWater(game.sim, false);
 			trimPlayers(game, VENT_MAX);
 			enterVent(game);
 			game.lastEvent = "Vent mode: hold your bottle's pressure inside the band with your four mouths.";
 		} else if (mode === "game") {
+			// A pressure quest signs the grid gas; same exclusivity. The
+			// bot would otherwise crash on GAS.refresh with sim.pressure
+			// null because setPressure silently refused under water.
+			S.setWater(game.sim, false);
 			dealMouths(game);
 			if (game.quests.length < BOARD_SIZE) seedBoard(game);
 			game.lastEvent = "Sign a goal to spawn your colored bottle on the field.";
@@ -519,7 +528,15 @@ const ValveGame = (() => {
 	// and clears both bands so only the seats' own mouths are left to press.
 	function enterVent(game) {
 		const sim = game.sim;
-		if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
+		// setPressure is exclusive with water; setMode already parked it,
+		// but be defensive: if a caller forgot, refuse the vent build
+		// instead of crashing on a null sim.pressure below.
+		if (sim.pressureMode !== "grid") {
+			if (!S.setPressure(sim, "grid")) {
+				game.lastEvent = "Vent mode needs the grid gas; turn water off first.";
+				return 0;
+			}
+		}
 		const built = buildVent(game);
 		if (built > 0) return built;
 		game.lastEvent = "No complete random-valve route fit this seed.";
@@ -977,7 +994,10 @@ const ValveGame = (() => {
 
 		const sim = game.sim;
 		if (quest.kind === "pressure") {
-			if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
+			// setPressure is exclusive with water; refuse the sign
+			// instead of crashing on GAS.refresh with sim.pressure null
+			// (setPressure returns false without changing mode under water).
+			if (sim.pressureMode !== "grid" && !S.setPressure(sim, "grid")) return false;
 			// Keep the network ready for the new chamber.
 			GAS.refresh(sim, true);
 		}
@@ -1662,7 +1682,7 @@ const ValveGame = (() => {
 	function buildVent(game) {
 		const sim = game.sim;
 		const vent = game.vent;
-		if (sim.pressureMode !== "grid") S.setPressure(sim, "grid");
+		if (sim.pressureMode !== "grid" && !S.setPressure(sim, "grid")) return 0;
 		S.drain(sim);
 		I.clearAll(sim.inlets);
 		vent.used.fill(0);
@@ -2225,7 +2245,7 @@ const ValveGame = (() => {
 
 	function botStepPressureQuest(game, quest, playerId) {
 		const sim = game.sim;
-		if (sim.pressureMode === "off") S.setPressure(sim, "grid");
+		if (sim.pressureMode === "off" && !S.setPressure(sim, "grid")) return false;
 		let slot = 0;
 		for (let s = 0; s < quest.cellCount; s++) {
 			if (!quest.cellOk[s]) {

@@ -283,6 +283,7 @@
 		Game.consumeDirty(game, scene);
 		if (lab && scene) R.rebuildBackground(scene, layout, sim.caseTint);
 		syncWaterUI();
+		syncHeatUI();
 		syncPressureRadios();
 		overlayDirty = true;
 		shownIndex = -2;
@@ -637,6 +638,9 @@
 	function syncWaterUI() {
 		const on = !!(sim.water && sim.water.enabled);
 		$("water-on").checked = on;
+		// Game and vent run the grid gas, which water parks: the checkbox
+		// is a Lab tool while those modes are up.
+		$("water-on").disabled = game.mode !== "lab";
 		$("water-vent").disabled = !on;
 		$("water-column").disabled = !on;
 		$("water-rate").disabled = !on;
@@ -742,6 +746,8 @@
 		const h = sim.heat;
 		const on = !!(h && h.enabled);
 		$("heat-on").checked = on;
+		// Heat rides the water grid, so it parks with water outside Lab.
+		$("heat-on").disabled = game.mode !== "lab";
 		$("heat-power").disabled = !on || selected < 0;
 		$("heat-ambient").disabled = !on;
 		$("heat-view").disabled = !on;

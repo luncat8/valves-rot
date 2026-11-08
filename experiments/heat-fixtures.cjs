@@ -481,7 +481,68 @@ const sums = { h: 0, vol: 0, cap: 0 };
 	console.log(`ok  lifecycle: books frozen while off, resumed on, reset keeps powers`);
 }
 
-// 14. Step cost against the heat-disabled baseline on the same wet scene.
+// 14. Regression: a grain crossing out of a dry multi-grain cell moves only
+//     its own sensible share. The crossing must be priced with the grain's
+//     capacity still on the donor's books: zeroing the per-cell grain capacity
+//     before the crossings floored a dry donor at DRY_CAP, the flow guard
+//     clamped the parcel to the whole cell, and one grain carried the entire
+//     cell away — on the water-vent scenario the field then ran to 1e59 E.
+{
+	const { sim, h } = poolSim(twoChambers);
+	// Five blue grains poured as one column above the lower chamber settle
+	// into a standing pile whose bottom cell holds two. Blue melts at 80 °C,
+	// so a uniform 60 °C field pins nothing and freezes nothing: the step
+	// under test is pure transport. The fill comes after the settle because a
+	// grain imports at ambient, not at the fill temperature.
+	const v = sim.layout.valves[5 * N + 4];
+	let placed = 0;
+	for (let k = 0; k < 5; k++) {
+		if (S.addGrain(sim, v.cx, v.cy - 4 - k * 5, 2.3, 3) >= 0) placed++;
+	}
+	assert.equal(placed, 5, "five grains were placed");
+	for (let k = 0; k < 600; k++) S.step(sim, S.STEP);
+	H.fill(h, 60);
+	books(h, "settled pile");
+	// The donor holds at least two grains, so the crossing grain is not the
+	// cell's only content.
+	const counts = new Map();
+	for (let k = 0; k < sim.count; k++) counts.set(sim.gcell[k], (counts.get(sim.gcell[k]) || 0) + 1);
+	let donor = -1;
+	let shared = 0;
+	for (const [cell, n] of counts) if (n > shared) { donor = cell; shared = n; }
+	assert.ok(shared >= 2, `the pile settled at least two grains into one cell (${shared})`);
+	// Move one grain of that cell into the upper chamber's top edge. That
+	// cell is partially open, so its capacity is real metal and the fill's
+	// 60 °C stays 60 °C when the grain arrives; the chamber's centre cell is
+	// floored at DRY_CAP and would read above 60 the moment real capacity
+	// replaced the floor. Everything sits at 60 °C and a crossing at the
+	// donor's temperature keeps every cell at 60 °C, so conduction moves
+	// nothing: the transfer is exactly the grain's sensible share.
+	let mover = -1;
+	for (let k = 0; k < sim.count; k++) if (sim.gcell[k] === donor) { mover = k; break; }
+	const upper = sim.layout.valves[4 * N + 4];
+	const cap = h.p.grainHeat * sim.mass[mover];
+	const want = cap * 60;
+	const hDonor = h.H[donor];
+	const dst = Math.floor((upper.cy - 19 + G.POUR) / sim.water.cell) * sim.water.nx + Math.floor(upper.cx / sim.water.cell);
+	const hDst = h.H[dst];
+	sim.x[mover] = upper.cx;
+	sim.y[mover] = upper.cy - 19;
+	sim.vx[mover] = 0;
+	sim.vy[mover] = 0;
+	S.step(sim, S.STEP);
+	assert.equal(sim.gcell[mover], dst, "the mover booked into the target cell");
+	assert.ok(Math.abs(h.H[donor] - (hDonor - want)) <= 1e-9 * want,
+		`the donor gave the grain's share (${(hDonor - h.H[donor]).toFixed(3)} vs ${want.toFixed(3)})`);
+	assert.ok(Math.abs(h.H[dst] - (hDst + want)) <= 1e-9 * want,
+		`the receiver took exactly that (${(h.H[dst] - hDst).toFixed(3)} vs ${want.toFixed(3)})`);
+	assert.ok(Math.abs(h.T[donor] - 60) <= 1e-6, `the donor stays at 60 °C (${h.T[donor].toFixed(3)})`);
+	assert.ok(Math.abs(h.T[dst] - 60) <= 1e-6, `the receiver stays at 60 °C (${h.T[dst].toFixed(3)})`);
+	books(h, "dry crossing");
+	console.log(`ok  dry multi-grain crossing: ${want.toFixed(1)} E moved, both cells keep 60.0 °C`);
+}
+
+// 15. Step cost against the heat-disabled baseline on the same wet scene.
 {
 	const sim = S.create(G.createLayout(7), { turning: true });
 	S.setPressure(sim, "off");

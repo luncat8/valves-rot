@@ -435,20 +435,25 @@ const ValveHeat = (() => {
 	// enters the books at ambient, a crossing moves its sensible energy once
 	// at the cell's last published temperature, and the per-cell grain
 	// capacity and lowest melt point are rebuilt for capacity and pins.
+	//
+	// Two passes: a crossing is priced at the donor's live temperature, which
+	// has to include the grain's own capacity in the donor's `c`. Resetting
+	// `cg` before the crossings would floor a dry donor at DRY_CAP, and the
+	// flow guard would then clamp the parcel to the whole cell: one grain
+	// carried the entire cell's enthalpy across, the receiver pinned at its
+	// melt plateau and the donor collapsed, the seed of the water-vent
+	// runaway. The crossings run first against last step's `cg`; the rebuild
+	// then rewrites `cg` and `minMelt` for the new positions.
 	function grainsScan(sim, h) {
 		const cg = h.CG;
 		const list = h.cgList;
 		const minMelt = h.minMelt;
-		for (let k = 0; k < h.cgCount; k++) {
-			cg[list[k]] = 0;
-			minMelt[list[k]] = Infinity;
-		}
 		const p = h.p;
 		const cell = h.cell;
 		const nx = h.nx;
 		const ny = h.ny;
 		const H = h.H;
-		let used = 0;
+		// Pass 1: imports and crossings against last step's grain map.
 		for (let k = 0; k < sim.count; k++) {
 			let gx = (sim.x[k] / cell) | 0;
 			let gy = ((sim.y[k] + G.POUR) / cell) | 0;
@@ -469,6 +474,21 @@ const ValveHeat = (() => {
 				H[i] += dE;
 				sim.gcell[k] = i;
 			}
+		}
+		// Pass 2: rewrite the per-cell grain capacity and lowest melt
+		// point for the cells grains actually sit in this step.
+		for (let k = 0; k < h.cgCount; k++) {
+			cg[list[k]] = 0;
+			minMelt[list[k]] = Infinity;
+		}
+		let used = 0;
+		for (let k = 0; k < sim.count; k++) {
+			let gx = (sim.x[k] / cell) | 0;
+			let gy = ((sim.y[k] + G.POUR) / cell) | 0;
+			if (gx < 0) gx = 0; else if (gx >= nx) gx = nx - 1;
+			if (gy < 0) gy = 0; else if (gy >= ny) gy = ny - 1;
+			const i = gy * nx + gx;
+			const cap = p.grainHeat * sim.mass[k];
 			cg[i] += cap;
 			const mm = h.matMelt[sim.color[k]];
 			if (mm < minMelt[i]) minMelt[i] = mm;

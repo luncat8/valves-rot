@@ -443,6 +443,37 @@ function testPressureReach() {
 	assert.equal(q.owner, -1);
 }
 
+// 8. Mode switch under water: game and vent run the grid gas, which water
+//    parks, so entering them parks the field instead of leaving a null
+//    pressure backend for signQuest to crash on. Regression: setMode used to
+//    leave water enabled, setPressure silently refused, and GAS.refresh
+//    dereferenced sim.pressure null.
+function testWaterPark() {
+	const sim = S.create(G.createLayout(7), { turning: false });
+	S.setPressure(sim, "grid");
+	S.setWater(sim, true);
+	S.seed(sim);
+	assert.equal(sim.water.enabled, true, "lab runs with water on");
+	const game = Game.create(sim, { mode: "lab", botControl: false });
+	assert.equal(Game.setMode(game, "game"), true);
+	assert.equal(sim.water.enabled, false, "game mode parks the water field");
+	const q = game.quests[0];
+	q.kind = "pressure";
+	q.op = ">";
+	q.threshold = 0.3;
+	q.bottles = 1;
+	assert.equal(Game.signQuest(game, q.id, 0), true, "a pressure quest signs over the grid gas");
+	assert.equal(sim.pressureMode, "grid", "the gas backend is up");
+	assert.ok(sim.pressure && sim.pressure.kind === "grid", "and built");
+	Game.setMode(game, "vent");
+	assert.equal(sim.water.enabled, false, "vent mode keeps the field parked");
+	assert.ok(sim.pressure && sim.pressure.kind === "grid", "vent mode keeps the grid gas");
+	Game.setMode(game, "lab");
+	assert.equal(sim.water.enabled, false, "lab leaves the parked field to the panel");
+	S.setWater(sim, true);
+	assert.equal(sim.water.enabled, true, "the panel re-enables the same field");
+}
+
 // 7. Bot competitors: inactive when botControl is off, autonomous completion when on.
 function testBots() {
 	const layoutOff = G.createLayout(15);
@@ -483,6 +514,7 @@ testHueMatching();
 testQuestLifecycle();
 testPressureQuest();
 testPressureReach();
+testWaterPark();
 const bots = testBots();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
