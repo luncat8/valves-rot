@@ -988,18 +988,22 @@
                 $("brush-detail").textContent = brushText() + (nothing ? " — pick a type or a direction, this changes nothing." : "");
         }
 
-        function typeIcon(type) {
-                let passage = "";
-                if (type.id === "solid-elbow") {
-                        passage = '<path d="M 29 16 A 13 13 0 0 1 16 3"/>';
-                } else {
-                        for (const p of type.ports) {
-                                passage += '<line x1="16" y1="16" x2="' + (16 + G.DX[p] * 13) + '" y2="' + (16 + G.DY[p] * 13) + '"/>';
-                        }
-                }
-                const chamber = type.kind === "hollow" ? '<circle class="chamber" cx="16" cy="16" r="6"/>' : "";
-                return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + passage + chamber + "</svg>";
-        }
+	function typeIcon(type) {
+		let passage = "";
+		if (type.id === "solid-elbow") {
+			passage = '<path d="M 29 16 A 13 13 0 0 1 16 3"/>';
+		} else if (type.id === "solid-bends") {
+			passage = '<path d="M 29 16 Q 19.5 12.5 16 3"/><path d="M 3 16 Q 12.5 19.5 16 29"/>';
+		} else if (type.id === "solid-overpass") {
+			passage = '<line x1="16" y1="3" x2="16" y2="10.8"/><line x1="16" y1="21.2" x2="16" y2="29"/><line x1="3" y1="16" x2="29" y2="16"/>';
+		} else {
+			for (const p of type.ports) {
+				passage += '<line x1="16" y1="16" x2="' + (16 + G.DX[p] * 13) + '" y2="' + (16 + G.DY[p] * 13) + '"/>';
+			}
+		}
+		const chamber = type.kind === "hollow" ? '<circle class="chamber" cx="16" cy="16" r="6"/>' : "";
+		return '<svg class="type-icon" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle class="rotor" cx="16" cy="16" r="13"/>' + passage + chamber + "</svg>";
+	}
 
         function typeRow(value, badge, name, note, copyId) {
                 let row = '<div class="type-row"><button type="button" class="type-pick" data-type="' + value + '" aria-pressed="false">' + badge + "<span>" + name + "<small>" + note + "</small></span></button>";

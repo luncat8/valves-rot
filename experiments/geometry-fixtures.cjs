@@ -76,24 +76,28 @@ function fixtureLayouts() {
 function fixtureElbows(layout) {
 	let checked = 0;
 	for (const v of layout.valves) {
-		const arc = v.prims.find((pr) => pr.t === G.T_ARC);
-		if (!arc) continue;
+		const arcs = v.prims.filter((pr) => pr.t === G.T_ARC);
+		if (!arcs.length) continue;
 		const legs = v.prims.filter((pr) => pr.t === G.T_TUBE);
-		for (const leg of legs) {
-			for (const end of [-1, 1]) {
-				const x = leg.cx + leg.ux * leg.hx * end;
-				const y = leg.cy + leg.uy * leg.hx * end;
-				const rr = Math.hypot(x - arc.cx, y - arc.cy);
-				if (Math.abs(rr - arc.r) > 1e-6) continue;
-				// radial direction of the join must be perpendicular to the leg
-				assert.ok(Math.abs((x - arc.cx) * leg.ux + (y - arc.cy) * leg.uy) < 1e-9);
-				checked++;
+		for (const arc of arcs) {
+			for (const leg of legs) {
+				for (const end of [-1, 1]) {
+					const x = leg.cx + leg.ux * leg.hx * end;
+					const y = leg.cy + leg.uy * leg.hx * end;
+					const rr = Math.hypot(x - arc.cx, y - arc.cy);
+					if (Math.abs(rr - arc.r) > 1e-6) continue;
+					// radial direction of the join must be perpendicular to the leg
+					assert.ok(Math.abs((x - arc.cx) * leg.ux + (y - arc.cy) * leg.uy) < 1e-9);
+					checked++;
+				}
 			}
+			const midX = arc.cx + Math.cos(arc.mid) * arc.r;
+			const midY = arc.cy + Math.sin(arc.mid) * arc.r;
+			const wx = v.cx + midX * v.cos - midY * v.sin;
+			const wy = v.cy + midX * v.sin + midY * v.cos;
+			assert.ok(G.isAir(layout, wx, wy, 0.5), "arc midpoint must be air");
+			checked++;
 		}
-		const midX = arc.cx + Math.cos(arc.mid) * arc.r;
-		const midY = arc.cy + Math.sin(arc.mid) * arc.r;
-		assert.ok(G.isAir(layout, v.cx + midX, v.cy + midY, 0.5), "arc midpoint must be air");
-		checked++;
 	}
 	assert.ok(checked > 0);
 	stats.prims += checked;
@@ -136,18 +140,21 @@ function fixtureSeams(layout) {
 				// bottom, so the thread of air starts just inside that cap.
 				const axes = new Set(v.ports.map((p) => p % 2));
 				const centerAir =
-					v.kind === "hollow" ||
-					axes.size === 2 ||
-					v.ports.some((p) => v.ports.indexOf((p + 2) % 4) >= 0);
-				for (let r = centerAir ? 0 : 1; r <= RV; r += 0.25) {
+					v.shape !== "bends" &&
+					(v.kind === "hollow" ||
+						axes.size === 2 ||
+						v.ports.some((p) => v.ports.indexOf((p + 2) % 4) >= 0));
+				const startR = v.shape === "bends" ? G.BENDS : centerAir ? 0 : 1;
+				for (let r = startR; r <= RV; r += 0.25) {
 					assert.ok(
 						G.isAir(layout, v.cx + ux * r, v.cy + uy * r, 0.25),
 						`rotor thread port seam s=${s} r=${r.toFixed(2)}`,
 					);
 				}
+				const sampleR = v.shape === "bends" ? (G.BENDS + RV) / 2 : RV / 2;
 				for (let k = -2; k <= 2; k++) {
 					const lat = (k * v.seam[s]) / 3;
-					assert.ok(G.isAir(layout, v.cx + ux * (RV / 2) - uy * lat, v.cy + uy * (RV / 2) + ux * lat, 0.25));
+					assert.ok(G.isAir(layout, v.cx + ux * sampleR - uy * lat, v.cy + uy * sampleR + ux * lat, 0.25));
 				}
 				stats.rimRings++;
 				// the throat is tight: beside the aperture the rotor rim is metal,
@@ -437,6 +444,7 @@ function fixtureCenters(layout) {
 		const through = v.ports.some((p) => v.ports.indexOf((p + 2) % 4) >= 0);
 		let expect = 0;
 		if (v.kind === "hollow") expect = v.chamberR;
+		else if (v.shape === "bends") expect = 0;
 		else if (v.ports.length >= 3 || through) expect = HALF;
 		else if (v.ports.length === 2) expect = elbowClearance;
 		assert.ok(Math.abs(G.valveClearance(v, v.cx, v.cy) - expect) < 1e-9, "rotor centre clearance");
@@ -625,9 +633,9 @@ function fixtureSeamClosure(layout) {
 // type by its direction reproduces the ports it faces the world with, and
 // pre-rotated port sets still name the same shape.
 function fixtureTypes() {
-	assert.equal(G.TYPES.length, 12);
-	assert.equal(new Set(G.TYPES.map(type => type.id)).size, 12, "type ids are unique");
-	assert.equal(new Set(G.TYPES.map(type => type.name)).size, 12, "type names are unique");
+	assert.equal(G.TYPES.length, 14);
+	assert.equal(new Set(G.TYPES.map(type => type.id)).size, 14, "type ids are unique");
+	assert.equal(new Set(G.TYPES.map(type => type.name)).size, 14, "type names are unique");
 	for (const type of G.TYPES) assert.equal(G.typeById(type.id), type);
 	assert.equal(G.typeById("no-such-type"), null);
 	let checked = 0;
@@ -648,7 +656,58 @@ function fixtureTypes() {
 		}
 	}
 	assert.equal(G.portsText([0, 3]), "E,N");
+	assert.equal(G.portsText([0, 3, 1, 2]), "E–N, S–W");
+	assert.equal(G.portsText([1, 0, 2, 3]), "S–E, W–N");
+	assert.equal(G.portsText([0, 2, 1, 3]), "E–W over S–N");
+	assert.equal(G.portsText([1, 3, 2, 0]), "S–N over W–E");
 	assert.equal(G.portsText([]), "none");
+
+	// Dual 2+2 non-mixing valve types: solid-bends `(><)` and solid-overpass `|`/`-`.
+	const bendsType = G.typeById("solid-bends");
+	const overpassType = G.typeById("solid-overpass");
+	assert.ok(bendsType && overpassType);
+	assert.equal(bendsType.turns, 2);
+	assert.equal(overpassType.turns, 2);
+	assert.ok(G.typeConnectsMask(bendsType, 0, (1 << 0) | (1 << 3)));
+	assert.ok(G.typeConnectsMask(bendsType, 0, (1 << 1) | (1 << 2)));
+	assert.ok(!G.typeConnectsMask(bendsType, 0, (1 << 0) | (1 << 2)));
+	assert.ok(!G.typeConnectsMask(bendsType, 0, (1 << 1) | (1 << 3)));
+	assert.ok(!G.typeConnectsMask(bendsType, 0, 7));
+	assert.ok(G.typeConnectsMask(bendsType, 1, (1 << 0) | (1 << 1)));
+	assert.ok(G.typeConnectsMask(bendsType, 1, (1 << 2) | (1 << 3)));
+	assert.ok(!G.typeConnectsMask(bendsType, 1, (1 << 0) | (1 << 3)));
+
+	assert.ok(G.typeConnectsMask(overpassType, 0, (1 << 0) | (1 << 2)));
+	assert.ok(G.typeConnectsMask(overpassType, 0, (1 << 1) | (1 << 3)));
+	assert.ok(!G.typeConnectsMask(overpassType, 0, (1 << 0) | (1 << 3)));
+	assert.ok(!G.typeConnectsMask(overpassType, 0, (1 << 0) | (1 << 1)));
+	assert.ok(!G.typeConnectsMask(overpassType, 0, 15));
+
+	const lay = G.createLayout(7);
+	const bv = G.makeValve(1, 1, "solid", bendsType.ports, 0, 0);
+	lay.valves[1 * G.N + 1] = bv;
+	assert.equal(G.airClearance(lay, bv.cx, bv.cy), 0, "bends centre must be solid metal");
+	assert.ok(G.portsConnected(bv, 0, 3, 0) && G.portsConnected(bv, 1, 2, 0));
+	assert.ok(!G.portsConnected(bv, 0, 1, 0) && !G.portsConnected(bv, 0, 2, 0));
+
+	const ov = G.makeValve(2, 2, "solid", overpassType.ports, 0, 0);
+	lay.valves[2 * G.N + 2] = ov;
+	assert.ok(ov.layers && ov.layers.length === 2, "overpass carries two independent passage layers");
+	const sw = { x: 0, y: 0, hit: false };
+	// Layer 1 (E-W bridge) passes across (cx, cy) horizontally, but hits walls toward N/S.
+	assert.equal(G.rotorBranchAt(ov, ov.cx - 20, ov.cy, 0), 1);
+	assert.equal(G.rotorBranchAt(ov, ov.cx, ov.cy, 1), 1);
+	G.sweep(lay, ov.cx - 20, ov.cy, ov.cx + 20, ov.cy, 2.5, sw, 1);
+	assert.ok(!sw.hit && Math.abs(sw.x - (ov.cx + 20)) < 1e-6, "overpass bridge sweeps straight E-W");
+	G.sweep(lay, ov.cx, ov.cy, ov.cx, ov.cy + 15, 2.5, sw, 1);
+	assert.ok(sw.hit && sw.y < ov.cy + HALF, "overpass bridge side wall blocks S leak");
+	// Layer 2 (S-N underpass) passes across (cx, cy) vertically, but hits walls toward E/W.
+	assert.equal(G.rotorBranchAt(ov, ov.cx, ov.cy - 20, 0), 2);
+	assert.equal(G.rotorBranchAt(ov, ov.cx, ov.cy, 2), 2);
+	G.sweep(lay, ov.cx, ov.cy - 20, ov.cx, ov.cy + 20, 2.5, sw, 2);
+	assert.ok(!sw.hit && Math.abs(sw.y - (ov.cy + 20)) < 1e-6, "overpass tunnel sweeps straight N-S");
+	G.sweep(lay, ov.cx, ov.cy, ov.cx + 15, ov.cy, 2.5, sw, 2);
+	assert.ok(sw.hit && sw.x < ov.cx + HALF, "overpass tunnel side wall blocks E leak");
 	return checked;
 }
 

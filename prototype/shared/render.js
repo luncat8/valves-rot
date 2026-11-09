@@ -300,8 +300,35 @@ const ValveRender = (() => {
 		return sheet;
 	}
 
+	function strokePassage(ctx, path, chamber, air, skin) {
+		ctx.strokeStyle = skin === "gpt" ? GPT_EDGE : EDGE_C;
+		ctx.lineWidth = HALF * 2 + (skin === "gpt" ? 4.3 : WALL * 2 + EDGE * 2);
+		ctx.stroke(path);
+		if (skin !== "gpt") {
+			if (chamber > 0) {
+				ctx.beginPath();
+				ctx.arc(0, 0, chamber + WALL, 0, TAU);
+				ctx.fillStyle = WALL_V;
+				ctx.fill();
+			}
+			ctx.strokeStyle = WALL_V;
+			ctx.lineWidth = HALF * 2 + WALL * 2;
+			ctx.stroke(path);
+		}
+		if (chamber > 0) {
+			ctx.beginPath();
+			ctx.arc(0, 0, chamber, 0, TAU);
+			ctx.fillStyle = air;
+			ctx.fill();
+		}
+		ctx.strokeStyle = air;
+		ctx.lineWidth = HALF * 2;
+		ctx.stroke(path);
+	}
+
 	// Rotor sprite: silhouette and body, then the clipped passages stroked from
-	// the exact collision primitives.
+	// the exact collision primitives. Overpass rotors paint the lower tunnel
+	// first, cast a portal shadow, and lay the upper bridge cleanly across it.
 	function paintRotorInto(sheet, v, colors, air, dpr, skin) {
 		const ctx = sheet.ctx;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -350,29 +377,28 @@ const ValveRender = (() => {
 			ctx.fillStyle = skin === "gpt" ? GPT_EDGE : EDGE_C;
 			ctx.fill();
 		}
-		ctx.strokeStyle = skin === "gpt" ? GPT_EDGE : EDGE_C;
-		ctx.lineWidth = HALF * 2 + (skin === "gpt" ? 4.3 : WALL * 2 + EDGE * 2);
-		ctx.stroke(v.path);
-		if (skin !== "gpt") {
-			if (chamber > 0) {
-				ctx.beginPath();
-				ctx.arc(0, 0, chamber + WALL, 0, TAU);
-				ctx.fillStyle = WALL_V;
-				ctx.fill();
-			}
-			ctx.strokeStyle = WALL_V;
-			ctx.lineWidth = HALF * 2 + WALL * 2;
-			ctx.stroke(v.path);
+		if (v.layerPaths) {
+			// Underpass first (Layer 1), then portal shadow, then bridge (Layer 0).
+			strokePassage(ctx, v.layerPaths[1], 0, air, skin);
+			const bridgeHalf = HALF + (skin === "gpt" ? 2.15 : WALL + EDGE);
+			const reach = bridgeHalf + 6.5;
+			const p0 = v.layers[0][0];
+			const bAng = Math.atan2(p0.uy, p0.ux);
+			ctx.save();
+			ctx.rotate(bAng);
+			const sh = ctx.createLinearGradient(0, -reach, 0, reach);
+			sh.addColorStop(0, "rgba(8,12,18,0)");
+			sh.addColorStop(Math.max(0, (reach - bridgeHalf - 5.5) / (2 * reach)), "rgba(8,12,18,0.34)");
+			sh.addColorStop(0.5, "rgba(8,12,18,0.48)");
+			sh.addColorStop(Math.min(1, (reach + bridgeHalf + 5.5) / (2 * reach)), "rgba(8,12,18,0.34)");
+			sh.addColorStop(1, "rgba(8,12,18,0)");
+			ctx.fillStyle = sh;
+			ctx.fillRect(-RV - 2, -reach, RV * 2 + 4, reach * 2);
+			ctx.restore();
+			strokePassage(ctx, v.layerPaths[0], 0, air, skin);
+		} else {
+			strokePassage(ctx, v.path, chamber, air, skin);
 		}
-		if (chamber > 0) {
-			ctx.beginPath();
-			ctx.arc(0, 0, chamber, 0, TAU);
-			ctx.fillStyle = air;
-			ctx.fill();
-		}
-		ctx.strokeStyle = air;
-		ctx.lineWidth = HALF * 2;
-		ctx.stroke(v.path);
 		ctx.restore();
 		ctx.restore();
 		return sheet.c;
@@ -681,20 +707,19 @@ const ValveRender = (() => {
 		map.ctx.putImageData(map.img, 0, 0);
 	}
 
-	// Batched by palette entry so 1,000 grains still issue a handful of draw calls
-	// and zero allocations. Bodies use the physical radius plus a hair, so the
-	// varied grain sizes read clearly and may kiss a wall edge.
-	function renderGrains(ctx, sim, scene) {
+	function drawGrainBatch(ctx, sim, scene, underOnly, skipUnder) {
 		const n = sim.count;
-		if (!n) return;
 		const palette = scene.palette;
 		const st = scene.grain;
 		const x = sim.x;
 		const y = sim.y;
 		const r = sim.r;
 		const col = sim.color;
+		const layer = sim.layer;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
+			const u = layer && layer[k] === 2;
+			if (underOnly ? !u : (skipUnder && u)) continue;
 			const radius = r[k] + 0.2 + st.grow;
 			ctx.moveTo(x[k] + st.ox + radius, y[k] + st.oy);
 			ctx.arc(x[k] + st.ox, y[k] + st.oy, radius, 0, TAU);
@@ -705,6 +730,8 @@ const ValveRender = (() => {
 			let any = false;
 			ctx.beginPath();
 			for (let k = 0; k < n; k++) {
+				const u = layer && layer[k] === 2;
+				if (underOnly ? !u : (skipUnder && u)) continue;
 				if (col[k] !== c) continue;
 				const xk = x[k];
 				const yk = y[k];
@@ -720,6 +747,8 @@ const ValveRender = (() => {
 		ctx.fillStyle = st.hlFill;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
+			const u = layer && layer[k] === 2;
+			if (underOnly ? !u : (skipUnder && u)) continue;
 			const rk = r[k] + 0.2;
 			let hr = rk * st.hl;
 			if (hr < st.hlMin) hr = st.hlMin;
@@ -733,6 +762,8 @@ const ValveRender = (() => {
 		ctx.lineWidth = st.rimW;
 		ctx.beginPath();
 		for (let k = 0; k < n; k++) {
+			const u = layer && layer[k] === 2;
+			if (underOnly ? !u : (skipUnder && u)) continue;
 			const xk = x[k];
 			const yk = y[k];
 			const rk = r[k] + 0.2;
@@ -740,6 +771,50 @@ const ValveRender = (() => {
 			ctx.arc(xk, yk, rk, 0, TAU);
 		}
 		ctx.stroke();
+	}
+
+	// Batched by palette entry so 1,000 grains still issue a handful of draw calls
+	// and zero allocations. Underpass grains (`sim.layer[k] === 2`) clip behind the
+	// upper bridge deck of their rotor so they visibly pass beneath it.
+	function renderGrains(ctx, sim, scene) {
+		const n = sim.count;
+		if (!n) return;
+		const layer = sim.layer;
+		let hasUnder = false;
+		if (layer) {
+			for (let k = 0; k < n; k++) {
+				if (layer[k] === 2) { hasUnder = true; break; }
+			}
+		}
+		if (!hasUnder) {
+			drawGrainBatch(ctx, sim, scene, false, false);
+			return;
+		}
+		const bridgeHalf = HALF + (scene.skin === "gpt" ? 2.15 : WALL + EDGE);
+		const valves = sim.layout.valves;
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(-16, -G.POUR - 16, SIZE + 32, SIZE + G.POUR * 2 + 32);
+		for (let vi = 0; vi < valves.length; vi++) {
+			const v = valves[vi];
+			if (!v.layers) continue;
+			const p0 = v.layers[0][0];
+			const ang = v.angle + Math.atan2(p0.uy, p0.ux);
+			const ca = Math.cos(ang);
+			const sa = Math.sin(ang);
+			const L = RV + 1;
+			const W = bridgeHalf;
+			// Counter-clockwise quad in evenodd clip punches a hole for the bridge deck.
+			ctx.moveTo(v.cx - L * ca - W * sa, v.cy - L * sa + W * ca);
+			ctx.lineTo(v.cx - L * ca + W * sa, v.cy - L * sa - W * ca);
+			ctx.lineTo(v.cx + L * ca + W * sa, v.cy + L * sa - W * ca);
+			ctx.lineTo(v.cx + L * ca - W * sa, v.cy + L * sa + W * ca);
+			ctx.closePath();
+		}
+		ctx.clip("evenodd");
+		drawGrainBatch(ctx, sim, scene, true, false);
+		ctx.restore();
+		drawGrainBatch(ctx, sim, scene, false, true);
 	}
 
 	// Kinetic pressure preview: local air population appears as a cyan tint.

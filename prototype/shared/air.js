@@ -38,6 +38,7 @@ const ValveAir = (() => {
 			random: G.rng((sim.layout.seed | 0) ^ 0x2f1d5),
 			x: new Float64Array(capacity), y: new Float64Array(capacity),
 			vx: new Float64Array(capacity), vy: new Float64Array(capacity),
+			layer: new Uint8Array(capacity),
 			head: new Int32Array(W * H), next: new Int32Array(sim.capacity),
 			sweep: { x: 0, y: 0, hit: false },
 			nearest: { x: 0, y: 0, dist: 0, found: false },
@@ -46,9 +47,12 @@ const ValveAir = (() => {
 		for (let trial = 0; trial < capacity * 100 && p.count < capacity; trial++) {
 			const x = random() * G.SIZE;
 			const y = random() * (G.SIZE + 2 * G.POUR) - G.POUR;
-			if (G.airClearance(sim.layout, x, y) < RADIUS) continue;
+			const v = sim.layout.valves[G.cellAt(x, y)];
+			const layer = v.layers ? G.rotorBranchAt(v, x, y, 0) : 0;
+			if (G.airClearance(sim.layout, x, y, layer) < RADIUS) continue;
 			let blocked = false;
 			for (let k = 0; k < sim.count; k++) {
+				if (layer && sim.layer[k] && layer !== sim.layer[k]) continue;
 				if (Math.hypot(x - sim.x[k], y - sim.y[k]) < sim.r[k] + RADIUS) { blocked = true; break; }
 			}
 			if (blocked) continue;
@@ -56,10 +60,18 @@ const ValveAir = (() => {
 			const angle = random() * G.TAU;
 			p.x[k] = x;
 			p.y[k] = y;
+			p.layer[k] = layer;
 			p.vx[k] = Math.cos(angle) * SPEED;
 			p.vy[k] = Math.sin(angle) * SPEED;
 		}
 		return p;
+	}
+
+	function syncAirLayer(sim, p, k) {
+		const x = p.x[k];
+		const y = p.y[k];
+		const v = sim.layout.valves[G.cellAt(x, y)];
+		p.layer[k] = v.layers ? G.rotorBranchAt(v, x, y, p.layer[k]) : 0;
 	}
 
 	function cap(p, k) {
@@ -84,9 +96,10 @@ const ValveAir = (() => {
 	function wall(sim, p, k, dx, dy, measure) {
 		const x = p.x[k];
 		const y = p.y[k];
+		const lk = p.layer[k];
 		const e = 0.3;
-		let nx = G.airClearance(sim.layout, x + e, y) - G.airClearance(sim.layout, x - e, y);
-		let ny = G.airClearance(sim.layout, x, y + e) - G.airClearance(sim.layout, x, y - e);
+		let nx = G.airClearance(sim.layout, x + e, y, lk) - G.airClearance(sim.layout, x - e, y, lk);
+		let ny = G.airClearance(sim.layout, x, y + e, lk) - G.airClearance(sim.layout, x, y - e, lk);
 		let len = Math.hypot(nx, ny);
 		if (len < 1e-8) { nx = -dx; ny = -dy; len = Math.hypot(nx, ny) || 1; }
 		nx /= len;
@@ -102,12 +115,14 @@ const ValveAir = (() => {
 	}
 
 	function contact(sim, p, k, x, y) {
+		const lk = p.layer[k];
 		const b = cell(x, y);
 		const bx = b % W;
 		const by = Math.floor(b / W);
 		for (let oy = Math.max(0, by - 1); oy <= Math.min(H - 1, by + 1); oy++) {
 			for (let ox = Math.max(0, bx - 1); ox <= Math.min(W - 1, bx + 1); ox++) {
 				for (let j = p.head[oy * W + ox]; j !== -1; j = p.next[j]) {
+					if (lk && sim.layer[j] && lk !== sim.layer[j]) continue;
 					const dx = x - sim.x[j];
 					const dy = y - sim.y[j];
 					const reach = sim.r[j] + RADIUS;
@@ -157,6 +172,7 @@ const ValveAir = (() => {
 			const inward = (side === I.BOTTOM ? -1 : 1) * SPEED * 0.7;
 			p.x[k] = x;
 			p.y[k] = y;
+			p.layer[k] = 0;
 			p.vx[k] = Math.cos(angle) * SPEED * 0.5;
 			p.vy[k] = Math.sin(angle) * SPEED * 0.5 + inward;
 			p.cycles++;
@@ -196,13 +212,15 @@ const ValveAir = (() => {
 			p.head[b] = j;
 		}
 		for (let k = 0; k < p.count; k++) {
-			if (G.airClearance(sim.layout, p.x[k], p.y[k]) < RADIUS - 1e-6) {
-				G.nearestAir(sim.layout, p.x[k], p.y[k], RADIUS, p.nearest);
+			syncAirLayer(sim, p, k);
+			if (G.airClearance(sim.layout, p.x[k], p.y[k], p.layer[k]) < RADIUS - 1e-6) {
+				G.nearestAir(sim.layout, p.x[k], p.y[k], RADIUS, p.nearest, p.layer[k]);
 				if (!p.nearest.found) continue;
 				const dx = p.nearest.x - p.x[k];
 				const dy = p.nearest.y - p.y[k];
 				p.x[k] = p.nearest.x;
 				p.y[k] = p.nearest.y;
+				syncAirLayer(sim, p, k);
 				wall(sim, p, k, -dx, -dy, false);
 				p.recoveries++;
 			}
@@ -213,11 +231,12 @@ const ValveAir = (() => {
 			for (let n = 0; n < steps; n++) {
 				const dx = p.vx[k] * dt;
 				const dy = p.vy[k] * dt;
-				G.sweep(sim.layout, p.x[k], p.y[k], p.x[k] + dx, p.y[k] + dy, RADIUS, p.sweep);
+				G.sweep(sim.layout, p.x[k], p.y[k], p.x[k] + dx, p.y[k] + dy, RADIUS, p.sweep, p.layer[k]);
 				const hit = p.sweep.hit;
 				if (contact(sim, p, k, p.sweep.x, p.sweep.y)) continue;
 				p.x[k] = p.sweep.x;
 				p.y[k] = p.sweep.y;
+				syncAirLayer(sim, p, k);
 				if (hit) wall(sim, p, k, dx, dy, true);
 			}
 		}

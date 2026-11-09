@@ -126,18 +126,18 @@ const ValveGame = (() => {
 		return m;
 	}
 
-	function canSatisfyMask(baseMask, needMask) {
+	function canSatisfyValve(v, needMask) {
 		for (let q = 0; q < 4; q++) {
-			if ((rotMask(baseMask, q) & needMask) === needMask) return true;
+			if (G.valveConnectsMask(v, q, needMask)) return true;
 		}
 		return false;
 	}
 
-	function bestQuarterForMask(baseMask, curQuarter, needMask) {
-		if ((rotMask(baseMask, curQuarter) & needMask) === needMask) return curQuarter;
+	function bestQuarterForValve(v, curQuarter, needMask) {
+		if (G.valveConnectsMask(v, curQuarter, needMask)) return curQuarter;
 		for (const step of [1, -1, 2]) {
 			const q = (curQuarter + step + 4) & 3;
-			if ((rotMask(baseMask, q) & needMask) === needMask) return q;
+			if (G.valveConnectsMask(v, q, needMask)) return q;
 		}
 		return -1;
 	}
@@ -747,17 +747,16 @@ const ValveGame = (() => {
 	// curved chute, whereas a tee/cross with South closed traps single grains on its floor).
 	function canDeflectSideways(v) {
 		const id = G.typeOf(v).id;
-		return id === "solid-elbow" || id === "hollow-elbow";
+		return id === "solid-elbow" || id === "hollow-elbow" || id === "solid-bends";
 	}
 
 	// Gravity-plausible reachability from row-0 pour spouts to `entry` (which must
 	// exit South into the bottle's North port): allows vertical drops through
-	// straight/tee/cross bores and single-cell lateral jogs via elbow chutes.
+	// straight/tee/cross/overpass bores and single-cell lateral jogs via elbow/bends chutes.
 	function findGravityTopSpout(sim, entry, pureVerticalOnly) {
 		if (entry < 0 || sim.goalOwner[entry] >= 0) return -1;
 		const valves = sim.layout.valves;
-		for (let k = 0; k < SLOTS; k++) baseMasks[k] = valveMask(valves[k]);
-		if (!canSatisfyMask(baseMasks[entry], 1 << 1)) return -1;
+		if (!canSatisfyValve(valves[entry], 1 << 1)) return -1;
 		bfsDist.fill(-1);
 		bfsOutDir.fill(-1);
 		let head = 0;
@@ -771,7 +770,7 @@ const ValveGame = (() => {
 			const outDir = bfsOutDir[u];
 			const ui = u % N;
 			const uj = (u / N) | 0;
-			if (uj === 0 && canSatisfyMask(baseMasks[u], (1 << 3) | (1 << outDir))) {
+			if (uj === 0 && canSatisfyValve(valves[u], (1 << 3) | (1 << outDir))) {
 				if (outDir !== 1 && !canDeflectSideways(valves[u])) {
 					// Top cell cannot deflect sideways without an elbow ramp.
 				} else {
@@ -786,7 +785,7 @@ const ValveGame = (() => {
 				// Avoid chaining two horizontal steps in a row, and require an elbow chute
 				// on the cell that turns a vertical drop (N) into a lateral exit (E/W).
 				if (outDir !== 1 && (inSide !== 3 || !canDeflectSideways(valves[u]))) continue;
-				if (!canSatisfyMask(baseMasks[u], (1 << inSide) | (1 << outDir))) continue;
+				if (!canSatisfyValve(valves[u], (1 << inSide) | (1 << outDir))) continue;
 				const pi = ui + G.DX[inSide];
 				const pj = uj + G.DY[inSide];
 				if (pi < 0 || pi >= N || pj < 0 || pj >= N) continue;
@@ -794,7 +793,7 @@ const ValveGame = (() => {
 				if (bfsDist[pk] >= 0 || sim.goalOwner[pk] >= 0 || valves[pk].ports.length < 2) continue;
 				const pOut = (inSide + 2) & 3;
 				if (pOut !== 1 && !canDeflectSideways(valves[pk])) continue;
-				if (!canSatisfyMask(baseMasks[pk], 1 << pOut)) continue;
+				if (!canSatisfyValve(valves[pk], 1 << pOut)) continue;
 				bfsDist[pk] = bfsDist[u] + 1;
 				bfsOutDir[pk] = pOut;
 				bfsQueue[tail++] = pk;
@@ -891,7 +890,7 @@ const ValveGame = (() => {
 			for (let side = 0; side < 4; side++) {
 				if (cell !== goal && side === incoming) continue;
 				const need = (1 << incoming) | (1 << side);
-				const q = cell === goal ? 0 : bestQuarterForMask(valveMask(v), G.quarterOf(sim.target[cell]), need);
+				const q = cell === goal ? 0 : bestQuarterForValve(v, G.quarterOf(sim.target[cell]), need);
 				if (q < 0 || (cell !== goal && sim.goalOwner[cell] >= 0)) continue;
 				const x = cell % N + G.DX[side];
 				const y = ((cell / N) | 0) + G.DY[side];
@@ -1350,6 +1349,7 @@ const ValveGame = (() => {
 		ventMouths(game, seat, false, true);
 		const drain = measureChamber(sim, seat.bottle);
 		ventMouths(game, seat, true, true);
+		seat.idle = measureChamber(sim, seat.bottle);
 		seat.spanLo = Math.min(charge, drain);
 		seat.spanHi = Math.max(charge, drain);
 		return seat.spanHi - seat.spanLo;
@@ -1359,7 +1359,7 @@ const ValveGame = (() => {
 		const rnd = game.random;
 		const span = measure ? measureVentSpan(game, seat) : seat.spanHi - seat.spanLo;
 		let half = VENT_HALF_MIN + rnd() * (VENT_HALF_MAX - VENT_HALF_MIN);
-		if (half * 2 > span) half = Math.max(0.005, span * 0.4);
+		if (half > span * 0.22) half = Math.max(0.005, span * 0.22);
 		const margin = Math.min(VENT_EDGE_MARGIN, Math.max(0, (span - half * 2) / 2));
 		const centerLo = seat.spanLo + margin + half;
 		const centerHi = seat.spanHi - margin - half;
@@ -1368,6 +1368,14 @@ const ValveGame = (() => {
 			const from = (seat.lo + seat.hi) / 2;
 			const stepped = from + (rnd() * 2 - 1) * VENT_BAND_STEP;
 			center = stepped < centerLo ? centerLo : stepped > centerHi ? centerHi : stepped;
+		} else if (seat.idle !== undefined) {
+			const keep = Math.max(half + 0.05, span * 0.45);
+			if (Math.abs(center - seat.idle) < keep) {
+				const hiDist = centerHi - seat.idle;
+				const loDist = seat.idle - centerLo;
+				if (hiDist >= loDist && hiDist > 0) center = Math.min(centerHi, seat.idle + keep);
+				else if (loDist > 0) center = Math.max(centerLo, seat.idle - keep);
+			}
 		}
 		center = clamp01(center);
 		seat.half = half;
@@ -1384,17 +1392,18 @@ const ValveGame = (() => {
 
 	function quarterForPair(type, first, second) {
 		const need = (1 << first) | (1 << second);
-		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & need) === need) return q;
+		for (let q = 0; q < 4; q++) if (G.typeConnectsMask(type, q, need)) return q;
 		return -1;
 	}
 
 	function quarterForPairAt(game, index, first, second) {
-		const type = G.typeOf(game.sim.layout.valves[index]);
+		const v = game.sim.layout.valves[index];
+		const type = G.typeOf(v);
 		if (!type) return -1;
 		if (game.vent.used[index]) {
-			const q = G.orientationOf(game.sim.layout.valves[index]);
+			const q = G.orientationOf(v);
 			const mask = (1 << first) | (1 << second);
-			return (rotMask(type.mask, q) & mask) === mask ? q : -1;
+			return G.typeConnectsMask(type, q, mask) ? q : -1;
 		}
 		return quarterForPair(type, first, second);
 	}
@@ -1403,7 +1412,7 @@ const ValveGame = (() => {
 		const type = G.typeOf(game.sim.layout.valves[index]);
 		if (!type) return -1;
 		const need = (1 << a) | (1 << b) | (1 << c);
-		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & need) === need) return q;
+		for (let q = 0; q < 4; q++) if (G.typeConnectsMask(type, q, need)) return q;
 		return -1;
 	}
 
@@ -1445,6 +1454,11 @@ const ValveGame = (() => {
 				if (!nextType) continue;
 				const nextState = next * 4 + ((out + 2) & 3);
 				if (routePrev[nextState] !== -2) continue;
+				let seenInPath = false;
+				for (let anc = state; anc >= 0; anc = routePrev[anc]) {
+					if ((anc >> 2) === next) { seenInPath = true; break; }
+				}
+				if (seenInPath) continue;
 				routePrev[nextState] = state;
 				routeQueue[tail++] = nextState;
 			}
@@ -1496,7 +1510,7 @@ const ValveGame = (() => {
 	}
 
 	function quarterForMask(type, mask) {
-		for (let q = 0; q < 4; q++) if ((rotMask(type.mask, q) & mask) === mask) return q;
+		for (let q = 0; q < 4; q++) if (G.typeConnectsMask(type, q, mask)) return q;
 		return -1;
 	}
 
@@ -1671,10 +1685,10 @@ const ValveGame = (() => {
 			I.setLinked(game.sim.inlets, seat.outMouths[k], seat.outLinked[k]);
 		}
 		S.setInletOwnership(game.sim);
-		if (measureVentSpan(game, seat) <= 0.02) return false;
+		if (measureVentSpan(game, seat) <= 0.10) return false;
 		for (let s = 0; s < slot; s++) {
 			const other = game.vent.seats[s];
-			if (other.bottle >= 0 && measureVentSpan(game, other) <= 0.02) return false;
+			if (other.bottle >= 0 && measureVentSpan(game, other) <= 0.10) return false;
 		}
 		return true;
 	}
@@ -1722,6 +1736,7 @@ const ValveGame = (() => {
 		}
 		resetVentTurn(game);
 		GAS.refresh(sim, true);
+		GAS.steady(sim.pressure, sim.pressure.p);
 		return built;
 	}
 
@@ -1838,23 +1853,28 @@ const ValveGame = (() => {
 	// A rotated valve only touches its own seat's air pocket, so a bot aims at a
 	// valve in the pocket its collector sits in and leaves the rest alone.
 	// The gas network indexes its nodes by valve, so one sweep labels them all.
+	// Dual-passage valves (bends and overpass) can touch up to two gas pockets.
 	const pocketOf = new Int32Array(SLOTS);
+	const pocketAlt = new Int32Array(SLOTS);
 
 	function valvePockets(gas) {
 		const net = gas.net;
 		pocketOf.fill(-1);
+		pocketAlt.fill(-1);
 		for (let n = 0; n < net.count; n++) {
 			const k = net.list[n];
 			const owner = net.owner[k];
-			if (owner < 0 || owner >= SLOTS || pocketOf[owner] >= 0) continue;
-			pocketOf[owner] = net.comp[k];
+			if (owner < 0 || owner >= SLOTS) continue;
+			const c = net.comp[k];
+			if (pocketOf[owner] < 0) pocketOf[owner] = c;
+			else if (pocketOf[owner] !== c && pocketAlt[owner] < 0) pocketAlt[owner] = c;
 		}
 	}
 
 	function ventTurnFits(game, index, pocket) {
 		const sim = game.sim;
 		if (sim.autoLocked[index] || sim.goalOwner[index] >= 0) return false;
-		return pocketOf[index] === pocket;
+		return pocketOf[index] === pocket || pocketAlt[index] === pocket;
 	}
 
 	function ventTurnPick(game, seat) {
@@ -2088,7 +2108,7 @@ const ValveGame = (() => {
 			const feeder = goalIdx - N;
 			if (sim.goalOwner[feeder] < 0) {
 				const fMask = rotMask(valveMask(valves[feeder]), G.quarterOf(sim.target[feeder]));
-				if (fMask & (1 << 1)) return S.turn(sim, feeder, 1);
+				if ((fMask & (1 << 1)) && fMask !== 15) return S.turn(sim, feeder, 1);
 			}
 			return false;
 		}
@@ -2104,7 +2124,6 @@ const ValveGame = (() => {
 		const entry = goalIdx - N;
 		if (entry < 0 || sim.goalOwner[entry] >= 0) return false;
 
-		for (let k = 0; k < SLOTS; k++) baseMasks[k] = valveMask(valves[k]);
 		tallyCellGrains(sim, quest.colorMask);
 
 		// Backward BFS from `entry` (flowing S into the bottle's N mouth) to find
@@ -2130,7 +2149,7 @@ const ValveGame = (() => {
 			const uj = (u / N) | 0;
 
 			// Can `u` act as a source itself (top spout with port N, or cell draining South)?
-			if (uj === 0 && sim.spoutMask[ui] && canSatisfyMask(baseMasks[u], (1 << 3) | (1 << outDir))) {
+			if (uj === 0 && sim.spoutMask[ui] && canSatisfyValve(valves[u], (1 << 3) | (1 << outDir))) {
 				if (outDir === 1 || canDeflectSideways(valves[u])) {
 					const cost = d - 2.5;
 					if (cost < bestCost) {
@@ -2139,7 +2158,7 @@ const ValveGame = (() => {
 					}
 				}
 			}
-			if (outDir === 1 && cellGrains[u] > 0 && canSatisfyMask(baseMasks[u], 1 << 1)) {
+			if (outDir === 1 && cellGrains[u] > 0 && canSatisfyValve(valves[u], 1 << 1)) {
 				const cost = d - Math.min(cellGrains[u], 5) * 0.8;
 				if (cost < bestCost) {
 					bestCost = cost;
@@ -2152,7 +2171,7 @@ const ValveGame = (() => {
 			for (const inSide of [3, 0, 2]) {
 				if (inSide === outDir) continue;
 				if (outDir !== 1 && (inSide !== 3 || !canDeflectSideways(valves[u]))) continue;
-				if (!canSatisfyMask(baseMasks[u], (1 << inSide) | (1 << outDir))) continue;
+				if (!canSatisfyValve(valves[u], (1 << inSide) | (1 << outDir))) continue;
 				const pi = ui + G.DX[inSide];
 				const pj = uj + G.DY[inSide];
 				if (pi < 0 || pi >= N || pj < 0 || pj >= N) continue;
@@ -2165,7 +2184,7 @@ const ValveGame = (() => {
 				// A 1-port single valve cannot pass grains from upstream; it is only valid
 				// as a terminal source when it already holds matching grains and drains South.
 				if (pPorts === 1 && !(pOut === 1 && cellGrains[pk] > 0)) continue;
-				if (!canSatisfyMask(baseMasks[pk], 1 << pOut)) continue;
+				if (!canSatisfyValve(valves[pk], 1 << pOut)) continue;
 				const autoPenalty = S.canAutoRotate(sim, pk) ? 3 : 0;
 				bfsDist[pk] = d + (inSide === 3 ? 1 : 2) + autoPenalty;
 				bfsNext[pk] = u;
@@ -2205,7 +2224,7 @@ const ValveGame = (() => {
 			else if (cur < N && sim.spoutMask[cur] && cellGrains[cur] === 0) inSide = 3;
 			const need = inSide >= 0 ? (1 << inSide) | (1 << outDir) : 1 << outDir;
 			const curQ = G.quarterOf(sim.target[cur]);
-			const wantQ = bestQuarterForMask(baseMasks[cur], curQ, need);
+			const wantQ = bestQuarterForValve(valves[cur], curQ, need);
 			if (wantQ >= 0 && wantQ !== curQ) {
 				let delta = (wantQ - curQ + 4) & 3;
 				if (delta === 3) delta = -1;
@@ -2267,7 +2286,7 @@ const ValveGame = (() => {
 			if (parent < 0) break;
 			const need = (1 << (parent & 3)) | (1 << (((state & 3) + 2) & 3));
 			const v = sim.layout.valves[parent >> 2];
-			q = bestQuarterForMask(valveMask(v), G.quarterOf(sim.target[parent >> 2]), need);
+			q = bestQuarterForValve(v, G.quarterOf(sim.target[parent >> 2]), need);
 			state = parent;
 		}
 		return false;

@@ -409,4 +409,83 @@ function assertUnchanged(w, snap, tag) {
 	console.log(`ok  20 s closed box: ${held.toFixed(0)} px² held, R ${totals[0].toFixed(0)} / G ${totals[1].toFixed(0)} / B ${totals[2].toFixed(0)}, overflow ${w.overflowed.toFixed(0)}`);
 }
 
+// 12. Dual 2+2 non-mixing valves (`solid-bends` and `solid-overpass`): pure Red
+// and pure Blue streams cross the same valve cell without mixing, and rotating
+// `solid-overpass` through 90° (`switched` branch-flip evacuation) conserves every drop.
+{
+	// (a) solid-bends at (4,1) with ports [1,0,2,3] (S-E and W-N):
+	//     Vent 4 (Red) -> (4,0) -> (4,1) W-N -> (3,1) S-E -> cup (3,2).
+	//     Vent 5 (Blue) -> (5,0) -> (5,1) W-N -> (4,1) S-E -> cup (4,2).
+	{
+		const { sim, w } = makeSim({
+			"4,0": ["solid", [1, 3]],
+			"5,0": ["solid", [1, 3]],
+			"4,1": ["solid", [1, 0, 2, 3]],
+			"3,1": ["solid", [0, 1]],
+			"5,1": ["solid", [2, 3]],
+			"3,2": ["hollow", [3], RV * 0.8],
+			"4,2": ["hollow", [3], RV * 0.8],
+		});
+		W.setVent(w, 4, true); W.setSupply(w, 250, 4); W.setPour(w, [1, 0, 0], 4);
+		W.setVent(w, 5, true); W.setSupply(w, 250, 5); W.setPour(w, [0, 0, 1], 5);
+		for (let k = 0; k < 360; k++) S.step(sim, S.STEP);
+		books(w, "dual-bends water");
+		let cup3R = 0, cup3B = 0, cup4R = 0, cup4B = 0;
+		for (let c = 0; c < w.count; c++) {
+			const x = (c % w.nx + 0.5) * W.CELL;
+			const y = (((c / w.nx) | 0) + 0.5) * W.CELL - G.POUR;
+			if (y < 2 * G.S || y >= 3 * G.S) continue;
+			const col = (x / G.S) | 0;
+			if (col === 3) { cup3R += w.ch[c * 3]; cup3B += w.ch[c * 3 + 2]; }
+			if (col === 4) { cup4R += w.ch[c * 3]; cup4B += w.ch[c * 3 + 2]; }
+		}
+		assert.ok(cup3R > 150 && cup4B > 150, `both streams reached their cups through solid-bends (R=${cup3R.toFixed(1)}, B=${cup4B.toFixed(1)})`);
+		assert.equal(cup3B, 0, "zero Blue leaked into Red cup across solid-bends");
+		assert.equal(cup4R, 0, "zero Red leaked into Blue cup across solid-bends");
+	}
+
+	// (b) solid-overpass at (4,1) in both orientations ([0,2,1,3] and [1,3,2,0]),
+	//     followed by continuous rotation through a full 90° quarter turn.
+	for (const ports of [[0, 2, 1, 3], [1, 3, 2, 0]]) {
+		const { sim, w } = makeSim({
+			"4,0": ["solid", [1, 3]],
+			"3,0": ["solid", [1, 3]],
+			"3,1": ["solid", [0, 3]],
+			"4,1": ["solid", ports],
+			"5,1": ["solid", [1, 2]],
+			"5,2": ["hollow", [3], RV * 0.8],
+			"4,2": ["hollow", [3], RV * 0.8],
+		});
+		W.setVent(w, 4, true); W.setSupply(w, 250, 4); W.setPour(w, [1, 0, 0], 4);
+		W.setVent(w, 3, true); W.setSupply(w, 250, 3); W.setPour(w, [0, 0, 1], 3);
+		for (let k = 0; k < 360; k++) S.step(sim, S.STEP);
+		books(w, "dual-overpass stationary");
+		let cup4R = 0, cup4B = 0, cup5R = 0, cup5B = 0;
+		for (let c = 0; c < w.count; c++) {
+			const x = (c % w.nx + 0.5) * W.CELL;
+			const y = (((c / w.nx) | 0) + 0.5) * W.CELL - G.POUR;
+			if (y < 2 * G.S || y >= 3 * G.S) continue;
+			const col = (x / G.S) | 0;
+			if (col === 4) { cup4R += w.ch[c * 3]; cup4B += w.ch[c * 3 + 2]; }
+			if (col === 5) { cup5R += w.ch[c * 3]; cup5B += w.ch[c * 3 + 2]; }
+		}
+		assert.ok(cup4R > 150 && cup5B > 150, `both streams crossed solid-overpass [${ports}] (R=${cup4R.toFixed(1)}, B=${cup5B.toFixed(1)})`);
+		assert.equal(cup4B, 0, `zero Blue leaked into N-S Red stream on solid-overpass [${ports}]`);
+		assert.equal(cup5R, 0, `zero Red leaked into W-E Blue stream on solid-overpass [${ports}]`);
+
+		// Shut vents and rotate the overpass smoothly through +90° (`w.switched` branch flips):
+		// channel and total books must remain conserved to machine precision.
+		W.setVent(w, 4, false);
+		W.setVent(w, 3, false);
+		const over = valve(sim.layout, 4, 1);
+		for (let step = 1; step <= 30; step++) {
+			G.setAngle(over, (G.HALF_PI * step) / 30);
+			W.rebuild(sim);
+			S.step(sim, S.STEP);
+		}
+		books(w, `rotating solid-overpass [${ports}]`);
+	}
+	console.log("ok  dual 2+2 non-mixing water crossing (solid-bends & solid-overpass + 90° rotation)");
+}
+
 console.log("OK  water colour slice 1: channels, proportional transport, books, pour shares, two views");

@@ -41,29 +41,50 @@ function portOpen(sim, cell, dir) {
 }
 
 function stableReach(sim, seat) {
-	const seen = new Set([seat.bottle]);
-	const queue = [seat.bottle];
-	for (const cell of queue) {
+	const seenCells = new Set([seat.bottle]);
+	const seenStates = new Set();
+	const queue = [];
+	const bottle = sim.layout.valves[seat.bottle];
+	const bq = G.orientationOf(bottle);
+	const bm = ((G.typeOf(bottle).mask << bq) | (G.typeOf(bottle).mask >> (4 - bq))) & 15;
+	for (let d = 0; d < 4; d++) {
+		if (!(bm & (1 << d))) continue;
+		const x = (seat.bottle % N) + G.DX[d];
+		const y = Math.floor(seat.bottle / N) + G.DY[d];
+		if (x < 0 || x >= N || y < 0 || y >= N) continue;
+		const next = y * N + x;
+		if (!sim.autoLocked[next]) continue;
+		const inPort = (d + 2) & 3;
+		const other = sim.layout.valves[next];
+		const oq = G.orientationOf(other);
+		const om = ((G.typeOf(other).mask << oq) | (G.typeOf(other).mask >> (4 - oq))) & 15;
+		if (!(om & (1 << inPort))) continue;
+		seenCells.add(next);
+		seenStates.add(next * 4 + inPort);
+		queue.push([next, inPort]);
+	}
+	for (const [cell, inPort] of queue) {
 		const valve = sim.layout.valves[cell];
-		const type = G.typeOf(valve);
-		const q = G.orientationOf(valve);
-		const mask = ((type.mask << q) | (type.mask >> (4 - q))) & 15;
 		for (let d = 0; d < 4; d++) {
-			if (!(mask & (1 << d))) continue;
-			const x = cell % N + G.DX[d];
+			if (d === inPort || !G.portsConnected(valve, inPort, d)) continue;
+			const x = (cell % N) + G.DX[d];
 			const y = Math.floor(cell / N) + G.DY[d];
 			if (x < 0 || x >= N || y < 0 || y >= N) continue;
 			const next = y * N + x;
-			if (seen.has(next) || !sim.autoLocked[next]) continue;
+			if (!sim.autoLocked[next]) continue;
+			const nextIn = (d + 2) & 3;
+			const state = next * 4 + nextIn;
+			if (seenStates.has(state)) continue;
 			const other = sim.layout.valves[next];
 			const oq = G.orientationOf(other);
-			const om = G.typeOf(other).mask;
-			if (!((((om << oq) | (om >> (4 - oq))) & 15) & (1 << ((d + 2) & 3)))) continue;
-			seen.add(next);
-			queue.push(next);
+			const om = ((G.typeOf(other).mask << oq) | (G.typeOf(other).mask >> (4 - oq))) & 15;
+			if (!(om & (1 << nextIn))) continue;
+			seenCells.add(next);
+			seenStates.add(state);
+			queue.push([next, nextIn]);
 		}
 	}
-	return seen;
+	return seenCells;
 }
 
 function stepSeconds(sim, game, seconds) {

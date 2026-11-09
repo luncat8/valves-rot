@@ -585,6 +585,55 @@ assert.equal(S.setPressure(sim, "off"), true);
 assert.equal(sim.pressure, null);
 assert.equal(S.setPressure(sim, "grid"), true);
 
+// ---- dual-passage 2+2 non-mixing valves (solid-bends & solid-overpass) ------
+{
+	// Both `solid-bends` (><) and `solid-overpass` (| under -) must partition the
+	// gas graph into two isolated connected components with zero cross-leakage.
+	for (const [id, pairA, pairB] of [
+		["solid-bends", [0, 3], [1, 2]],
+		["solid-overpass", [0, 2], [1, 3]],
+	]) {
+		const lay = columnLayout();
+		for (let k = 0; k < lay.valves.length; k++) lay.valves[k] = G.makeValve(k % G.N, (k / G.N) | 0, "solid", [], 0, 0);
+		// Open vertical shaft in col 4 from bottom high-pressure mouth (4,9) -> (4,4) -> top vent (4,0),
+		// OR elbow into the dual valve's first pair while sealing the second pair inside chambers.
+		const dualSim = S.create(lay, { turning: false });
+		S.installValve(dualSim, 44, G.typeById(id), 0, 0);
+		S.installValve(dualSim, 45, G.typeById("hollow-single"), 2, G.RV * 0.8); // East neighbor opens West (2)
+		S.installValve(dualSim, 43, G.typeById("hollow-single"), 0, G.RV * 0.8); // West neighbor opens East (0)
+		S.installValve(dualSim, 34, G.typeById("hollow-single"), 1, G.RV * 0.8); // North neighbor opens South (1)
+		S.installValve(dualSim, 54, G.typeById("hollow-single"), 3, G.RV * 0.8); // South neighbor opens North (3)
+		S.setPressure(dualSim, "grid");
+		const g = dualSim.pressure;
+		const comp = g.net.comp;
+		const portNodes = [
+			g.map[GAS.index(dualSim.layout.valves[45].cx, dualSim.layout.valves[45].cy)], // E (0)
+			g.map[GAS.index(dualSim.layout.valves[54].cx, dualSim.layout.valves[54].cy)], // S (1)
+			g.map[GAS.index(dualSim.layout.valves[43].cx, dualSim.layout.valves[43].cy)], // W (2)
+			g.map[GAS.index(dualSim.layout.valves[34].cx, dualSim.layout.valves[34].cy)], // N (3)
+		];
+		assert.ok(comp[portNodes[pairA[0]]] >= 0, `${id} passage A active`);
+		assert.equal(comp[portNodes[pairA[0]]], comp[portNodes[pairA[1]]], `${id} connects pair A`);
+		assert.equal(comp[portNodes[pairB[0]]], comp[portNodes[pairB[1]]], `${id} connects pair B`);
+		assert.notEqual(comp[portNodes[pairA[0]]], comp[portNodes[pairB[0]]], `${id} isolates passage A from passage B`);
+	}
+
+	// Pressurising N-S underpass of `solid-overpass` from a bottom high-pressure mouth
+	// leaves the crossing E-W bridge chambers unpressurised.
+	const overSim = S.create(columnLayout(), { turning: false });
+	S.installValve(overSim, 44, G.typeById("solid-overpass"), 0, 0); // E-W over S-N
+	S.installValve(overSim, 43, G.typeById("hollow-single"), 0, G.RV * 0.8); // West chamber opens E
+	S.installValve(overSim, 45, G.typeById("hollow-single"), 2, G.RV * 0.8); // East chamber opens W
+	setOpen(overSim, I.TOP, false);
+	S.setPressure(overSim, "grid");
+	run(overSim, 1.5);
+	const westCell = GAS.index(overSim.layout.valves[43].cx, overSim.layout.valves[43].cy);
+	const eastCell = GAS.index(overSim.layout.valves[45].cx, overSim.layout.valves[45].cy);
+	const northCell = GAS.index(overSim.layout.valves[34].cx, overSim.layout.valves[34].cy);
+	assert.ok(overSim.pressure.p[northCell] > 0.8, `N-S underpass carries high pressure (${overSim.pressure.p[northCell].toFixed(2)})`);
+	assert.ok(overSim.pressure.p[westCell] < 0.02 && overSim.pressure.p[eastCell] < 0.02, "E-W bridge stays isolated from N-S high pressure");
+}
+
 function bench(mode, steps) {
 	const s = S.create(G.createLayout(7));
 	S.seed(s);

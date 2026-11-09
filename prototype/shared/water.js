@@ -156,6 +156,19 @@ const ValveWater = (() => {
 			openE: new Uint8Array(count),
 			sillE: new Float64Array(count),
 			cellOwner: new Int32Array(count),
+			// Overpass layer per cell: 0 normal/casing, 1 bridge (over), 2 underpass.
+			cellLayer: new Uint8Array(count),
+			closedLayer: new Uint8Array(count),
+			switched: new Uint8Array(count),
+			tunnelA: new Int32Array(valves * 8),
+			tunnelB: new Int32Array(valves * 8),
+			tunnelVert: new Uint8Array(valves * 8),
+			tunnelCount: 0,
+			tunnelHead: new Int32Array(count),
+			tunnelSrc: new Int32Array(valves * 16),
+			tunnelNbr: new Int32Array(valves * 16),
+			tunnelNext: new Int32Array(valves * 16),
+			tunnelUsed: 0,
 			// Per-valve resample cache: rotor angle and layout revision. A replaced
 			// valve keeps its angle, so the revision is what catches it.
 			stamp: new Float64Array(valves),
@@ -262,6 +275,7 @@ const ValveWater = (() => {
 		w.layoutSeen.fill(-1);
 		w.levels.fill(NaN);
 		w.levelUp.fill(NaN);
+		w.tunnelHead.fill(-1);
 		for (let i = 0; i < count; i++) {
 			const gx = i % nx;
 			const gy = (i / nx) | 0;
@@ -561,12 +575,46 @@ const ValveWater = (() => {
 	// them instead of asking the geometry again per texel: a 3 px fill scan is
 	// ~62k clearance evaluations a frame (4.9 ms measured), which is the same
 	// sampling the mask already paid for at 15 Hz.
+	function pickCellLayer(v, c, gx, gy) {
+		if (!v.layers) return 0;
+		const rx = (gx + 0.5) * c - v.cx;
+		const ry = (gy + 0.5) * c - G.POUR - v.cy;
+		if (rx * rx + ry * ry >= G.RV * G.RV) return 0;
+		const px = rx * v.cos + ry * v.sin;
+		const py = -rx * v.sin + ry * v.cos;
+		if (G.layerClearance(v, 0, px, py) >= WATER_MIN) return 1;
+		if (G.layerClearance(v, 1, px, py) >= WATER_MIN) return 2;
+		const sub = c / SUBDIV;
+		const x0 = gx * c - v.cx;
+		const y0 = gy * c - G.POUR - v.cy;
+		let hit1 = false;
+		for (let b = 0; b < SUBDIV; b++) {
+			const sy = y0 + (b + 0.5) * sub;
+			for (let a = 0; a < SUBDIV; a++) {
+				const sx = x0 + (a + 0.5) * sub;
+				if (sx * sx + sy * sy >= G.RV * G.RV) continue;
+				const spx = sx * v.cos + sy * v.sin;
+				const spy = -sx * v.sin + sy * v.cos;
+				if (G.layerClearance(v, 0, spx, spy) >= WATER_MIN) return 1;
+				if (G.layerClearance(v, 1, spx, spy) >= WATER_MIN) hit1 = true;
+			}
+		}
+		return hit1 ? 2 : 0;
+	}
+
 	function sampleCell(sim, w, i) {
 		const c = w.cell;
 		const gx = i % w.nx;
 		const gy = (i / w.nx) | 0;
 		const x0 = gx * c;
 		const y0 = gy * c - G.POUR;
+		const oldAir = w.air[i];
+		const oldLayer = w.cellLayer[i];
+		if (oldAir) w.closedLayer[i] = oldLayer;
+		const v = sim.layout.valves[w.cellOwner[i]];
+		const layer = pickCellLayer(v, c, gx, gy);
+		w.cellLayer[i] = layer;
+		w.switched[i] = oldAir && oldLayer && layer && oldLayer !== layer ? 1 : 0;
 		const sub = c / SUBDIV;
 		const subArea = sub * sub;
 		const fine = w.fine;
@@ -584,7 +632,7 @@ const ValveWater = (() => {
 			let f = (gy * SUBDIV + b) * fnx + col;
 			for (let a = 0; a < SUBDIV; a++, f++) {
 				const x = x0 + (a + 0.5) * sub;
-				const clear = G.airClearance(sim.layout, x, y);
+				const clear = G.airClearance(sim.layout, x, y, layer);
 				// 0 = metal, 1 = an opening too thin to hold water, 2 = water. The
 				// fill paints 1 and 2 (a drawn passage is a passage), the solver only
 				// ever charges water to 2.
@@ -617,6 +665,19 @@ const ValveWater = (() => {
 	}
 
 	function sampleEastFace(sim, w, i) {
+		if (!w.air[i] || !w.air[i + 1]) {
+			w.openE[i] = 0;
+			w.sillE[i] = 0;
+			return;
+		}
+		const la = w.cellLayer[i];
+		const lb = w.cellLayer[i + 1];
+		if (la && lb && la !== lb) {
+			w.openE[i] = 0;
+			w.sillE[i] = 0;
+			return;
+		}
+		const layer = la || lb;
 		const c = w.cell;
 		const gx = i % w.nx;
 		const gy = (i / w.nx) | 0;
@@ -626,7 +687,7 @@ const ValveWater = (() => {
 		let sill = -Infinity;
 		for (let k = 0; k < FACE_SAMPLES; k++) {
 			const y = y0 + ((k + 0.5) / FACE_SAMPLES) * c;
-			if (G.airClearance(sim.layout, x, y) < WATER_MIN) continue;
+			if (G.airClearance(sim.layout, x, y, layer) < WATER_MIN) continue;
 			open = 1;
 			if (y > sill) sill = y;
 		}
@@ -635,6 +696,17 @@ const ValveWater = (() => {
 	}
 
 	function sampleSouthFace(sim, w, i) {
+		if (!w.air[i] || !w.air[i + w.nx]) {
+			w.openS[i] = 0;
+			return;
+		}
+		const la = w.cellLayer[i];
+		const lb = w.cellLayer[i + w.nx];
+		if (la && lb && la !== lb) {
+			w.openS[i] = 0;
+			return;
+		}
+		const layer = la || lb;
 		const c = w.cell;
 		const gx = i % w.nx;
 		const gy = (i / w.nx) | 0;
@@ -642,20 +714,12 @@ const ValveWater = (() => {
 		const x0 = gx * c;
 		for (let k = 0; k < FACE_SAMPLES; k++) {
 			const x = x0 + ((k + 0.5) / FACE_SAMPLES) * c;
-			if (G.airClearance(sim.layout, x, y) >= WATER_MIN) { w.openS[i] = 1; return; }
+			if (G.airClearance(sim.layout, x, y, layer) >= WATER_MIN) { w.openS[i] = 1; return; }
 		}
 		w.openS[i] = 0;
 	}
 
-	// Sample a cell and the four faces that touch it: the two it owns and the two
-	// its west/north neighbours own, because a seam is a property of a pair, and
-	// a turned rotor changes the faces on both of its sides. Per-cell stamps keep
-	// a face that two resampled valves share from being sampled twice.
-	function sampleAround(sim, w, i, serial) {
-		if (w.cellStamp[i] !== serial) {
-			w.cellStamp[i] = serial;
-			sampleCell(sim, w, i);
-		}
+	function sampleFacesAround(sim, w, i, serial) {
 		const gx = i % w.nx;
 		const gy = (i / w.nx) | 0;
 		if (gx + 1 < w.nx && w.eStamp[i] !== serial) { w.eStamp[i] = serial; sampleEastFace(sim, w, i); }
@@ -664,6 +728,68 @@ const ValveWater = (() => {
 		if (gx > 0 && w.eStamp[west] !== serial) { w.eStamp[west] = serial; sampleEastFace(sim, w, west); }
 		const north = i - w.nx;
 		if (gy > 0 && w.sStamp[north] !== serial) { w.sStamp[north] = serial; sampleSouthFace(sim, w, north); }
+	}
+
+	function addTunnelHalf(w, src, dst) {
+		const e = w.tunnelUsed++;
+		w.tunnelSrc[e] = src;
+		w.tunnelNbr[e] = dst;
+		w.tunnelNext[e] = w.tunnelHead[src];
+		w.tunnelHead[src] = e;
+	}
+
+	// Build underpass tunnel pairs across the bridge of every overpass rotor so
+	// Layer 1 water flows straight under Layer 0 without mixing colours or
+	// losing enthalpy.
+	function buildTunnels(sim, w) {
+		for (let e = 0; e < w.tunnelUsed; e++) w.tunnelHead[w.tunnelSrc[e]] = -1;
+		w.tunnelCount = 0;
+		w.tunnelUsed = 0;
+		const valves = sim.layout.valves;
+		const c = w.cell;
+		const reach = G.HALF + c + 1.5;
+		for (let vi = 0; vi < valves.length; vi++) {
+			const v = valves[vi];
+			if (!v.layers) continue;
+			const p0 = v.layers[0][0];
+			const ux = p0.ux;
+			const uy = p0.uy;
+			const end = w.blockStart[vi + 1];
+			for (let k = w.blockStart[vi]; k < end; k++) {
+				const i = w.blockCell[k];
+				if (!w.air[i] || w.cellLayer[i] !== 2) continue;
+				const gx = i % w.nx;
+				const gy = (i / w.nx) | 0;
+				const xc = (gx + 0.5) * c;
+				const yc = (gy + 0.5) * c - G.POUR;
+				const rx = xc - v.cx;
+				const ry = yc - v.cy;
+				const rx0 = rx * v.cos + ry * v.sin;
+				const ry0 = -rx * v.sin + ry * v.cos;
+				const along = rx0 * ux + ry0 * uy;
+				const perp = -rx0 * uy + ry0 * ux;
+				if (perp >= 0 || perp < -reach) continue;
+				const mr0x = along * ux + perp * uy;
+				const mr0y = along * uy - perp * ux;
+				const wx = v.cx + mr0x * v.cos - mr0y * v.sin;
+				const wy = v.cy + mr0x * v.sin + mr0y * v.cos;
+				const mgx = Math.floor(wx / c);
+				const mgy = Math.floor((wy + G.POUR) / c);
+				if (mgx < 0 || mgx >= w.nx || mgy < 0 || mgy >= w.ny) continue;
+				const j = mgy * w.nx + mgx;
+				if (j === i || !w.air[j] || w.cellLayer[j] !== 2) continue;
+				if (w.tunnelCount >= w.tunnelA.length || w.tunnelUsed + 2 > w.tunnelNbr.length) break;
+				const vert = Math.abs(wy - yc) > c * 0.35 ? 1 : 0;
+				const a = vert ? (yc < wy ? i : j) : (i < j ? i : j);
+				const b = a === i ? j : i;
+				const t = w.tunnelCount++;
+				w.tunnelA[t] = a;
+				w.tunnelB[t] = b;
+				w.tunnelVert[t] = vert;
+				addTunnelHalf(w, a, b);
+				addTunnelHalf(w, b, a);
+			}
+		}
 	}
 
 	function labelComponents(w) {
@@ -685,6 +811,10 @@ const ValveWater = (() => {
 				if (gy > 0 && w.openS[i - w.nx] && comp[i - w.nx] < 0) { comp[i - w.nx] = count; queue[tail++] = i - w.nx; }
 				if (gx + 1 < w.nx && w.openE[i] && comp[i + 1] < 0) { comp[i + 1] = count; queue[tail++] = i + 1; }
 				if (gx > 0 && w.openE[i - 1] && comp[i - 1] < 0) { comp[i - 1] = count; queue[tail++] = i - 1; }
+				for (let e = w.tunnelHead[i]; e >= 0; e = w.tunnelNext[e]) {
+					const m = w.tunnelNbr[e];
+					if (comp[m] < 0) { comp[m] = count; queue[tail++] = m; }
+				}
 			}
 			count++;
 		}
@@ -702,16 +832,19 @@ const ValveWater = (() => {
 		const queue = w.queue;
 		const seen = w.seen;
 		for (let i = 0; i < w.count; i++) {
-			if (w.air[i] || w.vol[i] <= EPS) continue;
+			const sw = w.switched[i];
+			w.switched[i] = 0;
+			if ((w.air[i] && !sw) || w.vol[i] <= EPS) continue;
+			const cl = w.closedLayer[i];
 			const stamp = ++w.seenStamp;
 			let head = 0;
 			let tail = 0;
 			const gx = i % nx;
 			const gy = (i / nx) | 0;
-			if (gy > 0 && w.air[i - nx]) { seen[i - nx] = stamp; queue[tail++] = i - nx; }
-			if (gy + 1 < ny && w.air[i + nx]) { seen[i + nx] = stamp; queue[tail++] = i + nx; }
-			if (gx > 0 && w.air[i - 1]) { seen[i - 1] = stamp; queue[tail++] = i - 1; }
-			if (gx + 1 < nx && w.air[i + 1]) { seen[i + 1] = stamp; queue[tail++] = i + 1; }
+			if (gy > 0 && w.air[i - nx] && !w.switched[i - nx] && (!cl || !w.cellLayer[i - nx] || w.cellLayer[i - nx] === cl)) { seen[i - nx] = stamp; queue[tail++] = i - nx; }
+			if (gy + 1 < ny && w.air[i + nx] && !w.switched[i + nx] && (!cl || !w.cellLayer[i + nx] || w.cellLayer[i + nx] === cl)) { seen[i + nx] = stamp; queue[tail++] = i + nx; }
+			if (gx > 0 && w.air[i - 1] && !w.switched[i - 1] && (!cl || !w.cellLayer[i - 1] || w.cellLayer[i - 1] === cl)) { seen[i - 1] = stamp; queue[tail++] = i - 1; }
+			if (gx + 1 < nx && w.air[i + 1] && !w.switched[i + 1] && (!cl || !w.cellLayer[i + 1] || w.cellLayer[i + 1] === cl)) { seen[i + 1] = stamp; queue[tail++] = i + 1; }
 			// The donor keeps its composition while it empties, so every hop is a
 			// proportional move and whatever is left is what the rotor carries.
 			while (head < tail && w.vol[i] > EPS) {
@@ -725,8 +858,12 @@ const ValveWater = (() => {
 				if (jy + 1 < ny && w.openS[j] && w.air[j + nx] && seen[j + nx] !== stamp) { seen[j + nx] = stamp; queue[tail++] = j + nx; }
 				if (jx > 0 && w.openE[j - 1] && w.air[j - 1] && seen[j - 1] !== stamp) { seen[j - 1] = stamp; queue[tail++] = j - 1; }
 				if (jx + 1 < nx && w.openE[j] && w.air[j + 1] && seen[j + 1] !== stamp) { seen[j + 1] = stamp; queue[tail++] = j + 1; }
+				for (let e = w.tunnelHead[j]; e >= 0; e = w.tunnelNext[e]) {
+					const m = w.tunnelNbr[e];
+					if (w.air[m] && seen[m] !== stamp) { seen[m] = stamp; queue[tail++] = m; }
+				}
 			}
-			if (w.vol[i] > EPS) trap(w, i);
+			if (!w.air[i] && w.vol[i] > EPS) trap(w, i);
 		}
 	}
 
@@ -764,9 +901,18 @@ const ValveWater = (() => {
 			for (let v = 0; v < valves.length; v++) {
 				if (!w.dirty[v]) continue;
 				const end = w.blockStart[v + 1];
-				for (let k = w.blockStart[v]; k < end; k++) sampleAround(sim, w, w.blockCell[k], serial);
+				for (let k = w.blockStart[v]; k < end; k++) {
+					const i = w.blockCell[k];
+					if (w.cellStamp[i] !== serial) { w.cellStamp[i] = serial; sampleCell(sim, w, i); }
+				}
+			}
+			for (let v = 0; v < valves.length; v++) {
+				if (!w.dirty[v]) continue;
+				const end = w.blockStart[v + 1];
+				for (let k = w.blockStart[v]; k < end; k++) sampleFacesAround(sim, w, w.blockCell[k], serial);
 			}
 		}
+		buildTunnels(sim, w);
 		// A passage that reopens returns the water its rotor carried.
 		for (let i = 0; i < w.count; i++) if (w.air[i]) releaseTrapped(w, i);
 		w.airCount = 0;
@@ -996,6 +1142,21 @@ const ValveWater = (() => {
 				}
 			}
 		}
+		const tc = w.tunnelCount;
+		for (let t = 0; t < tc; t++) {
+			const idx = reverse ? tc - 1 - t : t;
+			const a = w.tunnelA[idx];
+			const b = w.tunnelB[idx];
+			if (vol[a] <= EPS && vol[b] <= EPS) continue;
+			if (w.tunnelVert[idx]) {
+				verticalTransfer(w, a, b);
+				if (vol[a] > EPS && vol[b] > EPS) verticalOrder(w, a, b);
+			} else {
+				const sill = w.floor[a] < w.floor[b] ? w.floor[a] : w.floor[b];
+				horizontalTransfer(w, a, b, sill);
+				if (vol[a] > EPS && vol[b] > EPS) horizontalOrder(w, a, b);
+			}
+		}
 	}
 
 	function relax(w, iters) {
@@ -1221,7 +1382,7 @@ const ValveWater = (() => {
 	// Cells under the submerged part of one disc, weighted by the overlap of the
 	// disc's box with each cell's sampled band. Fills the scratch arrays and
 	// reports the count and the weight sum through spotSum.
-	function footprint(w, x, y, r, top, bottom) {
+	function footprint(w, x, y, r, top, bottom, lk) {
 		const cell = w.cell;
 		const nx = w.nx;
 		const gx0 = Math.max(0, Math.floor((x - r) / cell));
@@ -1235,6 +1396,7 @@ const ValveWater = (() => {
 			for (let gx = gx0; gx <= gx1; gx++) {
 				const j = row + gx;
 				if (!w.air[j]) continue;
+				if (lk && w.cellLayer[j] && lk !== w.cellLayer[j]) continue;
 				// Sampled vertical band of the cell: a 2 px floor sliver counts as
 				// the sliver it is, not as a whole cell.
 				const lo = top > w.ceil[j] ? top : w.ceil[j];
@@ -1277,6 +1439,9 @@ const ValveWater = (() => {
 			const x = sim.x[k];
 			const y = sim.y[k];
 			const r = sim.r[k];
+			const lk = sim.layer ? sim.layer[k] : 0;
+			const ci = Math.floor((y + G.POUR) / w.cell) * nx + Math.floor(x / w.cell);
+			if (lk && ci >= 0 && ci < w.count && w.cellLayer[ci] && lk !== w.cellLayer[ci]) continue;
 			const level = surfaceAt(w, x, y);
 			if (!Number.isFinite(level)) continue;
 			const f = segFraction(r, y - level);
@@ -1285,7 +1450,7 @@ const ValveWater = (() => {
 			// the top of the disc, when it is deeper) to the bottom of the disc.
 			const top = level > y - r ? level : y - r;
 			const bottom = y + r;
-			footprint(w, x, y, r, top, bottom);
+			footprint(w, x, y, r, top, bottom, lk);
 			const area = PI * r * r * f;
 			if (spotSum.total <= 0) {
 				// The samples leave a gap under the disc; charge the cell of the

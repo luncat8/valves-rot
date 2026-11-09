@@ -72,8 +72,15 @@ function recordingContext(isMain) {
                                         calls.total++;
                                 };
                         }
+                        if (prop === "rotate") {
+                                return ang => {
+                                        assert.ok(Number.isFinite(ang), "canvas rotate angle must be finite");
+                                        calls.total++;
+                                };
+                        }
                         if (prop === "lineTo" || prop === "moveTo") {
-                        return () => {
+                        return (x, y) => {
+                                assert.ok(Number.isFinite(x) && Number.isFinite(y), `canvas ${prop} coords must be finite`);
                                 if (isMain && prop === "lineTo") penSegments.set(currentPen, (penSegments.get(currentPen) || 0) + 1);
                                 calls.total++;
                         };
@@ -947,6 +954,35 @@ assert.ok(mainTranslates.length >= waterTranslates);
 const a = G.createLayout(321);
 const b = G.createLayout(321);
 assert.equal(JSON.stringify(a.valves.map(G.describe)), JSON.stringify(b.valves.map(G.describe)));
+
+// Dual 2+2 non-mixing valve types (`solid-bends` and `solid-overpass`) in the
+// Place drawer, plus bridge-deck grain clipping across all three skins.
+assert.ok(typeList.includes('data-type="solid-bends"'), "Place drawer includes solid-bends");
+assert.ok(typeList.includes('data-type="solid-overpass"'), "Place drawer includes solid-overpass");
+pickType("solid-bends");
+pickDir("1");
+assert.ok(element("brush-summary").textContent.includes("solid bends"), "brush summary names solid bends");
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
+frames.shift()((now += 16.7));
+assert.ok(element("selected-valve").textContent.includes("solid bends"), "double-click placed solid bends");
+
+pickType("solid-overpass");
+pickDir("0");
+assert.ok(element("brush-summary").textContent.includes("solid overpass"), "brush summary names solid overpass");
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+c.ondblclick({ clientX: cellX, clientY: cellY, preventDefault() {} });
+// Drop a grain directly into the N-S underpass of cell (4,2) (`layer = 2`) and render across all skins.
+const pageSim = vm.runInThisContext("ValveSimulation");
+assert.ok(pageSim);
+element("pour").onclick();
+for (const skin of ["glm", "combined", "gpt"]) {
+        element("skin").value = skin;
+        element("skin").onchange();
+        frames.shift()((now += 16.7));
+}
+assert.ok(element("selected-valve").textContent.includes("solid overpass"), "double-click placed solid overpass");
+
 assert.ok(madeFrames > 0);
 console.log(
         "OK  shared page smoke: sprites 100, drawCalls " +

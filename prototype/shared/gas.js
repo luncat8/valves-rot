@@ -30,9 +30,12 @@ const ValveGas = (() => {
 	const COUNT = NX * NY;
 
 	// Rotor-local grid: 8 px cells over the disc, in the prims' own frame.
+	// Two decks (`RLAYER` each) allow an overpass valve's upper and lower pipes
+	// to cross at `(0,0)` as two completely separate gas components.
 	const RS = 8;
 	const RN = Math.ceil(2 * G.RV / RS);
-	const RSLOTS = RN * RN;
+	const RLAYER = RN * RN;
+	const RSLOTS = 2 * RLAYER;
 	const RSPAN = RN * RS;
 	const RHALF = RSPAN / 2;
 	// Casing corridors: short pipes, a few lanes across, aligned with the tile.
@@ -790,18 +793,22 @@ const ValveGas = (() => {
 				net.open[k] = 0;
 				net.owner[k] = t;
 			}
-			for (let iy = 0; iy < RN; iy++) {
-				const py = (iy + 0.5) * RS - RHALF;
-				for (let ix = 0; ix < RN; ix++) {
-					const px = (ix + 0.5) * RS - RHALF;
-					const clear = G.passageClearance(v, px, py);
-					if (clear < AIR_MIN) continue;
-					const k = base + iy * RN + ix;
-					net.air[k] = 1;
-					const open = clear / G.HALF;
-					net.open[k] = open > 1 ? 1 : open < OPEN_MIN ? OPEN_MIN : open;
-					net.wx[k] = v.cx + px * v.cos - py * v.sin;
-					net.wy[k] = v.cy + px * v.sin + py * v.cos;
+			const layers = v.layers ? 2 : 1;
+			for (let layer = 0; layer < layers; layer++) {
+				const lbase = base + layer * RLAYER;
+				for (let iy = 0; iy < RN; iy++) {
+					const py = (iy + 0.5) * RS - RHALF;
+					for (let ix = 0; ix < RN; ix++) {
+						const px = (ix + 0.5) * RS - RHALF;
+						const clear = v.layers ? G.layerClearance(v, layer, px, py) : G.passageClearance(v, px, py);
+						if (clear < AIR_MIN) continue;
+						const k = lbase + iy * RN + ix;
+						net.air[k] = 1;
+						const open = clear / G.HALF;
+						net.open[k] = open > 1 ? 1 : open < OPEN_MIN ? OPEN_MIN : open;
+						net.wx[k] = v.cx + px * v.cos - py * v.sin;
+						net.wy[k] = v.cy + px * v.sin + py * v.cos;
+					}
 				}
 			}
 			for (let s = 0; s < 4; s++) {
@@ -844,14 +851,18 @@ const ValveGas = (() => {
 			const t = moved[n];
 			const v = valves[t];
 			const base = t * SLOTS;
-			for (let iy = 0; iy < RN; iy++) {
-				const py = (iy + 0.5) * RS - RHALF;
-				for (let ix = 0; ix < RN; ix++) {
-					const k = base + iy * RN + ix;
-					if (!net.air[k]) continue;
-					const px = (ix + 0.5) * RS - RHALF;
-					net.wx[k] = v.cx + px * v.cos - py * v.sin;
-					net.wy[k] = v.cy + px * v.sin + py * v.cos;
+			const layers = v.layers ? 2 : 1;
+			for (let layer = 0; layer < layers; layer++) {
+				const lbase = base + layer * RLAYER;
+				for (let iy = 0; iy < RN; iy++) {
+					const py = (iy + 0.5) * RS - RHALF;
+					for (let ix = 0; ix < RN; ix++) {
+						const k = lbase + iy * RN + ix;
+						if (!net.air[k]) continue;
+						const px = (ix + 0.5) * RS - RHALF;
+						net.wx[k] = v.cx + px * v.cos - py * v.sin;
+						net.wy[k] = v.cy + px * v.sin + py * v.cos;
+					}
 				}
 			}
 		}
@@ -884,26 +895,27 @@ const ValveGas = (() => {
 	// that would cut across a curved rotor passage.
 	// Rotor neighbours are sampled in the unrotated prims frame, so the check
 	// is valid for every angle and only runs when a valve is replaced.
-	function localEdgeOpen(v, ax, ay, bx, by) {
+	function localEdgeOpen(v, layer, ax, ay, bx, by) {
 		const dx = bx - ax;
 		const dy = by - ay;
 		const steps = Math.max(2, Math.ceil(Math.sqrt(dx * dx + dy * dy) / (AIR_MIN * 0.75)));
 		const need = AIR_MIN - 1e-7;
 		for (let n = 1; n < steps; n++) {
 			const f = n / steps;
-			if (G.passageClearance(v, ax + dx * f, ay + dy * f) < need) return false;
+			const c = v.layers ? G.layerClearance(v, layer, ax + dx * f, ay + dy * f) : G.passageClearance(v, ax + dx * f, ay + dy * f);
+			if (c < need) return false;
 		}
 		return true;
 	}
 
-	function seamPathOpen(v, ax, ay, bx, by) {
+	function seamPathOpen(v, layerFlag, ax, ay, bx, by) {
 		const dx = bx - ax;
 		const dy = by - ay;
 		const steps = Math.max(2, Math.ceil(Math.sqrt(dx * dx + dy * dy) / (AIR_MIN * 0.5)));
 		const need = AIR_MIN - 1e-7;
 		for (let n = 1; n < steps; n++) {
 			const f = n / steps;
-			if (G.valveClearance(v, v.cx + ax + dx * f, v.cy + ay + dy * f) < need) return false;
+			if (G.valveClearance(v, v.cx + ax + dx * f, v.cy + ay + dy * f, layerFlag) < need) return false;
 		}
 		return true;
 	}
@@ -918,30 +930,36 @@ const ValveGas = (() => {
 		const base = t * SLOTS;
 		const near = G.RV - 1.6 * RS;
 		const near2 = near * near;
-		for (let iy = 0; iy < RN; iy++) {
-			const py = (iy + 0.5) * RS - RHALF;
-			for (let ix = 0; ix < RN; ix++) {
-				const px = (ix + 0.5) * RS - RHALF;
-				const k = base + iy * RN + ix;
-				if (!net.air[k] || px * px + py * py < near2) continue;
-				// Rotate the local cell centre into the casing frame: this is the
-				// only place where valve cells meet static pipe cells.
-				const ux = px * v.cos - py * v.sin;
-				const uy = px * v.sin + py * v.cos;
-				for (let s = 0; s < 4; s++) {
-					const a = DX[s] ? DX[s] * ux : DY[s] * uy;
-					if (a < near) continue;
-					const lat = DX[s] ? uy : ux;
-					const half = v.seam[s] - AIR_MIN;
-					if (half <= 0 || Math.abs(lat) >= half) continue;
-					let lane = ((lat + G.HALF) / LANE_W) | 0;
-					if (lane < 0) lane = 0;
-					else if (lane >= LANES) lane = LANES - 1;
-					const casing = casingNode(t, s, 0, lane);
-					if (!net.air[casing]) continue;
-					if (!seamPathOpen(v, ux, uy, net.wx[casing] - v.cx, net.wy[casing] - v.cy)) continue;
-					const aperture = (half - Math.abs(lat)) / LANE_W;
-					addEdge(net, k, casing, harmonicGeo(net, k, casing, aperture < 1 ? aperture : 1));
+		const layers = v.layers ? 2 : 1;
+		for (let layer = 0; layer < layers; layer++) {
+			const lbase = base + layer * RLAYER;
+			const seams = v.layers ? v.layerSeam[layer] : v.seam;
+			const layerFlag = v.layers ? layer + 1 : 0;
+			for (let iy = 0; iy < RN; iy++) {
+				const py = (iy + 0.5) * RS - RHALF;
+				for (let ix = 0; ix < RN; ix++) {
+					const px = (ix + 0.5) * RS - RHALF;
+					const k = lbase + iy * RN + ix;
+					if (!net.air[k] || px * px + py * py < near2) continue;
+					// Rotate the local cell centre into the casing frame: this is the
+					// only place where valve cells meet static pipe cells.
+					const ux = px * v.cos - py * v.sin;
+					const uy = px * v.sin + py * v.cos;
+					for (let s = 0; s < 4; s++) {
+						const a = DX[s] ? DX[s] * ux : DY[s] * uy;
+						if (a < near) continue;
+						const lat = DX[s] ? uy : ux;
+						const half = seams[s] - AIR_MIN;
+						if (half <= 0 || Math.abs(lat) >= half) continue;
+						let lane = ((lat + G.HALF) / LANE_W) | 0;
+						if (lane < 0) lane = 0;
+						else if (lane >= LANES) lane = LANES - 1;
+						const casing = casingNode(t, s, 0, lane);
+						if (!net.air[casing]) continue;
+						if (!seamPathOpen(v, layerFlag, ux, uy, net.wx[casing] - v.cx, net.wy[casing] - v.cy)) continue;
+						const aperture = (half - Math.abs(lat)) / LANE_W;
+						addEdge(net, k, casing, harmonicGeo(net, k, casing, aperture < 1 ? aperture : 1));
+					}
 				}
 			}
 		}
@@ -966,24 +984,28 @@ const ValveGas = (() => {
 			// Rotor passages: axial and diagonal neighbours join the same pipe,
 			// but only when a disc can travel between their centres in the
 			// rotor's own frame. Curved elbows otherwise leak through metal.
-			for (let iy = 0; iy < RN; iy++) {
-				const py = (iy + 0.5) * RS - RHALF;
-				for (let ix = 0; ix < RN; ix++) {
-					const px = (ix + 0.5) * RS - RHALF;
-					const a = t * SLOTS + iy * RN + ix;
-					if (!net.air[a]) continue;
-					if (ix + 1 < RN) {
-						const b = a + 1;
-						if (net.air[b] && localEdgeOpen(v, px, py, px + RS, py)) addEdge(net, a, b, BASE / RS);
-					}
-					if (iy + 1 < RN) {
-						const b = a + RN;
-						if (net.air[b] && localEdgeOpen(v, px, py, px, py + RS)) addEdge(net, a, b, BASE / RS);
-						if (ix > 0 && net.air[b - 1] && localEdgeOpen(v, px, py, px - RS, py + RS)) {
-							addEdge(net, a, b - 1, BASE / (RS * 1.4142) * DIAGONAL * 1.4142);
+			const layers = v.layers ? 2 : 1;
+			for (let layer = 0; layer < layers; layer++) {
+				const lbase = t * SLOTS + layer * RLAYER;
+				for (let iy = 0; iy < RN; iy++) {
+					const py = (iy + 0.5) * RS - RHALF;
+					for (let ix = 0; ix < RN; ix++) {
+						const px = (ix + 0.5) * RS - RHALF;
+						const a = lbase + iy * RN + ix;
+						if (!net.air[a]) continue;
+						if (ix + 1 < RN) {
+							const b = a + 1;
+							if (net.air[b] && localEdgeOpen(v, layer, px, py, px + RS, py)) addEdge(net, a, b, BASE / RS);
 						}
-						if (ix + 1 < RN && net.air[b + 1] && localEdgeOpen(v, px, py, px + RS, py + RS)) {
-							addEdge(net, a, b + 1, BASE / (RS * 1.4142) * DIAGONAL * 1.4142);
+						if (iy + 1 < RN) {
+							const b = a + RN;
+							if (net.air[b] && localEdgeOpen(v, layer, px, py, px, py + RS)) addEdge(net, a, b, BASE / RS);
+							if (ix > 0 && net.air[b - 1] && localEdgeOpen(v, layer, px, py, px - RS, py + RS)) {
+								addEdge(net, a, b - 1, BASE / (RS * 1.4142) * DIAGONAL * 1.4142);
+							}
+							if (ix + 1 < RN && net.air[b + 1] && localEdgeOpen(v, layer, px, py, px + RS, py + RS)) {
+								addEdge(net, a, b + 1, BASE / (RS * 1.4142) * DIAGONAL * 1.4142);
+							}
 						}
 					}
 				}
@@ -1165,6 +1187,7 @@ const ValveGas = (() => {
 				if (ix >= 0 && ix < RN && iy >= 0 && iy < RN) {
 					const id = base + iy * RN + ix;
 					if (net.air[id]) node = id;
+					else if (v.layers && net.air[id + RLAYER]) node = id + RLAYER;
 				}
 				setDisplayCell(gas, k, node);
 			}
@@ -1269,7 +1292,11 @@ const ValveGas = (() => {
 			const cell = index(sim.x[k], y);
 			const sample = gas.air[cell] ? cell : sampleCell(gas, sim.x[k], y);
 			if (sample < 0) continue;
-			const node = gas.map[sample];
+			let node = gas.map[sample];
+			if (sim.layer && sim.layer[k] === 2) {
+				const slot = node % SLOTS;
+				if (slot < RLAYER && net.air[node + RLAYER]) node += RLAYER;
+			}
 			if (now[node] < 65535) now[node]++;
 		}
 		let changed = false;
@@ -1464,8 +1491,17 @@ const ValveGas = (() => {
 			if (y < 0 || y > G.SIZE) continue;
 			const idx = sampleCell(gas, sim.x[k], y);
 			if (idx < 0) continue;
-			const gvx = gx[idx];
-			const gvy = gy[idx];
+			let gvx = gx[idx];
+			let gvy = gy[idx];
+			let under = false;
+			if (sim.layer && sim.layer[k] === 2) {
+				const node = gas.map[idx];
+				if (node >= 0 && (node % SLOTS) < RLAYER && gas.net.air[node + RLAYER]) {
+					gvx = gas.net.tvx[node + RLAYER];
+					gvy = gas.net.tvy[node + RLAYER];
+					under = true;
+				}
+			}
 			if (gvx === 0 && gvy === 0) continue;
 			const massRatio = sim.mass[k] / REFERENCE_GRAIN_MASS;
 			const jx = (dragRate * (gvx - sim.vx[k]) + lift * gvx) * h / massRatio;
@@ -1474,7 +1510,7 @@ const ValveGas = (() => {
 			sim.vy[k] += jy;
 			const reactionX = jx * massRatio;
 			const reactionY = jy * massRatio;
-			if (!pin[idx]) {
+			if (!under && !pin[idx]) {
 				gx[idx] -= reactionX * invMass;
 				gy[idx] -= reactionY * invMass;
 				const sp = Math.sqrt(gx[idx] * gx[idx] + gy[idx] * gy[idx]);
@@ -1545,6 +1581,7 @@ const ValveGas = (() => {
 		SWIRL_REACH,
 		SLOTS,
 		RSLOTS,
+		RLAYER,
 		LANES,
 	};
 })();

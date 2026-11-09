@@ -47,7 +47,7 @@ function runChecked(sim, seconds, tag) {
 		worst.steps++;
 		for (let g = 0; g < sim.count; g++) {
 			assert.ok(Number.isFinite(sim.x[g]) && Number.isFinite(sim.vy[g]), `${tag}: state not finite`);
-			const clear = G.airClearance(sim.layout, sim.x[g], sim.y[g]);
+			const clear = G.airClearance(sim.layout, sim.x[g], sim.y[g], sim.layer[g]);
 			assert.ok(clear >= sim.r[g] - 1e-4, `${tag}: grain ${g} left in metal at ${(k / 120).toFixed(2)} s`);
 		}
 	}
@@ -61,6 +61,7 @@ function worstOverlap(sim) {
 	let pen = 0;
 	for (let a = 0; a < sim.count; a++) {
 		for (let b = a + 1; b < sim.count; b++) {
+			if (sim.layer[a] && sim.layer[b] && sim.layer[a] !== sim.layer[b]) continue;
 			const d = Math.hypot(sim.x[a] - sim.x[b], sim.y[a] - sim.y[b]);
 			const p = sim.r[a] + sim.r[b] - d;
 			if (p > pen) pen = p;
@@ -578,6 +579,89 @@ function counters() {
 	return `${seeded} seeded, ${poured} poured`;
 }
 
+// Dual 2+2 non-mixing valves: two grain streams of distinct colours cross a
+// `solid-bends` `(><)` valve and a `solid-overpass` (`|` under `-`) valve
+// simultaneously without a single grain leaking into the other stream.
+function dualPassageCrossing() {
+	// 1. solid-bends at (4, 1) with ports [1, 0, 2, 3] (S-E & W-N):
+	//    Red grains fall from col 4 N -> deflected W into (3, 1) S-E elbow -> cup at (3, 2).
+	//    Blue grains fall from col 5 -> (5, 1) W-N elbow -> enter (4, 1) E -> deflected S into cup at (4, 2).
+	const bendsLayout = field({
+		"4,0": ["solid", [1, 3]],
+		"5,0": ["solid", [1, 3]],
+		"4,1": ["solid", [1, 0, 2, 3]],
+		"3,1": ["solid", [0, 1]],
+		"5,1": ["solid", [2, 3]],
+		"3,2": ["hollow", [3], 15],
+		"4,2": ["hollow", [3], 15],
+	});
+	const bSim = S.create(bendsLayout, { turning: false });
+	for (let k = 0; k < 4; k++) {
+		assert.ok(S.addGrain(bSim, 4.5 * SIDE, -24 + k * 6, 2.5, 0) >= 0);
+		assert.ok(S.addGrain(bSim, 5.5 * SIDE, -24 + k * 6, 2.5, 3) >= 0);
+	}
+	runChecked(bSim, 6, "dual-bends");
+	let bCup3Red = 0, bCup3Blue = 0, bCup4Red = 0, bCup4Blue = 0;
+	for (let k = 0; k < bSim.count; k++) {
+		const cell = G.cellAt(bSim.x[k], bSim.y[k]);
+		if (cell === 2 * N + 3) {
+			if (bSim.color[k] === 0) bCup3Red++;
+			else bCup3Blue++;
+		} else if (cell === 2 * N + 4) {
+			if (bSim.color[k] === 0) bCup4Red++;
+			else bCup4Blue++;
+		}
+	}
+	assert.equal(bCup3Red, 4, "all 4 red grains deflect N->W through bends into (3,2)");
+	assert.equal(bCup3Blue, 0, "no blue grain leaks into W-N bend");
+	assert.equal(bCup4Blue, 4, "all 4 blue grains deflect E->S through bends into (4,2)");
+	assert.equal(bCup4Red, 0, "no red grain leaks into S-E bend");
+
+	// 2. solid-overpass at (4, 1) in both orientations ([0,2,1,3] E-W over S-N, and [1,3,2,0] S-N over W-E):
+	//    Red grains drop vertically N->S through (4,1) into cup at (4,2), while
+	//    Blue grains cross horizontally W->E across (4,1) into cup at (5,1) AT THE SAME TIME.
+	for (const ports of [[0, 2, 1, 3], [1, 3, 2, 0]]) {
+		const overLayout = field({
+			"4,0": ["solid", [1, 3]],
+			"3,1": ["solid", [0, 2]],
+			"4,1": ["solid", ports],
+			"5,1": ["solid", [1, 2]],
+			"5,2": ["hollow", [3], 15],
+			"4,2": ["hollow", [3], 15],
+		});
+		const oSim = S.create(overLayout, { turning: false });
+		S.setLubricant(oSim, 2);
+		for (let k = 0; k < 4; k++) {
+			const rg = S.addGrain(oSim, 4.5 * SIDE, 1.5 * SIDE - 24, 2.2, 0);
+			const bg = S.addGrain(oSim, 4.5 * SIDE - 22, 1.5 * SIDE - 2, 2.2, 3);
+			assert.ok(rg >= 0 && bg >= 0);
+			oSim.vy[rg] = 110;
+			oSim.vx[bg] = 280;
+			oSim.vy[bg] = -25;
+			runChecked(oSim, 0.25, "dual-overpass-wave");
+		}
+		runChecked(oSim, 2.5, "dual-overpass");
+		let southRed = 0, southBlue = 0, eastRed = 0, eastBlue = 0;
+		for (let k = 0; k < oSim.count; k++) {
+			const cell = G.cellAt(oSim.x[k], oSim.y[k]);
+			if (cell === 2 * N + 4) {
+				if (oSim.color[k] === 0) southRed++;
+				else southBlue++;
+			} else if (cell === 2 * N + 5) {
+				if (oSim.color[k] === 0) eastRed++;
+				else eastBlue++;
+			}
+		}
+		assert.equal(southRed, 4, `overpass [${ports}] passes all 4 N-S red grains straight south`);
+		assert.equal(southBlue, 0, `overpass [${ports}] blocks E-W blue grains from falling south`);
+		assert.equal(eastBlue, 4, `overpass [${ports}] passes all 4 W-E blue grains straight east`);
+		assert.equal(eastRed, 0, `overpass [${ports}] blocks N-S red grains from deflecting east`);
+		tally(oSim);
+	}
+	tally(bSim);
+	return "4+4 bends, 4+4 overpass";
+}
+
 // The whole machine for sixty seconds across two seeds: counters must add up,
 // grains must drain through aligned ports, and overlap/penetration stay bounded.
 function machine() {
@@ -587,7 +671,7 @@ function machine() {
 	runChecked(sim, 60, "machine-11");
 	const alt = S.create(G.createLayout(12));
 	assert.ok(S.seed(alt) >= 40, "seed 12 must populate upper reservoirs");
-	runChecked(alt, 15, "machine-12");
+	runChecked(alt, 22, "machine-12");
 	const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 	conserved(sim, "machine-11");
 	conserved(alt, "machine-12");
@@ -617,6 +701,7 @@ const split = coincident();
 const carried = rotatingPocket();
 const frames = frameRates();
 const counted = counters();
+const dual = dualPassageCrossing();
 const full = machine();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 

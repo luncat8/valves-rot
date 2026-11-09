@@ -9,6 +9,10 @@ const ValveGeometry = (() => {
 	const WALL = RV * 0.135;
 	const EDGE = 1.95;
 	const ELBOW = RV * 0.5;
+	// Twin back-to-back bends `(><)` sit closer to the rim so a solid metal web
+	// separates the two passages across the rotor centre while keeping a straight
+	// radial throat at all four mouths.
+	const BENDS = RV * 0.88;
 	const POUR = 30;
 	// Water source vents: one control strip above the pour band, outside the
 	// grain and mouth bands, so a vent never fights a mouth marker or a pile.
@@ -28,14 +32,36 @@ const ValveGeometry = (() => {
 		[0, 3],
 		[0, 1, 2],
 		[0, 1, 2, 3],
+		[0, 3, 1, 2],
+		[0, 2, 1, 3],
 		[0],
 		[],
+	];
+	const SOLID_BASE_SHAPES = [
+		[0, 2],
+		[0, 3],
+		[0, 1, 2],
+		[0, 1, 2, 3],
+		[0],
+		[],
+	];
+	const SOLID_FOUR_SHAPES = [
+		[0, 1, 2, 3],
+		[0, 3, 1, 2],
+		[0, 2, 1, 3],
 	];
 	const HOLLOW_SHAPES = [[0], [0, 2], [0, 3], [0, 1, 2], [0, 1, 2, 3]];
 
 	// Port directions in index order, clockwise on screen (y grows downward).
 	const DIR_NAMES = ["E", "S", "W", "N"];
-	const SHAPE_NAMES = { "0,2": "straight", "0,3": "elbow", "0,1,2": "tee", "0,1,2,3": "cross", "0": "single", "": "blank" };
+	const MASK_SHAPES = {
+		0: "blank",
+		1: "single", 2: "single", 4: "single", 8: "single",
+		5: "straight", 10: "straight",
+		3: "elbow", 6: "elbow", 9: "elbow", 12: "elbow",
+		7: "tee", 11: "tee", 13: "tee", 14: "tee",
+		15: "cross",
+	};
 
 	function portMask(ports) {
 		let mask = 0;
@@ -43,12 +69,43 @@ const ValveGeometry = (() => {
 		return mask;
 	}
 
+	// Four-port solid valves carry three distinct orbits under +1 mod 4 shifts:
+	// cyclic `[0,1,2,3]` (step 1) is the open cross, `[0,2,1,3]` (step 2) is an
+	// overpass with pair 0 bridging over pair 1, and `[0,3,1,2]` (step 3) is two
+	// separated adjacent bends `(><)`.
+	function shapeOfPorts(kind, ports) {
+		if (kind === "solid" && ports.length === 4) {
+			const step = (ports[1] - ports[0]) & 3;
+			if (step === 3) return "bends";
+			if (step === 2) return "overpass";
+		}
+		return MASK_SHAPES[portMask(ports)] || null;
+	}
+
+	function groupsOfPorts(kind, ports) {
+		if (!ports.length) return [];
+		if (kind === "solid" && ports.length === 4 && ((ports[1] - ports[0]) & 3) !== 1) {
+			return [(1 << ports[0]) | (1 << ports[1]), (1 << ports[2]) | (1 << ports[3])];
+		}
+		return [portMask(ports)];
+	}
+
 	// Canonical valve types at direction 0. `turns` is how many quarter turns
-	// give a different port set, so blank/cross have one and straights two.
+	// give a distinct rotor state: blank/cross have one; straight, bends and
+	// overpass have two; single/elbow/tee have four.
 	function makeType(kind, ports) {
-		const shape = SHAPE_NAMES[ports.join(",")];
-		const turns = ports.length === 0 || ports.length === 4 ? 1 : shape === "straight" ? 2 : 4;
-		return { id: kind + "-" + shape, kind, ports, shape, name: kind + " " + shape, turns, mask: portMask(ports) };
+		const shape = shapeOfPorts(kind, ports);
+		const turns = ports.length === 0 || shape === "cross" ? 1 : shape === "straight" || shape === "bends" || shape === "overpass" ? 2 : 4;
+		return {
+			id: kind + "-" + shape,
+			kind,
+			ports,
+			shape,
+			name: kind + " " + shape,
+			turns,
+			mask: portMask(ports),
+			groups: groupsOfPorts(kind, ports),
+		};
 	}
 
 	const TYPES = [
@@ -92,37 +149,54 @@ const ValveGeometry = (() => {
 
 	// Two adjacent ports become a tangent offset-center elbow; both legs stop at
 	// the bend so the arc is the only rounded corner of the passage.
-	function elbowPrims(ports) {
+	function elbowPrims(ports, bend) {
+		const b = bend === undefined ? ELBOW : bend;
 		const p = ports[0];
 		const q = ports[1];
-		const cx = (DX[p] + DX[q]) * ELBOW;
-		const cy = (DY[p] + DY[q]) * ELBOW;
-		const px = DX[p] * ELBOW;
-		const py = DY[p] * ELBOW;
-		const qx = DX[q] * ELBOW;
-		const qy = DY[q] * ELBOW;
+		const cx = (DX[p] + DX[q]) * b;
+		const cy = (DY[p] + DY[q]) * b;
+		const px = DX[p] * b;
+		const py = DY[p] * b;
+		const qx = DX[q] * b;
+		const qy = DY[q] * b;
 		const legP = tube(
-			(DX[p] * (RV + ELBOW)) / 2,
-			(DY[p] * (RV + ELBOW)) / 2,
+			(DX[p] * (RV + b)) / 2,
+			(DY[p] * (RV + b)) / 2,
 			DX[p],
 			DY[p],
-			(RV - ELBOW) / 2,
+			(RV - b) / 2,
 			true,
 			true,
 		);
 		const legQ = tube(
-			(DX[q] * (RV + ELBOW)) / 2,
-			(DY[q] * (RV + ELBOW)) / 2,
+			(DX[q] * (RV + b)) / 2,
+			(DY[q] * (RV + b)) / 2,
 			DX[q],
 			DY[q],
-			(RV - ELBOW) / 2,
+			(RV - b) / 2,
 			true,
 			true,
 		);
 		return [
 			legP,
-			arc(cx, cy, ELBOW, Math.atan2(py - cy, px - cx), Math.atan2(qy - cy, qx - cx)),
+			arc(cx, cy, b, Math.atan2(py - cy, px - cx), Math.atan2(qy - cy, qx - cx)),
 			legQ,
+		];
+	}
+
+	function bendsPrims(ports) {
+		return [
+			...elbowPrims([ports[0], ports[1]], BENDS),
+			...elbowPrims([ports[2], ports[3]], BENDS),
+		];
+	}
+
+	function overpassPrims(ports) {
+		const p = ports[0];
+		const q = ports[2];
+		return [
+			tube(0, 0, DX[p], DY[p], RV, true, true),
+			tube(0, 0, DX[q], DY[q], RV, true, true),
 		];
 	}
 
@@ -158,7 +232,10 @@ const ValveGeometry = (() => {
 
 	function buildPrims(kind, ports, chamberR) {
 		if (kind === "hollow") return hollowPrims(ports, chamberR);
-		if (ports.length === 2 && (ports[0] - ports[1]) % 2 !== 0) return elbowPrims(ports);
+		const shape = shapeOfPorts(kind, ports);
+		if (shape === "bends") return bendsPrims(ports);
+		if (shape === "overpass") return overpassPrims(ports);
+		if (ports.length === 2 && (ports[0] - ports[1]) % 2 !== 0) return elbowPrims(ports, ELBOW);
 		return axisPrims(ports);
 	}
 
@@ -212,13 +289,10 @@ const ValveGeometry = (() => {
 		return path;
 	}
 
-	// A port only feeds the housing when the rotated passage still covers the
-	// channel cross-section at the rim; the overlap narrows as the rotor turns.
-	function updateSeams(v) {
-		const seam = v.seam;
+	function updateSeamPorts(seam, ports, angle) {
 		seam[0] = seam[1] = seam[2] = seam[3] = 0;
-		for (let k = 0; k < v.ports.length; k++) {
-			const u = PORT_ANG[v.ports[k]] + v.angle;
+		for (let k = 0; k < ports.length; k++) {
+			const u = PORT_ANG[ports[k]] + angle;
 			for (let s = 0; s < 4; s++) {
 				let d = u - PORT_ANG[s];
 				while (d > Math.PI) d -= TAU;
@@ -227,6 +301,16 @@ const ValveGeometry = (() => {
 				const a = (HALF - RV * Math.abs(Math.sin(d))) / Math.cos(d);
 				if (a > seam[s]) seam[s] = a < HALF ? a : HALF;
 			}
+		}
+	}
+
+	// A port only feeds the housing when the rotated passage still covers the
+	// channel cross-section at the rim; the overlap narrows as the rotor turns.
+	function updateSeams(v) {
+		updateSeamPorts(v.seam, v.ports, v.angle);
+		if (v.layerSeam) {
+			updateSeamPorts(v.layerSeam[0], v.layerPorts[0], v.angle);
+			updateSeamPorts(v.layerSeam[1], v.layerPorts[1], v.angle);
 		}
 	}
 
@@ -241,16 +325,26 @@ const ValveGeometry = (() => {
 		const quarter = ((Math.round(base / HALF_PI) % 4) + 4) % 4;
 		const body = [];
 		for (let k = 0; k < ports.length; k++) body.push((ports[k] + quarter) & 3);
+		const shape = shapeOfPorts(kind, body);
 		const prims = buildPrims(kind, body, chamberR);
+		const layered = shape === "overpass";
+		const layers = layered ? [[prims[0]], [prims[1]]] : null;
+		const layerPorts = layered ? [[body[0], body[1]], [body[2], body[3]]] : null;
 		const v = {
 			i,
 			j,
 			cx: (i + 0.5) * S,
 			cy: (j + 0.5) * S,
 			kind,
+			shape,
 			ports: body,
+			groups: groupsOfPorts(kind, body),
 			prims,
 			path: buildPath(prims),
+			layers,
+			layerPorts,
+			layerPaths: layered ? [buildPath(layers[0]), buildPath(layers[1])] : null,
+			layerSeam: layered ? [new Float64Array(4), new Float64Array(4)] : null,
 			chamberR: kind === "hollow" ? chamberR : 0,
 			angle: 0,
 			cos: 1,
@@ -292,12 +386,17 @@ const ValveGeometry = (() => {
 			}
 			addPort(down, 1);
 		}
+		for (let k = 0; k < specs.length; k++) {
+			const sp = specs[k];
+			if (sp.carvedMask && sp.ports.length === 4) sp.ports = [0, 1, 2, 3];
+		}
 	}
 
 	// Specs hold port directions in the rotor's own frame, so a world direction
 	// has to be brought back through the cell's base quarter.
 	function addPort(spec, world) {
 		const local = (world - spec.quarter) & 3;
+		spec.carvedMask = (spec.carvedMask || 0) | (1 << local);
 		if (spec.ports.indexOf(local) < 0) spec.ports.push(local);
 	}
 
@@ -307,15 +406,17 @@ const ValveGeometry = (() => {
 			for (let i = 0; i < N; i++) {
 				const rnd = rng(hash(seed, i, j));
 				const hollow = rnd() < 0.4;
-				const shapes = hollow ? HOLLOW_SHAPES : SOLID_SHAPES;
+				const shapes = hollow ? HOLLOW_SHAPES : SOLID_BASE_SHAPES;
 				const base = ((rnd() * 4) | 0) * HALF_PI;
 				const chamberR = hollow ? RV * (0.3 + rnd() * 0.12) : 0;
 				const quarter = ((Math.round(base / HALF_PI) % 4) + 4) % 4;
+				const idx = (rnd() * shapes.length) | 0;
+				const picked = (!hollow && idx === 3 ? SOLID_FOUR_SHAPES[(rnd() * SOLID_FOUR_SHAPES.length) | 0] : shapes[idx]).slice();
 				specs.push({
 					i,
 					j,
 					kind: hollow ? "hollow" : "solid",
-					ports: shapes[(rnd() * shapes.length) | 0].slice(),
+					ports: picked,
 					base,
 					chamberR,
 					quarter,
@@ -420,16 +521,15 @@ const ValveGeometry = (() => {
 		return j * N + i;
 	}
 
-	function airClearance(layout, x, y) {
+	function airClearance(layout, x, y, layer) {
 		if (x < 0 || x > SIZE || y < -POUR || y > SIZE + POUR) return 0;
-		return valveClearance(layout.valves[cellAt(x, y)], x, y);
+		return valveClearance(layout.valves[cellAt(x, y)], x, y, layer);
 	}
 
 	// Largest disc inside a rotor passage at rotor-local coordinates. The prims
 	// are stored in that frame and never rotate, so this is a static property of
 	// the valve; only the rim clip is applied here, with no seam opening.
-	function primDepth(v, px, py) {
-		const prims = v.prims;
+	function primDepthList(prims, px, py) {
 		let best = 0;
 		for (let k = 0; k < prims.length; k++) {
 			const pr = prims[k];
@@ -442,12 +542,43 @@ const ValveGeometry = (() => {
 		return best;
 	}
 
+	function primDepth(v, px, py) {
+		return primDepthList(v.prims, px, py);
+	}
+
 	function passageClearance(v, px, py) {
 		const r = Math.sqrt(px * px + py * py);
 		if (r >= RV) return 0;
 		const d = primDepth(v, px, py);
 		const room = RV - r;
 		return d < room ? d : room;
+	}
+
+	function layerClearance(v, layerIndex, px, py) {
+		const r = Math.sqrt(px * px + py * py);
+		if (r >= RV) return 0;
+		const d = v.layers ? primDepthList(v.layers[layerIndex], px, py) : layerIndex === 0 ? primDepth(v, px, py) : 0;
+		const room = RV - r;
+		return d < room ? d : room;
+	}
+
+	// Identifies which passage branch of a layered (overpass) rotor owns world
+	// point `(x, y)`: 0 outside any layered rotor, 1 on the over branch, 2 on the
+	// under branch, or -1 inside the central crossing where both branches exist
+	// so the caller preserves whichever branch the particle entered along.
+	function rotorBranchAt(v, x, y, prevLayer) {
+		if (!v.layers) return 0;
+		const lx = x - v.cx;
+		const ly = y - v.cy;
+		if (lx * lx + ly * ly >= RV * RV) return 0;
+		const px = lx * v.cos + ly * v.sin;
+		const py = ly * v.cos - lx * v.sin;
+		const d0 = primDepthList(v.layers[0], px, py);
+		const d1 = primDepthList(v.layers[1], px, py);
+		if (d0 > 0 && d1 <= 0) return 1;
+		if (d1 > 0 && d0 <= 0) return 2;
+		if (d0 > 0 && d1 > 0) return prevLayer === 1 || prevLayer === 2 ? prevLayer : d0 >= d1 ? 1 : 2;
+		return prevLayer === 1 || prevLayer === 2 ? prevLayer : 0;
 	}
 
 	// Clearance is the largest disc that fits at a point, evaluated against the
@@ -457,21 +588,24 @@ const ValveGeometry = (() => {
 	// - outside the rotor, the housing corridor, whose mouth is walled by the rim
 	//   wherever the seam is shut.
 	// The opening is an aperture, so it limits a grain to its current width and a
-	// shut seam leaves nothing to pass through.
-	function valveClearance(v, x, y) {
+	// shut seam leaves nothing to pass through. When `layer` is 1 or 2 on an
+	// overpass valve, only that pipe deck's passage and seams are open.
+	function valveClearance(v, x, y, layer) {
 		const lx = x - v.cx;
 		const ly = y - v.cy;
 		const r2 = lx * lx + ly * ly;
 		const r = Math.sqrt(r2);
+		const useLayer = v.layers && (layer === 1 || layer === 2) ? layer - 1 : -1;
+		const seams = useLayer >= 0 ? v.layerSeam[useLayer] : v.seam;
 		let best = 0;
 		if (r < RV) {
 			const room = RV - r;
 			const px = lx * v.cos + ly * v.sin;
 			const py = ly * v.cos - lx * v.sin;
-			best = primDepth(v, px, py);
+			best = primDepthList(useLayer >= 0 ? v.layers[useLayer] : v.prims, px, py);
 			let rim = room;
 			for (let s = 0; s < 4; s++) {
-				const seam = v.seam[s];
+				const seam = seams[s];
 				if (seam <= 0) continue;
 				const a = lx * DX[s] + ly * DY[s];
 				if (a <= 0) continue;
@@ -491,7 +625,7 @@ const ValveGeometry = (() => {
 			const uy = DY[s];
 			const face = stripDepth(v.strips[s], lx, ly);
 			if (face <= 0) continue;
-			const gap = v.seam[s] - Math.abs(ly * ux - lx * uy);
+			const gap = seams[s] - Math.abs(ly * ux - lx * uy);
 			const jaw = gap > 0 ? Math.sqrt(rimOut * rimOut + gap * gap) : rimOut;
 			const clear = jaw < face ? jaw : face;
 			if (clear > best) best = clear;
@@ -499,13 +633,13 @@ const ValveGeometry = (() => {
 		return best;
 	}
 
-	function isAir(layout, x, y, radius) {
-		return airClearance(layout, x, y) >= radius - 1e-7;
+	function isAir(layout, x, y, radius, layer) {
+		return airClearance(layout, x, y, layer) >= radius - 1e-7;
 	}
 
 	// Contact-limited travel: sample at half the particle radius, then bisect the
 	// first blocked sample so nothing can tunnel across a closed seam.
-	function sweep(layout, x0, y0, x1, y1, radius, out) {
+	function sweep(layout, x0, y0, x1, y1, radius, out, layer) {
 		out.x = x0;
 		out.y = y0;
 		out.hit = false;
@@ -519,7 +653,7 @@ const ValveGeometry = (() => {
 		let last = 0;
 		for (let k = 1; k <= count; k++) {
 			const t = k / count;
-			if (airClearance(layout, x0 + dx * t, y0 + dy * t) >= need) {
+			if (airClearance(layout, x0 + dx * t, y0 + dy * t, layer) >= need) {
 				last = t;
 				continue;
 			}
@@ -527,7 +661,7 @@ const ValveGeometry = (() => {
 			let hi = t;
 			for (let n = 0; n < 10; n++) {
 				const m = (lo + hi) * 0.5;
-				if (airClearance(layout, x0 + dx * m, y0 + dy * m) >= need) lo = m;
+				if (airClearance(layout, x0 + dx * m, y0 + dy * m, layer) >= need) lo = m;
 				else hi = m;
 			}
 			out.x = x0 + dx * lo;
@@ -555,12 +689,13 @@ const ValveGeometry = (() => {
 		v: null,
 		layout: null,
 		inside: false,
+		layer: 0,
 	};
 
 	// Air is connected along the cavity, not across metal. A projection that has
 	// to cross a wall to reach its candidate has left the grain's corridor and the
 	// hop would be a teleport, however short it looks.
-	function reachable(layout, x0, y0, x1, y1, radius) {
+	function reachable(layout, x0, y0, x1, y1, radius, layer) {
 		const dx = x1 - x0;
 		const dy = y1 - y0;
 		const len = Math.sqrt(dx * dx + dy * dy);
@@ -569,7 +704,7 @@ const ValveGeometry = (() => {
 		const need = radius - 1e-6;
 		for (let k = 1; k <= count; k++) {
 			const t = k / count;
-			if (airClearance(layout, x0 + dx * t, y0 + dy * t) < need) return false;
+			if (airClearance(layout, x0 + dx * t, y0 + dy * t, layer) < need) return false;
 		}
 		return true;
 	}
@@ -587,8 +722,8 @@ const ValveGeometry = (() => {
 		// Verify against the same field the solver queries, bounds included: a
 		// projection onto a pour spout can land outside the air region, and a
 		// candidate there is not air even though its cell still reports some.
-		if (airClearance(probe.layout, x, y) < probe.r - 1e-6) return;
-		if (!reachable(probe.layout, probe.tx, probe.ty, x, y, probe.r)) {
+		if (airClearance(probe.layout, x, y, probe.layer) < probe.r - 1e-6) return;
+		if (!reachable(probe.layout, probe.tx, probe.ty, x, y, probe.r, probe.layer)) {
 			// A grain the closing rim has just caught starts inside metal, so no
 			// straight line out of it can stay in air; keep the nearest verified
 			// air as the fallback rather than stranding the grain.
@@ -614,23 +749,27 @@ const ValveGeometry = (() => {
 	// every candidate is air by construction and only then distance-ranked. This
 	// keeps recovery deterministic and never invents a position, unlike a ring
 	// search that can fail and leave a grain to be recycled.
-	function nearestAir(layout, x, y, radius, out) {
+	function nearestAir(layout, x, y, radius, out, layer) {
 		out.x = x;
 		out.y = y;
 		out.dist = 0;
 		out.found = false;
 		if (x < 0 || x > SIZE || y < -POUR || y > SIZE + POUR) return out;
 		const v = layout.valves[cellAt(x, y)];
-		if (valveClearance(v, x, y) >= radius - 1e-6) {
+		if (valveClearance(v, x, y, layer) >= radius - 1e-6) {
 			out.found = true;
 			return out;
 		}
+		const useLayer = v.layers && (layer === 1 || layer === 2) ? layer - 1 : -1;
+		const prims = useLayer >= 0 ? v.layers[useLayer] : v.prims;
+		const seams = useLayer >= 0 ? v.layerSeam[useLayer] : v.seam;
 		probe.tx = x;
 		probe.ty = y;
 		probe.r = radius;
 		probe.v = v;
 		probe.layout = layout;
 		probe.inside = (x - v.cx) * (x - v.cx) + (y - v.cy) * (y - v.cy) < RV * RV;
+		probe.layer = layer || 0;
 		probe.best = Infinity;
 		probe.alt = Infinity;
 		probe.bx = x;
@@ -647,11 +786,11 @@ const ValveGeometry = (() => {
 		let wy = y;
 		let climbed = 0;
 		for (let n = 0; n < 4 && climbed < radius * 2.5; n++) {
-			const level = airClearance(layout, wx, wy);
+			const level = airClearance(layout, wx, wy, layer);
 			if (level >= radius - 1e-6) break;
 			const e = 0.5;
-			const gx = airClearance(layout, wx + e, wy) - airClearance(layout, wx - e, wy);
-			const gy = airClearance(layout, wx, wy + e) - airClearance(layout, wx, wy - e);
+			const gx = airClearance(layout, wx + e, wy, layer) - airClearance(layout, wx - e, wy, layer);
+			const gy = airClearance(layout, wx, wy + e, layer) - airClearance(layout, wx, wy - e, layer);
 			const len = Math.sqrt(gx * gx + gy * gy);
 			if (len < 1e-9) break;
 			const step = radius - level + 0.05;
@@ -669,8 +808,8 @@ const ValveGeometry = (() => {
 			const sin = v.sin;
 			const lx = px * cos + py * sin;
 			const ly = py * cos - px * sin;
-			for (let k = 0; k < v.prims.length; k++) {
-				const pr = v.prims[k];
+			for (let k = 0; k < prims.length; k++) {
+				const pr = prims[k];
 				if (pr.t === T_TUBE) {
 					const a = (lx - pr.cx) * pr.ux + (ly - pr.cy) * pr.uy;
 					const l = (ly - pr.cy) * pr.ux - (lx - pr.cx) * pr.uy;
@@ -716,7 +855,7 @@ const ValveGeometry = (() => {
 				const inward = RV - radius;
 				if (inward > 0) probeConsider(v.cx + ((x - v.cx) / reach) * inward, v.cy + ((y - v.cy) / reach) * inward);
 				for (let s = 0; s < 4; s++) {
-					const seam = v.seam[s];
+					const seam = seams[s];
 					if (seam <= 0) continue;
 					const ux = DX[s];
 					const uy = DY[s];
@@ -742,7 +881,7 @@ const ValveGeometry = (() => {
 				const cl = clamp(l, -band, band);
 				// Beside a shut or narrowing seam the rim jaws bound the mouth, so the
 				// corridor projection stops far enough out to clear both jaws.
-				const gap = v.seam[s] - Math.abs(cl);
+				const gap = seams[s] - Math.abs(cl);
 				if (gap < radius) {
 					const push = (gap > 0 ? Math.sqrt(radius * radius - gap * gap) : radius) + 1e-4;
 					if (mid + ca < RV + push) ca = RV + push - mid;
@@ -777,26 +916,28 @@ const ValveGeometry = (() => {
 	}
 
 	function rotatePorts(ports, quarter) {
-		const mask = rotateMask(portMask(ports), quarter);
+		const q = ((quarter % 4) + 4) % 4;
+		if (ports.length === 4) {
+			const step = (ports[1] - ports[0]) & 3;
+			if (step === 3) return ((ports[0] + q) & 1) === 0 ? [0, 3, 1, 2] : [1, 0, 2, 3];
+			if (step === 2) return ((ports[0] + q) & 1) === 0 ? [0, 2, 1, 3] : [1, 3, 2, 0];
+		}
+		const mask = rotateMask(portMask(ports), q);
 		const out = [];
 		for (let d = 0; d < 4; d++) if (mask & (1 << d)) out.push(d);
 		return out;
 	}
 
-	// A layout valve may carry its ports pre-rotated by a base quarter, so its
-	// type is the catalogue entry whose ports match under some rotation.
-	function typeOf(v) {
-		const mask = portMask(v.ports);
-		for (const type of TYPES) {
-			if (type.kind !== v.kind) continue;
-			for (let q = 0; q < 4; q++) if (rotateMask(type.mask, q) === mask) return type;
-		}
-		return null;
-	}
-
 	function typeById(id) {
 		for (const type of TYPES) if (type.id === id) return type;
 		return null;
+	}
+
+	// A layout valve may carry its ports pre-rotated by a base quarter, so its
+	// type resolves through the orbit-invariant shape classification.
+	function typeOf(v) {
+		const shape = shapeOfPorts(v.kind, v.ports);
+		return shape ? typeById(v.kind + "-" + shape) : null;
 	}
 
 	// Direction of a valve: the smallest quarter that rotates its type's
@@ -805,7 +946,9 @@ const ValveGeometry = (() => {
 	function orientationOf(v, quarter) {
 		const type = typeOf(v);
 		if (!type) return 0;
-		const world = rotateMask(portMask(v.ports), quarter === undefined ? quarterOf(v.angle) : quarter);
+		const rq = ((quarter === undefined ? quarterOf(v.angle) : quarter) % 4 + 4) % 4;
+		if (type.shape === "bends" || type.shape === "overpass") return (v.ports[0] + rq) & 1;
+		const world = rotateMask(portMask(v.ports), rq);
 		for (let q = 0; q < 4; q++) if (rotateMask(type.mask, q) === world) return q;
 		return 0;
 	}
@@ -815,7 +958,41 @@ const ValveGeometry = (() => {
 	}
 
 	function portsText(ports) {
-		return ports.length ? ports.map(p => DIR_NAMES[p]).join(",") : "none";
+		if (!ports.length) return "none";
+		if (ports.length === 4) {
+			const step = (ports[1] - ports[0]) & 3;
+			if (step === 3) return DIR_NAMES[ports[0]] + "–" + DIR_NAMES[ports[1]] + ", " + DIR_NAMES[ports[2]] + "–" + DIR_NAMES[ports[3]];
+			if (step === 2) return DIR_NAMES[ports[0]] + "–" + DIR_NAMES[ports[1]] + " over " + DIR_NAMES[ports[2]] + "–" + DIR_NAMES[ports[3]];
+		}
+		return ports.map(p => DIR_NAMES[p]).join(",");
+	}
+
+	// True when `type` at direction `quarter` joins all bits in `needMask` inside
+	// a single passage group (unlike a mere bitmask subset, which would conflate
+	// two disjoint 2-port passages with an open 4-way cross).
+	function typeConnectsMask(type, quarter, needMask) {
+		if (!needMask) return true;
+		if (!type) return false;
+		const groups = type.groups;
+		for (let k = 0; k < groups.length; k++) {
+			if ((rotateMask(groups[k], quarter) & needMask) === needMask) return true;
+		}
+		return false;
+	}
+
+	function valveConnectsMask(v, quarter, needMask) {
+		if (!needMask) return true;
+		if (!v) return false;
+		const q = quarter === undefined ? quarterOf(v.angle) : quarter;
+		const groups = v.groups;
+		for (let k = 0; k < groups.length; k++) {
+			if ((rotateMask(groups[k], q) & needMask) === needMask) return true;
+		}
+		return false;
+	}
+
+	function portsConnected(v, portA, portB, quarter) {
+		return valveConnectsMask(v, quarter, (1 << portA) | (1 << portB));
 	}
 
 	function describe(v) {
@@ -836,6 +1013,7 @@ const ValveGeometry = (() => {
 		WALL,
 		EDGE,
 		ELBOW,
+		BENDS,
 		POUR,
 		VENT_STRIP,
 		TAU,
@@ -850,6 +1028,7 @@ const ValveGeometry = (() => {
 		HOLLOW_SHAPES,
 		DIR_NAMES,
 		TYPES,
+		rotateMask,
 		quarterOf,
 		rotatePorts,
 		typeOf,
@@ -857,6 +1036,9 @@ const ValveGeometry = (() => {
 		orientationOf,
 		worldPorts,
 		portsText,
+		typeConnectsMask,
+		valveConnectsMask,
+		portsConnected,
 		hashUnit,
 		rng,
 		createLayout,
@@ -866,6 +1048,8 @@ const ValveGeometry = (() => {
 		cellAt,
 		valveClearance,
 		passageClearance,
+		layerClearance,
+		rotorBranchAt,
 		airClearance,
 		isAir,
 		sweep,

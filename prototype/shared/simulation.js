@@ -85,7 +85,9 @@ const ValveSimulation = (() => {
 	// gcell: the water-grid cell each grain was last booked in by the heat
 	// field (-1 = not yet imported), so a crossing moves its sensible energy
 	// exactly once and a removal exports it.
-	const GRAIN_FIELDS = ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact", "gcell"];
+	// layer: 0 normally; inside an overpass rotor, 1 = over passage, 2 = under
+	// passage so the two crossing pipes stay physically independent.
+	const GRAIN_FIELDS = ["x", "y", "vx", "vy", "r", "mass", "invMass", "color", "contact", "gcell", "layer"];
 
 	// Palette index is the material identity; an out-of-range index falls back to
 	// the neutral material so mass, render color and quest classification agree.
@@ -232,6 +234,7 @@ const ValveSimulation = (() => {
 			color: new Uint8Array(capacity),
 			contact: new Uint8Array(capacity),
 			gcell: new Int32Array(capacity),
+			layer: new Uint8Array(capacity),
 			order: new Int32Array(capacity),
 			reach,
 			goalFeed: new Uint8Array(N),
@@ -346,12 +349,20 @@ const ValveSimulation = (() => {
 		if (moved > 0) settleWalls(sim, h);
 	}
 
+	function syncLayer(sim, k) {
+		const x = sim.x[k];
+		const y = sim.y[k];
+		const v = sim.layout.valves[G.cellAt(x, y)];
+		sim.layer[k] = v.layers ? G.rotorBranchAt(v, x, y, sim.layer[k]) : 0;
+	}
+
 	// Checks whether a rotor substep leaves every grain in valid air without
 	// scissor-pinching two grains across a closing mouth. A small mouth nudge
 	// within WALL_PUSH is allowed when the pile behind it has room; otherwise the
 	// valve stalls and, after STALL_LIMIT seconds, backs off to the previous detent.
 	function pinchAt(sim, k, tx, ty, stamp, limit) {
 		const rad = sim.r[k];
+		const lk = sim.layer[k];
 		const x0 = sim.x[k];
 		const y0 = sim.y[k];
 		const bx = binX(tx);
@@ -365,6 +376,7 @@ const ValveSimulation = (() => {
 				for (let p = sim.binStart[b]; p < end; p++) {
 					const j = sim.order[p];
 					if (j === k) continue;
+					if (lk && sim.layer[j] && lk !== sim.layer[j]) continue;
 					const jv = G.cellAt(sim.x[j], sim.y[j]);
 					const jMoved = sim.pushFlag[j] > 0 && sim.stalledList[jv] !== stamp;
 					const jx = jMoved ? sim.pushX[j] : sim.x[j];
@@ -392,8 +404,10 @@ const ValveSimulation = (() => {
 		const stamp = sim.steps;
 		sim.stalled = 0;
 		for (let k = 0; k < sim.count; k++) {
+			syncLayer(sim, k);
 			const x = sim.x[k];
 			const y = sim.y[k];
+			const lk = sim.layer[k];
 			sim.pushX[k] = x;
 			sim.pushY[k] = y;
 			sim.pushFlag[k] = 0;
@@ -417,8 +431,8 @@ const ValveSimulation = (() => {
 				ty = v.cy + rx * v.sin + ry * v.cos;
 				kind = 1;
 			}
-			if (G.airClearance(layout, tx, ty) < sim.r[k] - 1e-6) {
-				G.nearestAir(layout, tx, ty, sim.r[k], nearest);
+			if (G.airClearance(layout, tx, ty, lk) < sim.r[k] - 1e-6) {
+				G.nearestAir(layout, tx, ty, sim.r[k], nearest, lk);
 				if (!nearest.found || nearest.dist > WALL_PUSH) {
 					sim.stalledList[vi] = stamp;
 					sim.stalled++;
@@ -441,7 +455,7 @@ const ValveSimulation = (() => {
 				const vi = G.cellAt(x, y);
 				if (sim.stalledList[vi] === stamp) continue;
 				if (!pinchAt(sim, k, sim.pushX[k], sim.pushY[k], stamp, 0.25)) continue;
-				if (G.airClearance(layout, x, y) < sim.r[k] - 1e-6) continue;
+				if (G.airClearance(layout, x, y, sim.layer[k]) < sim.r[k] - 1e-6) continue;
 				sim.pushX[k] = x;
 				sim.pushY[k] = y;
 				sim.pushFlag[k] = 0;
@@ -476,10 +490,10 @@ const ValveSimulation = (() => {
 		}
 	}
 
-	function normalAt(layout, x, y) {
+	function normalAt(layout, x, y, layer) {
 		const e = 0.25;
-		const gx = G.airClearance(layout, x + e, y) - G.airClearance(layout, x - e, y);
-		const gy = G.airClearance(layout, x, y + e) - G.airClearance(layout, x, y - e);
+		const gx = G.airClearance(layout, x + e, y, layer) - G.airClearance(layout, x - e, y, layer);
+		const gy = G.airClearance(layout, x, y + e, layer) - G.airClearance(layout, x, y - e, layer);
 		const len = Math.sqrt(gx * gx + gy * gy);
 		if (len < 1e-7) return false;
 		nrm.x = gx / len;
@@ -543,25 +557,28 @@ const ValveSimulation = (() => {
 			const sub = Math.min(remaining, 0.25 / speed);
 			const x0 = sim.x[k];
 			const y0 = sim.y[k];
+			const lk = sim.layer[k];
 			let tx = x0 + vx * sub;
 			let ty = y0 + vy * sub;
-			let clear = G.airClearance(sim.layout, tx, ty);
-			if (clear < sim.r[k] + 0.002 && normalAt(sim.layout, tx, ty)) {
+			let clear = G.airClearance(sim.layout, tx, ty, lk);
+			if (clear < sim.r[k] + 0.002 && normalAt(sim.layout, tx, ty, lk)) {
 				const correction = Math.min(sim.r[k] + 0.002 - clear, 0.25);
 				tx += nrm.x * correction;
 				ty += nrm.y * correction;
 			}
-			G.sweep(sim.layout, x0, y0, tx, ty, sim.r[k], sweepOut);
+			G.sweep(sim.layout, x0, y0, tx, ty, sim.r[k], sweepOut, lk);
 			if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) > penetrationAt(sim, k, x0, y0) + TOUCH) return;
 			sim.x[k] = sweepOut.x;
 			sim.y[k] = sweepOut.y;
-			if (sweepOut.hit && normalAt(sim.layout, sim.x[k], sim.y[k])) contactWall(sim, k, sim.x[k], sim.y[k]);
+			syncLayer(sim, k);
+			if (sweepOut.hit && normalAt(sim.layout, sim.x[k], sim.y[k], sim.layer[k])) contactWall(sim, k, sim.x[k], sim.y[k]);
 			remaining -= sub;
 		}
 	}
 
 	function penetrationAt(sim, k, x, y) {
 		const rad = sim.r[k];
+		const lk = sim.layer[k];
 		const bx = binX(x);
 		const by = binY(y);
 		let worst = 0;
@@ -576,6 +593,7 @@ const ValveSimulation = (() => {
 				for (let p = sim.binStart[b]; p < end; p++) {
 					const j = sim.order[p];
 					if (j === k) continue;
+					if (lk && sim.layer[j] && lk !== sim.layer[j]) continue;
 					const dx = sim.x[j] - x;
 					const dy = sim.y[j] - y;
 					const minD = rad + sim.r[j];
@@ -601,13 +619,14 @@ const ValveSimulation = (() => {
 		if (len2 < 1e-12) return 0;
 		const x0 = sim.x[k];
 		const y0 = sim.y[k];
-		G.sweep(sim.layout, x0, y0, x0 + dx, y0 + dy, sim.r[k], sweepOut);
+		G.sweep(sim.layout, x0, y0, x0 + dx, y0 + dy, sim.r[k], sweepOut, sim.layer[k]);
 		const f = clamp(((sweepOut.x - x0) * dx + (sweepOut.y - y0) * dy) / len2, 0, 1);
 		if (f <= 0) return 0;
 		const deep = penetrationAt(sim, k, sweepOut.x, sweepOut.y);
 		if (deep > TOUCH && deep > penetrationAt(sim, k, x0, y0) + limit) return 0;
 		sim.x[k] = sweepOut.x;
 		sim.y[k] = sweepOut.y;
+		syncLayer(sim, k);
 		return f;
 	}
 
@@ -646,7 +665,7 @@ const ValveSimulation = (() => {
 						const my = py - sim.origY[k];
 						const v = valves[vi];
 						const om = sim.omega[vi];
-						if (normalAt(sim.layout, px, py)) {
+						if (normalAt(sim.layout, px, py, sim.layer[k])) {
 							wallContact(sim, k, nrm.x, nrm.y, -om * (py - v.cy), om * (px - v.cx));
 						} else if (mx * mx + my * my > 0) {
 							sim.vx[k] *= 0.5;
@@ -657,13 +676,15 @@ const ValveSimulation = (() => {
 			}
 			sim.origX[k] = ox;
 			sim.origY[k] = oy;
+			syncLayer(sim, k);
 		}
 	}
 
 	function applyMove(sim, k, h) {
 		const x0 = sim.x[k];
 		const y0 = sim.y[k];
-		G.sweep(sim.layout, x0, y0, target.x, target.y, sim.r[k], sweepOut);
+		const lk = sim.layer[k];
+		G.sweep(sim.layout, x0, y0, target.x, target.y, sim.r[k], sweepOut, lk);
 		let tx = sweepOut.x;
 		let ty = sweepOut.y;
 		let wallHit = sweepOut.hit;
@@ -697,7 +718,7 @@ const ValveSimulation = (() => {
 					sim.vx[k] = vx;
 					sim.vy[k] = vy;
 				}
-				G.sweep(sim.layout, x0, y0, x0 + vx * h, y0 + vy * h, sim.r[k], sweepOut);
+				G.sweep(sim.layout, x0, y0, x0 + vx * h, y0 + vy * h, sim.r[k], sweepOut, lk);
 				if (penetrationAt(sim, k, sweepOut.x, sweepOut.y) <= deep0 + TOUCH) {
 					tx = sweepOut.x;
 					ty = sweepOut.y;
@@ -709,8 +730,9 @@ const ValveSimulation = (() => {
 		}
 		sim.x[k] = tx;
 		sim.y[k] = ty;
+		syncLayer(sim, k);
 		if (!wallHit) return;
-		if (!normalAt(sim.layout, tx, ty)) {
+		if (!normalAt(sim.layout, tx, ty, sim.layer[k])) {
 			const mx = target.x - x0;
 			const my = target.y - y0;
 			const len = Math.sqrt(mx * mx + my * my) || 1;
@@ -753,6 +775,7 @@ const ValveSimulation = (() => {
 		const nx = water ? water.nx : 0;
 		const ny = water ? water.ny : 0;
 		const levelUp = water ? water.levelUp : null;
+		const cellLayer = water ? water.cellLayer : null;
 		const bands = water ? water.band : null;
 		const bandRho = water ? water.bandRho : null;
 		const waterDrag = sim.waterDrag;
@@ -767,7 +790,9 @@ const ValveSimulation = (() => {
 				const rad = sim.r[k];
 				if (gx >= 0 && gx < nx && gy >= 0 && gy < ny) {
 					const idx = gy * nx + gx;
-					const level = levelUp[idx];
+					const lk = sim.layer[k];
+					const cl = cellLayer[idx];
+					const level = !lk || !cl || lk === cl ? levelUp[idx] : NaN;
 					if (level === level) wet = submergedFraction(rad, y - level);
 					// Layered displacement: each phase band lifts by its own density,
 					// so a grain in a heavy layer below a light one is pushed harder
@@ -812,11 +837,12 @@ const ValveSimulation = (() => {
 		const layout = sim.layout;
 		for (let k = 0; k < sim.count; k++) {
 			const rad = sim.r[k];
-			const clear = G.airClearance(layout, sim.x[k], sim.y[k]);
+			const lk = sim.layer[k];
+			const clear = G.airClearance(layout, sim.x[k], sim.y[k], lk);
 			if (clear >= rad - 1e-6) continue;
 			const wall = rad - clear;
 			if (wall > sim.maxPen) sim.maxPen = wall;
-			G.nearestAir(layout, sim.x[k], sim.y[k], rad, nearest);
+			G.nearestAir(layout, sim.x[k], sim.y[k], rad, nearest, lk);
 			if (!nearest.found) continue;
 			sim.recovered++;
 			if (nearest.dist > sim.maxPush) sim.maxPush = nearest.dist;
@@ -834,6 +860,7 @@ const ValveSimulation = (() => {
 			}
 			sim.x[k] = nearest.x;
 			sim.y[k] = nearest.y;
+			syncLayer(sim, k);
 		}
 	}
 
@@ -857,6 +884,7 @@ const ValveSimulation = (() => {
 	}
 
 	function pairContact(sim, i, j) {
+		if (sim.layer[i] && sim.layer[j] && sim.layer[i] !== sim.layer[j]) return;
 		const dx = sim.x[j] - sim.x[i];
 		const dy = sim.y[j] - sim.y[i];
 		const minD = sim.r[i] + sim.r[j];
@@ -969,6 +997,7 @@ const ValveSimulation = (() => {
 					for (let p = starts[b]; p < end; p++) {
 						const j = order[p];
 						if (j <= k) continue;
+						if (sim.layer[k] && sim.layer[j] && sim.layer[k] !== sim.layer[j]) continue;
 						const dx = sim.x[j] - sim.x[k];
 						const dy = sim.y[j] - sim.y[k];
 						const minD = sim.r[k] + sim.r[j];
@@ -1038,10 +1067,12 @@ const ValveSimulation = (() => {
 		sim.accumulator = 0;
 	}
 
-	function addGrain(sim, x, y, radius, color) {
+	function addGrain(sim, x, y, radius, color, preferredLayer) {
 		if (sim.count >= sim.capacity) return -1;
 		const rad = radius === undefined ? R_GRAIN : radius;
-		if (G.airClearance(sim.layout, x, y) < rad - 1e-6) return -1;
+		const v = sim.layout.valves[G.cellAt(x, y)];
+		const layer = v.layers ? G.rotorBranchAt(v, x, y, preferredLayer || 0) : 0;
+		if (G.airClearance(sim.layout, x, y, layer) < rad - 1e-6) return -1;
 		const k = sim.count++;
 		sim.x[k] = x;
 		sim.y[k] = y;
@@ -1049,9 +1080,10 @@ const ValveSimulation = (() => {
 		sim.vy[k] = 0;
 		sim.r[k] = rad;
 		sim.contact[k] = 0;
-	sim.color[k] = materialIndex(
-		color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color);
-	const mass = grainMass(sim.color[k], rad);
+		sim.layer[k] = layer;
+		sim.color[k] = materialIndex(
+			color === undefined ? (G.hashUnit(sim.layout.seed | 0, sim.injected, 31) * GRAIN_COLORS.length) | 0 : color);
+		const mass = grainMass(sim.color[k], rad);
 		sim.mass[k] = mass;
 		sim.invMass[k] = 1 / mass;
 		sim.gcell[k] = -1;
@@ -1059,9 +1091,12 @@ const ValveSimulation = (() => {
 		return k;
 	}
 
-	function slotFree(sim, x, y, rad) {
-		if (G.airClearance(sim.layout, x, y) < rad + 0.2) return false;
+	function slotFree(sim, x, y, rad, preferredLayer) {
+		const v = sim.layout.valves[G.cellAt(x, y)];
+		const layer = v.layers ? G.rotorBranchAt(v, x, y, preferredLayer || 0) : 0;
+		if (G.airClearance(sim.layout, x, y, layer) < rad + 0.2) return false;
 		for (let k = 0; k < sim.count; k++) {
+			if (layer && sim.layer[k] && layer !== sim.layer[k]) continue;
 			const dx = sim.x[k] - x;
 			const dy = sim.y[k] - y;
 			const reach = sim.r[k] + rad + 0.35;
@@ -1395,11 +1430,15 @@ const ValveSimulation = (() => {
 		const chosen = color === undefined ? (Math.random() * GRAIN_COLORS.length) | 0 : color;
 		let added = 0;
 		const spacing = 2 * R_GRAIN + 0.4;
-		for (let y = -RV + R_GRAIN; y < RV; y += spacing) {
-			for (let x = -RV + R_GRAIN; x < RV; x += spacing) {
-				if (x * x + y * y > (RV - R_GRAIN) ** 2) continue;
-				if (!slotFree(sim, v.cx + x, v.cy + y, R_GRAIN)) continue;
-				if (addGrain(sim, v.cx + x, v.cy + y, R_GRAIN, chosen) >= 0) added++;
+		const passes = v.layers ? 2 : 1;
+		for (let pass = 0; pass < passes; pass++) {
+			const pref = v.layers ? pass + 1 : 0;
+			for (let y = -RV + R_GRAIN; y < RV; y += spacing) {
+				for (let x = -RV + R_GRAIN; x < RV; x += spacing) {
+					if (x * x + y * y > (RV - R_GRAIN) ** 2) continue;
+					if (!slotFree(sim, v.cx + x, v.cy + y, R_GRAIN, pref)) continue;
+					if (addGrain(sim, v.cx + x, v.cy + y, R_GRAIN, chosen, pref) >= 0) added++;
+				}
 			}
 		}
 		return added;
