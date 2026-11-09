@@ -135,6 +135,10 @@
         let heatViewOn = false;
         let heatMap = null;
         let heatSelSeen = -1;
+        // Heat model scales relative to the shipped parameter table (ValveHeat.PARAMS),
+        // edited live by the Capacity and Latent sliders in the Heat panel.
+        let capacityScale = 1;
+        let latentScale = 1;
         // Reused for the per-channel readout, so the status line allocates no array.
         const waterChannels = new Float64Array(3);
         // Inlet colour boxes: element id and the channel it selects.
@@ -794,7 +798,13 @@
                 $("heat-unselect").disabled = !on;
                 $("heat-ambient").disabled = !on;
                 $("heat-view").disabled = !on;
+                $("heat-capacity").disabled = !on;
+                $("heat-latent").disabled = !on;
                 if (on) {
+                        $("heat-capacity").value = String(capacityScale);
+                        $("heat-capacity-value").value = "×" + capacityScale.toFixed(2);
+                        $("heat-latent").value = String(latentScale);
+                        $("heat-latent-value").value = "×" + latentScale.toFixed(2);
                         if (selected >= 0) {
                                 $("heat-power").value = String(h.power[selected]);
                                 $("heat-power-value").value = Math.round(h.power[selected]) + " E/s" + (selectedSet.size > 1 ? " · " + selectedSet.size + " valves" : "");
@@ -850,6 +860,29 @@
                 if (sim.heat) Heat.setAmbient(sim.heat, +$("heat-ambient").value, undefined, true);
                 if (paused) drawFrame(false);
         };
+        // Capacity and Latent are model knobs, not weights: they rescale the whole
+        // field's specific heats (metal, liquid, grains) or latent book against the
+        // shipped parameter table, live, through the same validating setParams the
+        // fixtures use. A refused set (unstable parameter mix) snaps the slider back
+        // to the last applied scale; setParams is atomic, so nothing half-applies.
+        function applyModelScale(which, value) {
+                const h = sim.heat;
+                if (!h) return;
+                const scale = Math.min(2, Math.max(0.25, value));
+                const base = ValveHeat.PARAMS;
+                const ok = which === "capacity"
+                        ? Heat.setParams(h, { metalHeat: base.metalHeat * scale, liquidHeat: base.liquidHeat * scale, grainHeat: base.grainHeat * scale })
+                        : Heat.setParams(h, { latent: [base.latent[0] * scale, base.latent[1] * scale, base.latent[2] * scale] });
+                if (ok) {
+                        if (which === "capacity") capacityScale = scale; else latentScale = scale;
+                }
+                const applied = which === "capacity" ? capacityScale : latentScale;
+                $(which === "capacity" ? "heat-capacity" : "heat-latent").value = String(applied);
+                $(which === "capacity" ? "heat-capacity-value" : "heat-latent-value").value = "×" + applied.toFixed(2);
+                if (paused) drawFrame(false);
+        }
+        $("heat-capacity").oninput = () => applyModelScale("capacity", +$("heat-capacity").value);
+        $("heat-latent").oninput = () => applyModelScale("latent", +$("heat-latent").value);
         $("heat-view").onchange = () => {
                 heatViewOn = $("heat-view").checked;
                 if (paused) drawFrame(false);

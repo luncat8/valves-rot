@@ -792,15 +792,17 @@ element("water-view-color").onchange();
 // edits the selected valve and survives a disable, the view toggle dims the
 // sheet and paints the °C legend, the ambient input rebases the field at
 // once, and turning water off parks heat. The slider's scale ships with the
-// heat balance: ±5000 E/s, the scale heat-balance.cjs tuned against the melt
-// work — at a third of it a frozen pool never melts back.
+// heat balance: ±10000 E/s, the scale heat-balance.cjs tuned against the melt
+// work at the retuned table (sensible heats and latent book halved).
 assert.equal(element("heat-on").checked, false, "heat starts off");
 assert.equal(element("heat-power").disabled, true, "no valve is selected yet");
+assert.equal(element("heat-capacity").disabled, true, "the capacity slider parks until heat is on");
+assert.equal(element("heat-latent").disabled, true, "the latent slider parks until heat is on");
 const powerSlider = pageHtml.match(/<input id="heat-power" type="range" min="(-?\d+)" max="(-?\d+)" step="(\d+)"/);
 assert.ok(powerSlider, "the page declares the power slider");
-assert.equal(powerSlider[1], "-5000", "the power slider ships at the balanced scale (min)");
-assert.equal(powerSlider[2], "5000", "the power slider ships at the balanced scale (max)");
-assert.equal(powerSlider[3], "50", "the power slider steps in 50 E/s");
+assert.equal(powerSlider[1], "-10000", "the power slider ships at the balanced scale (min)");
+assert.equal(powerSlider[2], "10000", "the power slider ships at the balanced scale (max)");
+assert.equal(powerSlider[3], "100", "the power slider steps in 100 E/s");
 element("water-on").checked = false;
 element("water-on").onchange();
 element("heat-on").checked = true;
@@ -817,6 +819,24 @@ assert.ok(element("heat-power-value").value.includes("0 E/s"), "with a valve sel
 element("heat-power").value = "120";
 element("heat-power").oninput();
 assert.ok(element("heat-power-value").value.includes("120"), "the power readout follows the slider");
+// The Capacity and Latent sliders rescale the whole field's sensible heats and
+// latent book live, against the shipped table, through the validating setParams
+// the fixtures use: the readouts mirror the applied scale, a refused set would
+// snap the slider back, and restoring ×1 returns the shipped values.
+assert.equal(element("heat-capacity").disabled, false, "the capacity slider arms with heat on");
+assert.equal(element("heat-latent").disabled, false, "the latent slider arms with heat on");
+element("heat-capacity").value = "0.5";
+element("heat-capacity").oninput();
+assert.equal(element("heat-capacity-value").value, "×0.50", "the capacity readout follows the slider: " + element("heat-capacity-value").value);
+element("heat-capacity").value = "1";
+element("heat-capacity").oninput();
+assert.equal(element("heat-capacity-value").value, "×1.00", "the capacity slider restores the shipped table");
+element("heat-latent").value = "0.5";
+element("heat-latent").oninput();
+assert.equal(element("heat-latent-value").value, "×0.50", "the latent readout follows the slider: " + element("heat-latent-value").value);
+element("heat-latent").value = "1";
+element("heat-latent").oninput();
+assert.equal(element("heat-latent-value").value, "×1.00", "the latent slider restores the shipped book");
 // Multi-selection: Lab Shift-click toggles cells into the set without turning
 // them, the Power slider edits every selected valve at once, a still ~½ s press
 // toggles like Shift-click (the touch answer) and consumes its release click,

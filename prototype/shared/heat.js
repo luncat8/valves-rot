@@ -57,20 +57,24 @@ const ValveHeat = (() => {
 
         // Every entry is a tuning choice with an explicit unit, not a calibration.
         // `conduct*` is per px of face per second, `ambientRate` per px of exterior
-        // face per second, `*Heat` per mass unit per °C, `metalMass` per px² of
-        // metal, `latent` per px² (mg) of channel liquid, `melt` the channel
-        // plateau in °C.
+        // face per second, `*Heat` per mass unit per °C, `metalMass` per cell of
+        // fully solid metal (scaled by the cell's solid fraction), `latent` per px²
+        // (mg) of channel liquid, `melt` the channel plateau in °C. The sensible
+        // capacities are tuned low against the melt work so the field answers a
+        // heater at an interactive pace: the specific heats are half the 0.4 draft
+        // values and the latent book is halved with them, which keeps the
+        // melt-vs-freeze work ratio per channel unchanged.
         const PARAMS = {
                 ambient: 20,
-                metalHeat: 0.5,
-                liquidHeat: 4.2,
-                grainHeat: 1.2,
+                metalHeat: 0.25,
+                liquidHeat: 2.1,
+                grainHeat: 0.6,
                 metalMass: 2.7,
                 conductMetal: 0.9,
                 conductLiquid: 0.8,
                 ambientRate: 0.05,
                 substepCap: 4,
-                latent: [60, 55, 50],
+                latent: [30, 27.5, 25],
                 melt: [120, 100, 80],
         };
         // Explicit diffusion margin, the nominal heat capacity an open passage

@@ -1,16 +1,19 @@
 // The power balance for the heat mode, as a script instead of a one-off probe.
 // The signed valve power is the single knob that decides whether a heater or a
 // cooler can drive a chamber pool through the plateaus at an interactive pace:
-// too little and the melt never happens at all (the old ±150 E/s slider left
-// the heater inert — a 240 mg pour froze 19% in 50 s and nothing melted back
-// in 200 s), while the freeze work per px² (latent plus the capacity swap at
-// the room) is about a third of the melt work per px² (latent plus the swap at
-// the plateau), so the melt leg is the one the default has to be tuned against.
-// The sweep found the knee at ±3000 E/s (melt-back in 152 s) and the shipped
-// default at ±5000 E/s: first freeze 0.2 s, a 240 mg pool 46% frozen by 20 s,
-// and the whole frozen mass melted back inside 110 s. Beyond it the extra
-// power buys no more freeze — the plateau there is placement-bound, not
-// power-bound — and only drives the cooled block further below the labeled
+// too little and the melt never happens at all (±150 E/s leaves the heater
+// inert — at the shipped table a 240 mg pour freezes 13% in 20 s and nothing
+// melts back inside the cap), while the freeze work per px² (latent plus the
+// capacity swap at the room) is about a third of the melt work per px²
+// (latent plus the swap at the plateau), so the melt leg is the one the
+// default has to be tuned against. The shipped table was retuned for an
+// interactive pace: the specific heats (metal, liquid, grains) and the latent
+// book are half the 0.4 draft values — the melt-vs-freeze work ratio per
+// channel is unchanged — and the slider ceiling doubled. At the shipped
+// ±10000 E/s: first freeze 0.10 s, ~82 mg of a 240 mg pool frozen by 20 s,
+// and a frozen pool melted back in 39 s (was 103 s). Beyond it the melt is
+// placement-bound, not power-bound — 4x the power buys no faster return of the
+// frozen mass and only drives the cooled block further below the labeled
 // 0–240 °C scale.
 //
 // Measured on a deterministic shaft scene (the heat-picture idiom, seed-free):
@@ -32,7 +35,7 @@ const H = require(path.join(__dirname, "..", "prototype", "shared", "heat.js"));
 // The page's default pour (water.js DEFAULT_RATE) and the slider ceiling this
 // table ships with (index.html; render-smoke asserts the two move together).
 const POUR = 40;
-const SHIPPED = 5000;
+const SHIPPED = 10000;
 const ROOM = 20;
 const POUR_S = 6;
 const FREEZE_S = 30;
@@ -198,7 +201,7 @@ function runningPour(power, rate, log) {
 // ---- the latent knob at the shipped power -----------------------------------------
 function latentRow(scale, log) {
         const { sim, h } = scene();
-        for (let k = 0; k < 3; k++) h.p.latent[k] = [60, 55, 50][k] * scale;
+        for (let k = 0; k < 3; k++) h.p.latent[k] = H.PARAMS.latent[k] * scale;
         W.setVent(sim.water, 3, true);
         W.setSupply(sim.water, POUR);
         for (let k = 0; k < POUR_S * 120; k++) S.step(sim, S.STEP);
@@ -219,20 +222,20 @@ const out = [];
 out.push(`heat balance, shaft scene, room ${ROOM} °C, pour ${POUR} px²/s for ${POUR_S} s at the mouth of column 3, cooler on the chamber valve (3,5) only`);
 out.push(`params ${JSON.stringify(H.PARAMS)}`);
 
-// 1. The freeze sweep. At the old default nothing melts later and only a fifth
-//    of the pool freezes; at the shipped default the plateau arrives by 20 s
-//    and is placement-bound, not power-bound.
+// 1. The freeze sweep. At the lowest row nothing melts later and under half
+//    the pool freezes in 50 s; at the shipped default the plateau arrives by
+//    20 s and is placement-bound, not power-bound.
 out.push("");
 out.push("freeze: power\tfirst\tfrozen@10s\tfrozen@20s\tfrozen@50s mg\tchamber liq px²\tgrains\tmin field °C");
 const freezeRows = {};
-for (const p of [150, 500, 1500, SHIPPED, 20000]) freezeRows[p] = freezePace(p, out);
+for (const p of [150, 500, 1500, SHIPPED, 40000]) freezeRows[p] = freezePace(p, out);
 
-// 2. The melt sweep. The shipped default is the smallest round power that
-//    melts the whole frozen mass back inside the cap.
+// 2. The melt sweep. The shipped default melts the whole frozen mass well
+//    inside the cap; the floor never does; 4x buys no faster return of it.
 out.push("");
 out.push("melt-back: power\tfirst melt\tall gone\tfrozen mg\tmelted mg\tliquid px²");
 const meltRows = {};
-for (const p of [150, 1500, SHIPPED, 20000]) meltRows[p] = meltBack(p, out);
+for (const p of [150, 1500, 5000, SHIPPED, 40000]) meltRows[p] = meltBack(p, out);
 
 // 3. The running pour at the shipped cooler: the rate ceiling. One default
 //    cooler freezes about a third of a default pour; the share falls as the
@@ -246,29 +249,34 @@ for (const rate of [POUR, 100, 200]) pourRows[rate] = runningPour(SHIPPED, rate,
 //    plateau is placement-bound; it was first-order at the old default, where
 //    the freeze was still power-bound.
 out.push("");
-out.push("latent at -5000: scale\tfrozen@20s\tfrozen@50s mg\tgrains");
+out.push(`latent at -${SHIPPED}: scale\tfrozen@20s\tfrozen@50s mg\tgrains`);
 for (const scale of [0.5, 1, 2]) latentRow(scale, out);
 
 // ---- gates on the shipped default --------------------------------------------------
 //
 // Freeze: fast on contact, plateaued by 20 s, the remainder pinned liquid.
 const f = freezeRows[SHIPPED];
-assert.ok(f.at[20] >= 100, `shipped freeze: ${f.at[20].toFixed(0)} mg of the ${f.poured.toFixed(0)} mg pour frozen by 20 s (at least 40%)`);
-assert.ok(f.at[50] - f.at[20] < 5, `shipped freeze: the plateau holds (${f.at[50].toFixed(0)} vs ${f.at[20].toFixed(0)} mg) — placement-bound, not power-bound`);
-assert.ok(f.first < 1, `shipped freeze: first freeze in ${f.first.toFixed(2)} s, under a second`);
-assert.ok(f.remainder >= 100, `shipped freeze: ${f.remainder.toFixed(0)} px² stays liquid as the pinned sub-grain remainder`);
+assert.ok(f.at[20] >= 60, `shipped freeze: ${f.at[20].toFixed(0)} mg of the ${f.poured.toFixed(0)} mg pour frozen by 20 s (at least a quarter)`);
+assert.ok(f.at[50] - f.at[20] <= 20, `shipped freeze: the plateau holds (${f.at[50].toFixed(0)} vs ${f.at[20].toFixed(0)} mg) — placement-bound, not power-bound`);
+assert.ok(f.first < 0.5, `shipped freeze: first freeze in ${f.first.toFixed(2)} s, well under a second`);
+assert.ok(f.remainder >= 130, `shipped freeze: ${f.remainder.toFixed(0)} px² stays liquid as the pinned sub-grain remainder`);
 
-// Melt: the knee. The old default never starts; a third of the shipped never
-// finishes; the shipped completes with the phase books exact.
+// Melt: the knee. The inert floor never starts; half the shipped finishes but
+// slower; the shipped completes, and melted counts every grain — including the
+// ones placed while the deep-dived cells warm back through the plateaus, so it
+// exceeds the at-flip snapshot without breaking the ledger (books close).
 const m = meltRows[SHIPPED];
-assert.ok(m.first <= 60, `shipped melt: first melt in ${m.first.toFixed(1)} s, under a minute`);
-assert.ok(m.allGone <= 120, `shipped melt: all grains back in ${m.allGone.toFixed(1)} s, under two minutes`);
-assert.equal(m.frozen, m.melted, `shipped melt: the cycle closes the phase books (frozen ${m.frozen.toFixed(1)} == melted ${m.melted.toFixed(1)} mg)`);
+assert.ok(m.first <= 40, `shipped melt: first melt in ${m.first.toFixed(1)} s, under 40 s`);
+assert.ok(m.allGone <= 60, `shipped melt: all grains back in ${m.allGone.toFixed(1)} s, under a minute`);
+assert.ok(m.melted + 1e-6 >= m.frozen, `shipped melt: melted (${m.melted.toFixed(1)} mg) covers the at-flip frozen mass (${m.frozen.toFixed(1)} mg)`);
+assert.ok(m.liquid >= 200, `shipped melt: ${m.liquid.toFixed(0)} px² of liquid returned to the chamber`);
 const before = meltRows[150];
 assert.ok(before.first === Infinity, "the old default ±150 E/s never starts melting inside the cap");
-assert.ok(freezeRows[150].at[50] < 60, `the old default froze only ${freezeRows[150].at[50].toFixed(0)} mg in 50 s (under a quarter of the pool)`);
-const third = meltRows[1500];
-assert.ok(third.allGone > 120, `a third of the shipped power does not finish inside the gate (${Number.isFinite(third.allGone) ? third.allGone.toFixed(0) + " s" : "never"})`);
+assert.ok(freezeRows[150].at[50] < 125, `the old default froze only ${freezeRows[150].at[50].toFixed(0)} mg in 50 s (under half the pool)`);
+const seventh = meltRows[1500];
+assert.ok(seventh.allGone > MELT_CAP_S || !Number.isFinite(seventh.allGone), `a seventh of the shipped power does not finish inside the cap (${Number.isFinite(seventh.allGone) ? seventh.allGone.toFixed(0) + " s" : "never"})`);
+const half = meltRows[5000];
+assert.ok(half.allGone <= 120, `half the shipped power finishes, but slower (${Number.isFinite(half.allGone) ? half.allGone.toFixed(0) + " s" : "never"})`);
 
 // The running pour: one shipped cooler cannot freeze a default pour in flight
 // — most of it still reaches the chamber — and the mouth never clogs.
@@ -278,12 +286,14 @@ assert.ok(share > 0.25 && share < 0.55, `one shipped cooler freezes ${(100 * sha
 assert.ok(split.split.chamberLiq >= 200, `${split.split.chamberLiq.toFixed(0)} px² of the pour pools in the chamber as liquid`);
 assert.ok(split.split.shaftLiq >= 100, `the rest backs up the shaft (${split.split.shaftLiq.toFixed(0)} px²) once the chamber fills`);
 
-// Too much: the plateau is placement-bound, so quadruple power freezes no more
-// of the pool — it only pushes the cooled block off the labeled scale.
-const quad = freezeRows[20000];
-assert.ok(quad.at[20] < f.at[20], `4x the power freezes less, not more (${quad.at[20].toFixed(0)} vs ${f.at[20].toFixed(0)} mg by 20 s) — the plateau is placement-bound`);
-assert.ok(quad.minT < -100, `4x the power drives the cooled block to ${quad.minT.toFixed(0)} °C, far below the labeled scale`);
-assert.ok(f.minT > -100, `the shipped default's dive (${f.minT.toFixed(0)} °C) stays within an order of the 0–240 scale`);
+// Too much: the melt is placement-bound, so 4x the power buys no faster return
+// of the frozen mass — it only pushes the cooled block further off the labeled
+// scale.
+const quad = freezeRows[40000];
+const quadMelt = meltRows[40000];
+assert.ok(Number.isFinite(quadMelt.allGone) && quadMelt.allGone > m.allGone - 15, `4x the power buys under 15 s of melt-back (${Number.isFinite(quadMelt.allGone) ? quadMelt.allGone.toFixed(0) + " s" : "never"} vs ${m.allGone.toFixed(0)} s) — placement-bound, not power-bound`);
+assert.ok(quad.minT < -800, `4x the power drives the cooled block to ${quad.minT.toFixed(0)} °C, far below the labeled scale`);
+assert.ok(f.minT > -700, `the shipped default's dive (${f.minT.toFixed(0)} °C) stays within an order of the 0–240 scale`);
 
 // The design ratio the default was tuned against: melting a px² back out of a
 // grain pays the latent plus the capacity swap at the plateau, freezing pays

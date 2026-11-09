@@ -3,10 +3,14 @@
 // without a browser. The field is painted by the page's own renderers (the
 // water sheet through renderWater, the temperature overlay through
 // renderHeat's LUT), so it is a colour preview of the real layers, not a copy.
-// The scene runs at the shipped default power (±5000 E/s, the scale
-// heat-balance.cjs tuned): the heater chamber rises to the R plateau and pins
-// there with its grains pending, the cooler chamber freezes its pool into
-// primary grains and pins the remainder at the freeze point.
+// The scene runs at +3000/−3000 E/s, a third of the shipped slider scale
+// (±10000), chosen so the melt pins stay visible for the whole 30 s window:
+// at the shipped default the heater races through its pins and saturates the
+// labeled scale within seconds, and the picture stops demonstrating the
+// plateaus. The heater chamber climbs to the melt pins of the grains it still
+// holds; the cooler chamber freezes its pool into primary grains and pins the
+// remainder at the freeze point. heat-balance.cjs measures the shipped
+// ±10000 E/s behavior.
 // Run: node experiments/heat-picture.cjs
 "use strict";
 const path = require("node:path");
@@ -26,7 +30,7 @@ const N = G.N;
 const RV = G.RV;
 const OUT = path.join(__dirname, "logs", "heat-0.4.png");
 const LOG = path.join(__dirname, "logs", "heat-0.4.txt");
-const POWER = 5000;
+const POWER = 3000;
 const WINDOW = 30 * 120;
 
 // Two sealed chambers over a solid field: the left one heated, the right one
@@ -149,7 +153,8 @@ lines.push(`heat 0.4 picture and measurement, seed 3, ${(WINDOW / 120).toFixed(0
 lines.push("params " + JSON.stringify(h.p));
 lines.push(`heater valve ${5 * N + 3} at +${POWER} E/s, cooler valve ${5 * N + 6} at -${POWER} E/s, ambient ${h.p.ambient} °C`);
 lines.push(`ledger: initial ${h.initial.toFixed(0)} source ${h.source.toFixed(0)} ambient ${h.ambient.toFixed(0)} material ${h.material.toFixed(0)}`);
-lines.push(`residual ${H.residual(h).toExponential(2)} (tolerance 1e-9 relative)`);
+const res = H.residual(h);
+lines.push(`residual ${res.toExponential(2)} absolute, ${(res / Math.max(1, Math.abs(h.material))).toExponential(2)} relative to the material term (tolerance 1e-9 relative)`);
 lines.push(`channels R ${ch[0].toFixed(1)} G ${ch[1].toFixed(1)} B ${ch[2].toFixed(1)} px², grains ${sim.count}, melted ${h.melted.toFixed(1)} mg, frozen ${h.frozen.toFixed(1)} mg`);
 const meanT = (() => {
         let s = 0;
