@@ -19,20 +19,20 @@
 		.legend { display: flex; flex-wrap: wrap; gap: 20px; margin: 12px 0; }
 		.legend span { display: inline-flex; align-items: center; gap: 7px; }
 		.dot { width: 13px; height: 13px; display: inline-block; border-radius: 50%; }
-		.small { background: #f07a5f; } .standard { background: #e9b64b; } .heavy { background: #4fb8ab; }
+		.light { background: #7f93dd; } .standard { background: #4fb8ab; } .heavy { background: #f07a5f; }
 	</style>
 </head>
 <body>
 	<h1>Air scale: three vented cell pipes</h1>
-	<p>Each lane has a bottom <strong>vent-in</strong>, a vertical cell-valve pipe, a top <strong>vent-out</strong>, and one grain. At 1× the standard grain should balance gravity; at 2× the light grain should rise fastest. The radii below are also their relative mass model.</p>
+	<p>Each lane has a bottom <strong>vent-in</strong>, a vertical cell-valve pipe, a top <strong>vent-out</strong>, and one grain. Radius and material density together set its mass: the neutral r 2.7 grain is the reference mass that 1× balances, so 1× holds it level while the buoyant blue grain rises and the dense red grain falls; 2× lifts the standard grain too.</p>
 	<div class="controls">
 		<label>Air force <input id="force" type="range" min="0" max="2" step="0.05" value="1"><output id="force-value">1×</output></label>
 		<button id="restart" type="button">Reset grains</button>
 	</div>
 	<div class="legend">
-		<span><i class="dot small"></i>Light · r 1.7</span>
-		<span><i class="dot standard"></i>Standard · r 2.7</span>
-		<span><i class="dot heavy"></i>Heavy · r 3.4</span>
+		<span><i class="dot light"></i>Light · r 1.7 · 500 kg/m³</span>
+		<span><i class="dot standard"></i>Standard · r 2.7 · 1000 kg/m³</span>
+		<span><i class="dot heavy"></i>Heavy · r 3.4 · 2000 kg/m³</span>
 	</div>
 	<canvas id="field" aria-label="Three vertical air pipes with source vents below, exhaust vents above, and grains of different weights"></canvas>
 	<p id="stats" aria-live="polite"></p>
@@ -49,9 +49,11 @@
 			const G = ValveGeometry;
 			const S = ValveSimulation;
 			const R = ValveRender;
-			const columns = [3, 4, 5];
-			const radii = [1.7, 2.7, 3.4];
-			const colors = ["#f07a5f", "#e9b64b", "#4fb8ab"];
+			const lanes = [
+				{ column: 3, radius: 1.7, color: 3, name: "light" },
+				{ column: 4, radius: 2.7, color: 2, name: "standard" },
+				{ column: 5, radius: 3.4, color: 0, name: "heavy" },
+			];
 			const canvas = document.getElementById("field");
 			const ctx = canvas.getContext("2d");
 			const slider = document.getElementById("force");
@@ -65,7 +67,7 @@
 			const valves = [];
 			for (let j = 0; j < G.N; j++) {
 				for (let i = 0; i < G.N; i++) {
-					const open = columns.indexOf(i) >= 0;
+					const open = lanes.some(lane => lane.column === i);
 					valves.push(G.makeValve(i, j, "solid", open ? [1, 3] : [], 0, 0));
 				}
 			}
@@ -79,8 +81,8 @@
 			function setMouths(s) {
 				s.inlets.present.fill(0);
 				s.inlets.open.fill(0);
-				for (let n = 0; n < columns.length; n++) {
-					const c = columns[n];
+				for (const lane of lanes) {
+					const c = lane.column;
 					s.inlets.present[c] = 1;
 					s.inlets.present[G.N + c] = 1;
 					s.inlets.open[c] = 1;
@@ -94,8 +96,8 @@
 				setMouths(sim);
 				S.setPressure(sim, "grid");
 				S.setAirForce(sim, Number(slider.value));
-				for (let n = 0; n < columns.length; n++) {
-					S.addGrain(sim, (columns[n] + 0.5) * G.S, 540, radii[n], n);
+				for (const lane of lanes) {
+					S.addGrain(sim, (lane.column + 0.5) * G.S, 540, lane.radius, lane.color);
 				}
 				previous = performance.now();
 			}
@@ -116,9 +118,9 @@
 				statsClock += 1;
 				if (statsClock % 8 !== 0) return;
 				const lines = ["air scale " + slider.value + "×  ·  active grains " + sim.count];
-				for (let n = 0; n < radii.length; n++) {
+				for (let n = 0; n < lanes.length; n++) {
 					const k = n;
-					lines.push("r=" + radii[n].toFixed(1) + "  y=" + (sim.count > k ? sim.y[k].toFixed(1) : "vented") + "  vy=" + (sim.count > k ? sim.vy[k].toFixed(1) : "—") + " px/s");
+					lines.push(lanes[n].name + "  r=" + lanes[n].radius.toFixed(1) + "  y=" + (sim.count > k ? sim.y[k].toFixed(1) : "vented") + "  vy=" + (sim.count > k ? sim.vy[k].toFixed(1) : "—") + " px/s");
 				}
 				stats.textContent = lines.join("\n");
 			}

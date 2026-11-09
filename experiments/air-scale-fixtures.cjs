@@ -1,25 +1,33 @@
 // Vertical vent calibration: three independent pipes carry light, standard and
 // heavy grains. Run: node experiments/air-scale-fixtures.cjs
+// Density is part of the grain mass now (material palette), so the lanes use
+// real materials: buoyant blue 500, neutral teal 1000, dense red 2000 kg/m3.
+// The neutral r = 2.7 grain is exactly REFERENCE_GRAIN_MASS, the mass the 1x
+// air-force setting was calibrated to balance.
 const assert = require("node:assert/strict");
 const G = require("../prototype/shared/geometry.js");
 const S = require("../prototype/shared/simulation.js");
 
-const COLUMNS = [3, 4, 5];
-const RADII = [1.7, 2.7, 3.4];
 const Y0 = 540;
+const LANES = [
+	{ column: 3, radius: 1.7, color: 3, name: "light" },
+	{ column: 4, radius: 2.7, color: 2, name: "standard" },
+	{ column: 5, radius: 3.4, color: 0, name: "heavy" },
+];
 
 function build(force) {
 	const valves = [];
 	for (let j = 0; j < G.N; j++) {
 		for (let i = 0; i < G.N; i++) {
-			valves.push(G.makeValve(i, j, "solid", COLUMNS.indexOf(i) >= 0 ? [1, 3] : [], 0, 0));
+			const open = LANES.some(lane => lane.column === i);
+			valves.push(G.makeValve(i, j, "solid", open ? [1, 3] : [], 0, 0));
 		}
 	}
 	const sim = S.create({ seed: 73, valves }, { turning: false });
 	sim.inlets.present.fill(0);
 	sim.inlets.open.fill(0);
-	for (let n = 0; n < COLUMNS.length; n++) {
-		const c = COLUMNS[n];
+	for (const lane of LANES) {
+		const c = lane.column;
 		sim.inlets.present[c] = 1;
 		sim.inlets.present[G.N + c] = 1;
 		sim.inlets.open[c] = 1;
@@ -27,8 +35,8 @@ function build(force) {
 	}
 	S.setPressure(sim, "grid");
 	S.setAirForce(sim, force);
-	for (let n = 0; n < COLUMNS.length; n++) {
-		assert.ok(S.addGrain(sim, (COLUMNS[n] + 0.5) * G.S, Y0, RADII[n], n) >= 0);
+	for (const lane of LANES) {
+		assert.ok(S.addGrain(sim, (lane.column + 0.5) * G.S, Y0, lane.radius, lane.color) >= 0);
 	}
 	return sim;
 }
@@ -45,16 +53,18 @@ const balanced = build(1);
 run(balanced, 1);
 assert.equal(balanced.count, 3);
 const standard = balanced.y[1];
-assert.ok(Math.abs(standard - Y0) < 20, `1× should balance gravity for the standard grain, y=${standard.toFixed(1)}`);
-assert.ok(balanced.y[0] < Y0 - 120, `the light grain rises at 1×, y=${balanced.y[0].toFixed(1)}`);
-assert.ok(balanced.y[2] > Y0 + 15, `the heavy grain falls at 1×, y=${balanced.y[2].toFixed(1)}`);
+assert.ok(Math.abs(standard - Y0) < 20, `1x should balance gravity for the standard grain, y=${standard.toFixed(1)}`);
+assert.ok(balanced.y[0] < Y0 - 120, `the light grain rises at 1x, y=${balanced.y[0].toFixed(1)}`);
+assert.ok(balanced.y[2] > Y0 + 15, `the heavy grain falls at 1x, y=${balanced.y[2].toFixed(1)}`);
 
 const lift = build(2);
 run(lift, 1);
 assert.equal(lift.count, 3);
-assert.ok(lift.y[0] < Y0 - 200, `2× must blow the light grain upward, y=${lift.y[0].toFixed(1)}`);
-assert.ok(lift.y[1] < Y0 - 120, `2× must lift the standard grain, y=${lift.y[1].toFixed(1)}`);
+assert.ok(lift.y[0] < Y0 - 200, `2x must blow the light grain upward, y=${lift.y[0].toFixed(1)}`);
+assert.ok(lift.y[1] < Y0 - 120, `2x must lift the standard grain, y=${lift.y[1].toFixed(1)}`);
 
 console.log(
-	`OK air scale: 0× drains ${off.drained}; 1× standard y=${standard.toFixed(1)}, light rises ${(Y0 - balanced.y[0]).toFixed(1)} px, heavy falls ${(balanced.y[2] - Y0).toFixed(1)} px; 2× light rises ${(Y0 - lift.y[0]).toFixed(1)} px`,
+	`OK air scale: 0x drains ${off.drained}; 1x standard y=${standard.toFixed(1)}, ` +
+		`light rises ${(Y0 - balanced.y[0]).toFixed(1)} px, heavy falls ${(balanced.y[2] - Y0).toFixed(1)} px; ` +
+		`2x light rises ${(Y0 - lift.y[0]).toFixed(1)} px`,
 );

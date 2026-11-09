@@ -395,3 +395,19 @@
 - On the `5 px` water grid, a `!w.air` metal cell at the corner of an overpass crossing can still clear `>= 0.75 px` right on two perpendicular faces while having `cellLayer === 0`; `sampleEastFace` and `sampleSouthFace` must require `w.air` on both endpoints so `labelComponents` cannot short-circuit Layer 1 and Layer 2 through dry metal corners. And rotating an overpass can flip an open cell directly between `cellLayer === 1` and `2` without ever closing `w.air[i]`, so `pushClosedWater` must evacuate `w.switched` cells along `oldLayer` before reopening them on `newLayer`.
 - `valveConnectsMask(v, quarter, needMask)` rotates `v.groups`, which already fold in `v`'s base orientation (`v.ports`), whereas `G.orientationOf(v)` is relative to canonical `G.typeOf(v)`. Pass `quarterOf(v.angle)` (or omit `quarter`) to `valveConnectsMask`/`portsConnected`, and use `G.typeConnectsMask(G.typeOf(v), G.orientationOf(v), needMask)` when working in canonical type space.
 
+
+# Calibration fixture drift (2026-11-09)
+
+- A fixture that passes a palette index as a grain colour is also choosing that
+  grain's material density. `grainMass = density / 1000 * r²`, so the old air
+  calibration's "standard" lane (palette 1, heavy amber 1400) silently became
+  1.4× the reference mass when materials landed, and 1× air force stopped
+  balancing it — the model was fine, the lane was not neutral. Name the material
+  or the density in the lane table instead of writing bare indices, and make the
+  reference lane use the neutral 1000 kg/m³ material so its mass equals
+  `REFERENCE_GRAIN_MASS` by construction.
+- Prefer repairing the calibration over retiring its page: an air-scale page is
+  the only visual proof that 0× drops, 1× holds and 2× lifts, and it now also
+  shows drag scaling inversely with mass (buoyant blue rises, dense red falls in
+  the same field). A red suite that everyone keeps carrying as an exception is a
+  worse outcome than a one-line lane table.
