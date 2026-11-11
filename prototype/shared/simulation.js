@@ -201,6 +201,9 @@ const ValveSimulation = (() => {
 		// Bumped by every layout mutation that is not a rotor angle (a replaced
 		// valve keeps its angle), so caches keyed on geometry can notice it.
 		layoutVersion: 0,
+		// Bumped whenever a rotor's target detent changes, by hand, bot,
+		// auto-rotation or stall back-off, so a route reader can cache.
+		targetVersion: 0,
 		pressure: null,
 		pressureMode: "off",
 		// Pressure mode parked while water is on, restored when water is off.
@@ -310,6 +313,7 @@ const ValveSimulation = (() => {
 			sim.dwell[k] = 0.4 + G.hashUnit(seed, k, 2) * 3;
 			sim.omega[k] = 0;
 		}
+		sim.targetVersion++;
 	}
 
 	function canAutoRotate(sim, k) {
@@ -332,6 +336,7 @@ const ValveSimulation = (() => {
 				sim.dwell[k] -= h;
 				if (sim.dwell[k] <= 0) {
 					goal = sim.target[k] = before + sim.dir[k] * HALF_PI;
+					sim.targetVersion++;
 					sim.dwell[k] = TURN_DWELL_MIN + G.hashUnit(seed, k, 11) * 1.2;
 				}
 			}
@@ -483,6 +488,7 @@ const ValveSimulation = (() => {
 			if (sim.stallTime[k] <= STALL_LIMIT) continue;
 			const pos = sim.target[k] >= v.angle;
 			sim.target[k] = (pos ? Math.floor((v.angle + 1e-6) / HALF_PI) : Math.ceil((v.angle - 1e-6) / HALF_PI)) * HALF_PI;
+			sim.targetVersion++;
 			sim.dir[k] = -sim.dir[k];
 			sim.dwell[k] = TURN_DWELL_MIN;
 			sim.stallTime[k] = 0;
@@ -1297,6 +1303,7 @@ const ValveSimulation = (() => {
 		if (index < 0 || index >= sim.layout.valves.length) return false;
 		const base = Math.round(sim.target[index] / HALF_PI) * HALF_PI;
 		sim.target[index] = base + quarters * HALF_PI;
+		sim.targetVersion++;
 		sim.dwell[index] = TURN_DWELL_MIN + 1;
 		sim.stallTime[index] = 0;
 		if (sim.pressureMode === "grid") GAS.refresh(sim);
@@ -1308,6 +1315,7 @@ const ValveSimulation = (() => {
 		const snapped = Math.round(angle / HALF_PI) * HALF_PI;
 		if (sim.target[index] === snapped) return false;
 		sim.target[index] = snapped;
+		sim.targetVersion++;
 		sim.dwell[index] = TURN_DWELL_MIN + 1.5;
 		sim.stallTime[index] = 0;
 		if (sim.pressureMode === "grid") GAS.refresh(sim);
@@ -1360,6 +1368,7 @@ const ValveSimulation = (() => {
 		sim.layout.valves[index] = v;
 		sim.layoutVersion++;
 		sim.prevAngle[index] = sim.target[index] = v.angle;
+		sim.targetVersion++;
 		sim.cos0[index] = v.cos;
 		sim.sin0[index] = v.sin;
 		sim.omega[index] = sim.stallTime[index] = 0;

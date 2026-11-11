@@ -23,6 +23,7 @@ const penSegments = new Map();
 let currentPen = null;
 const mainDrawImages = [];
 const mainTexts = [];
+const mainDashes = [];
 const gradient = { addColorStop() {} };
 
 function recordingContext(isMain) {
@@ -63,6 +64,12 @@ function recordingContext(isMain) {
                                 return (img, x, y, w, h) => {
                                         if (isMain) mainDrawImages.push([x, y, w, h]);
                                         calls.drawImage++;
+                                        calls.total++;
+                                };
+                        }
+                        if (prop === "setLineDash") {
+                                return dash => {
+                                        if (isMain) mainDashes.push(dash.length);
                                         calls.total++;
                                 };
                         }
@@ -500,18 +507,120 @@ element("tint-picker").onclick({ target: { closest: () => ({ dataset: { tint: "0
 // Lab mode defaults auto-rotate to 90%; switching to Game mode sets 7%,
 // shows the game panel, lets the user sign a goal, and returns to 90% in Lab.
 assert.equal(element("auto-rotate").value, "90", "Lab mode auto-rotate default is 90%");
+// Mouth keys. `key` reports whether the page consumed the key: an unconsumed
+// Tab is what moves the browser focus off the field.
+const pressedMouths = [];
+const toggleInlet = SIM.toggleInlet;
+SIM.toggleInlet = (sim, inlet, flip, actor) => {
+        pressedMouths.push(inlet);
+        return toggleInlet(sim, inlet, flip, actor);
+};
+function key(name, shiftKey = false) {
+        let consumed = false;
+        c.onkeydown({ key: name, shiftKey, preventDefault() { consumed = true; } });
+        return consumed;
+}
+assert.equal(key("Tab"), false, "Lab mouths have no owner, so the field stays a single tab stop");
 element("mode-lab").checked = false;
 element("mode-game").checked = true;
 element("mode-game").onchange();
 assert.equal(element("auto-rotate").value, "7", "Game mode auto-rotate default is 7%");
 assert.equal(element("game-panel").hidden, false, "Game panel opens in Game mode");
 assert.ok(element("player-list").innerHTML.includes("You") && element("player-list").innerHTML.includes("Ada"), "Competitors list rendered");
+const mouthStatus = () => element("game-status").textContent;
+assert.equal(key("Tab", true), false, "Shift+Tab on the valve cursor leaves the field backwards");
+const ownMouths = [];
+for (let stop = 0; stop < 4; stop++) {
+        assert.equal(key("Tab"), true, "Tab stops on own mouth " + (stop + 1));
+        assert.match(mouthStatus(), /^You (in|out) mouth, column \d+, open — Space seals it\.$/);
+        ownMouths.push(mouthStatus());
+}
+assert.equal(new Set(ownMouths).size, 4, "the four stops are four different mouths");
+assert.ok(ownMouths[0].includes(" out ") && ownMouths[1].includes(" out ") && ownMouths[2].includes(" in ") && ownMouths[3].includes(" in "), "stops run the top band first, then the bottom band");
+mainTexts.length = 0;
+frames.shift()((now += 16.7));
+assert.ok(mainTexts.includes("You in"), "the focused mouth wears the hover label");
+pressedMouths.length = 0;
+assert.equal(key(" "), true);
+assert.equal(pressedMouths.length, 1, "Space presses the focused mouth");
+assert.equal(mouthStatus(), ownMouths[3].replace("open — Space seals", "sealed — Space opens"), "the status line follows the press");
+assert.equal(key("Enter"), true);
+assert.deepEqual(pressedMouths, [pressedMouths[0], pressedMouths[0]], "Enter reopens the same mouth");
+assert.equal(mouthStatus(), ownMouths[3]);
+assert.equal(key(" ", true), true);
+assert.ok(mouthStatus().includes("keeps its in/out role"), "a dealt mouth refuses the Shift polarity swap from the keyboard too");
+assert.equal(key("Tab", true), true);
+assert.equal(mouthStatus(), ownMouths[2], "Shift+Tab steps back one mouth");
+assert.equal(key("Tab"), true);
+assert.equal(key("Tab"), false, "Tab past the last own mouth is not consumed, so focus leaves the field");
+assert.ok(mouthStatus().startsWith("Keys are back on the valves"), "leaving the mouths says where the keys went");
+pressedMouths.length = 0;
+key(" ");
+assert.equal(pressedMouths.length, 0, "with no mouth focused Space turns the selected valve again");
+key("Tab");
+assert.equal(mouthStatus(), ownMouths[0], "a new pass starts at the first own mouth");
+assert.equal(key("Tab", true), true, "Shift+Tab from the first mouth returns to the valve cursor");
+assert.ok(mouthStatus().startsWith("Keys are back on the valves"), "and the status line follows");
+key(" ");
+key("Tab");
+key("ArrowRight");
+assert.ok(mouthStatus().startsWith("Keys are back on the valves"), "an arrow does too");
+key(" ");
+assert.equal(pressedMouths.length, 0, "an arrow returns the cursor to the valves");
+key("Tab");
+c.onpointerdown({ clientX: cellX, clientY: cellY, button: 0, pointerId: 6 });
+assert.ok(mouthStatus().startsWith("Keys are back on the valves"), "and so does a pointer press");
+c.onpointerup({ pointerId: 6 });
+c.onclick({ clientX: cellX, clientY: cellY, shiftKey: false, detail: 1 });
+key(" ");
+assert.equal(pressedMouths.length, 0, "a press returns the cursor to the valves");
 const signMatch = element("quest-list").innerHTML.match(/data-sign="(\d+)"/);
 assert.ok(signMatch, "Unsigned quest offers a Sign button");
 element("quest-list").onclick({ target: { closest: sel => (sel === "[data-sign]" ? { dataset: { sign: signMatch[1] } } : null) } });
 frames.shift()((now += 16.7));
 assert.ok(element("selected-valve").textContent.includes("hollow single") && element("selected-valve").textContent.includes("ports N"), "Signing spawns upright hollow single ↑ N");
 element("quest-list").onclick({ target: { closest: sel => (sel === "[data-drop]" ? { dataset: { drop: signMatch[1] } } : null) } });
+
+// Route hint: a person's pressure goal threads its route on the field, dashed
+// where a valve must turn, and names it on the goal card. The page's game is
+// private, so the sign call is tapped to turn the card into a pressure goal.
+const GAME = vm.runInThisContext("ValveGame");
+const ROUTE_UNDER = "rgba(8,12,18,0.62)";
+const signQuest = GAME.signQuest;
+let pageGame = null;
+GAME.signQuest = (game, id, player) => {
+        pageGame = game;
+        Object.assign(game.quests.find(q => q.id === id), { kind: "pressure", op: ">", threshold: 0.95, bottles: 1, timeLimit: 0 });
+        return signQuest(game, id, player);
+};
+const pressureCard = element("quest-list").innerHTML.match(/data-sign="(\d+)"/);
+element("quest-list").onclick({ target: { closest: sel => (sel === "[data-sign]" ? { dataset: { sign: pressureCard[1] } } : null) } });
+GAME.signQuest = signQuest;
+const hint = pageGame.routes[0];
+assert.ok(hint.count >= 2 && hint.pending > 0, "the signed goal has a route with valves to turn");
+assert.ok(element("quest-list").innerHTML.includes('<div class="quest-foot"><span>' + hint.text + "</span></div>"), "the goal card carries the route line");
+assert.ok(hint.text.startsWith("Route: turn "), hint.text);
+function routeFrame() {
+        penSegments.clear();
+        mainDashes.length = 0;
+        frames.shift()((now += 16.7));
+        return penSegments.get(ROUTE_UNDER) || 0;
+}
+// One closing segment per cell short of the bottle, the mouth stub, two barbs per turn.
+assert.equal(routeFrame(), hint.count + 2 * hint.pending, "the thread and the turn arrows are drawn");
+assert.deepEqual(mainDashes, [2, 0], "the legs still to open are dashed, then the pen is solid again");
+const hintCells = hint.count;
+for (let n = 0; n < hint.count; n++) {
+        if (hint.turns[n]) SIM.turn(pageGame.sim, hint.cells[n], hint.turns[n]);
+}
+for (let i = 0; i < 6; i++) frames.shift()((now += 16.7));
+assert.equal(hint.pending, 0, "following the arrows leaves nothing to turn");
+assert.ok(element("quest-list").innerHTML.includes("Route open → "), "the card follows the field");
+assert.equal(routeFrame(), hintCells, "an open route keeps its thread and drops the arrows");
+element("quest-list").onclick({ target: { closest: sel => (sel === "[data-drop]" ? { dataset: { drop: pressureCard[1] } } : null) } });
+assert.equal(routeFrame(), 0, "a dropped goal takes its route off the field");
+assert.ok(!element("quest-list").innerHTML.includes("Route"), "and off the board");
+
 element("mode-game").checked = false;
 element("mode-lab").checked = true;
 element("mode-lab").onchange();
@@ -545,6 +654,11 @@ assert.ok(ventRoster.includes('data-level="0"') && ventRoster.includes('data-lev
 assert.ok(ventRows.includes("Your turn"), "the seat on turn is named in the panel");
 assert.ok(ventRoster.includes('data-remove="0" disabled'), "your own seat cannot be removed");
 assert.equal(element("add-seat").disabled, true, "vent mode caps the seat list at two");
+// A Vent seat's four mouths are tab stops too; step back out so the valve
+// cursor owns the keys again.
+assert.equal(key("Tab"), true);
+assert.match(mouthStatus(), /^You (in|out) mouth, column \d+, (open|sealed) — Space (seals|opens) it\.$/, "a Vent seat's mouth is named on focus");
+assert.equal(key("Tab", true), true);
 
 function seatCell(seat) {
         element("vent-list").onclick({ target: { closest: sel => (sel === "[data-seat]" ? { dataset: { seat: String(seat) } } : null) } });

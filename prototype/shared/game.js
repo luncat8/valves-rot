@@ -133,10 +133,13 @@ const ValveGame = (() => {
 		return false;
 	}
 
+	// Nearest quarter that joins `needMask`: stay, one turn either way, then two.
+	const QUARTER_STEPS = [0, 1, 3, 2];
+	// Signed quarter turns for a quarter difference of 0..3.
+	const QUARTER_TURNS = [0, 1, 2, -1];
 	function bestQuarterForValve(v, curQuarter, needMask) {
-		if (G.valveConnectsMask(v, curQuarter, needMask)) return curQuarter;
-		for (const step of [1, -1, 2]) {
-			const q = (curQuarter + step + 4) & 3;
+		for (let k = 0; k < QUARTER_STEPS.length; k++) {
+			const q = (curQuarter + QUARTER_STEPS[k]) & 3;
 			if (G.valveConnectsMask(v, q, needMask)) return q;
 		}
 		return -1;
@@ -420,6 +423,8 @@ const ValveGame = (() => {
 			pourCooldown: 0,
 			botCooldown: new Float64Array(MAX_SEATS),
 			vent: makeVent(),
+			// One route hint per seat, for the pressure goal that seat holds.
+			routes: Array.from({ length: MAX_SEATS }, makeRoute),
 			dirtyRotors: new Uint8Array(SLOTS),
 			dirtyCases: false,
 			hasDirtyRotors: false,
@@ -630,6 +635,8 @@ const ValveGame = (() => {
 			else if (owner > removed) game.quests[q].owner = owner - 1;
 		}
 		for (let p = 0; p < game.players.length; p++) game.players[p].id = p;
+		// Route hints are filed by seat, so a shifted seat reads its own again.
+		for (let p = 0; p < game.routes.length; p++) game.routes[p].questId = -1;
 		game.dirtyCases = true;
 	}
 
@@ -870,9 +877,12 @@ const ValveGame = (() => {
 
 	// Search possible quarter-turn routes, not current pressure or mouth ownership.
 	// A rival's open reservoir is usable; only our own sealed ones can be opened.
+	// It returns the state beside the reservoir and leaves that mouth and the side
+	// facing it in `airMouth` and `airSide`; `airParent` chains back to the goal.
 	const airParent = new Int16Array(SLOTS * 4);
 	const airQueue = new Int16Array(SLOTS * 4);
-	const airQuarter = new Int8Array(SLOTS * 4);
+	let airMouth = -1;
+	let airSide = 0;
 	function findAirRoute(sim, goal, wantHigh, playerId) {
 		airParent.fill(-2);
 		let head = 0;
@@ -900,7 +910,8 @@ const ValveGame = (() => {
 					const mouths = sim.inlets;
 					if (!mouths.present[inlet] || (mouths.level[inlet] === I.HIGH) !== wantHigh) continue;
 					if (!mouths.open[inlet] && mouths.owner[inlet] !== playerId) continue;
-					airQuarter[state] = q;
+					airMouth = inlet;
+					airSide = side;
 					return state;
 				}
 				const nextCell = y * N + x;
@@ -914,6 +925,90 @@ const ValveGame = (() => {
 			}
 		}
 		return -1;
+	}
+
+	// A route unrolled from the search, reservoir end first and bottle last. The
+	// bots act on it and a person's seat reads it as a hint; nothing here turns a
+	// valve.
+	function makeRoute() {
+		return {
+			// Cache key: the goal, the rotor targets and the mouth states it was read from.
+			questId: -1,
+			targets: -1,
+			mouths: -1,
+			count: 0,
+			cells: new Int16Array(SLOTS),
+			// Sides the air crosses a cell by: `out` towards the reservoir, `back`
+			// towards the bottle (-1 on the bottle itself).
+			out: new Int8Array(SLOTS),
+			back: new Int8Array(SLOTS),
+			// Quarter turns a cell still needs: 0, 1, -1 or 2.
+			turns: new Int8Array(SLOTS),
+			pending: 0,
+			mouth: -1,
+			text: "",
+		};
+	}
+
+	const botRoute = makeRoute();
+
+	function traceAirRoute(sim, goal, wantHigh, playerId, route) {
+		let state = findAirRoute(sim, goal, wantHigh, playerId);
+		let out = airSide;
+		route.count = 0;
+		route.pending = 0;
+		route.mouth = state < 0 ? -1 : airMouth;
+		while (state >= 0) {
+			const cell = state >> 2;
+			const back = state & 3;
+			const n = route.count++;
+			let turns = 0;
+			if (cell !== goal) {
+				const cur = G.quarterOf(sim.target[cell]);
+				const q = bestQuarterForValve(sim.layout.valves[cell], cur, (1 << back) | (1 << out));
+				turns = QUARTER_TURNS[(q - cur) & 3];
+			}
+			route.cells[n] = cell;
+			route.out[n] = out;
+			route.back[n] = cell === goal ? -1 : back;
+			route.turns[n] = turns;
+			if (turns) route.pending++;
+			out = (back + 2) & 3;
+			state = airParent[state];
+		}
+		return route.count > 0;
+	}
+
+	function routeText(game, quest, route) {
+		const source = quest.op === ">";
+		if (!route.count) return "No route to " + (source ? "a source" : "a vent") + " mouth — every path is blocked.";
+		const inlets = game.sim.inlets;
+		const owner = inlets.owner[route.mouth];
+		const whose = owner === quest.owner ? "your" : owner >= 0 ? game.players[owner].name + "'s" : "the";
+		const where = whose + (source ? " in" : " out") + " mouth, column " + (inlets.column[route.mouth] + 1);
+		const open = inlets.open[route.mouth] === 1;
+		if (route.pending) return "Route: turn " + route.pending + (route.pending === 1 ? " valve" : " valves") + " → " + where + (open ? "" : ", then open it");
+		if (!open) return "Route: valves aligned → " + where + ", open it";
+		// The line is cached on turns and presses, not on pressure, so it has to
+		// read true both while the bottle charges and while a branch bleeds it.
+		return "Route open → " + where + ". If the pressure stalls, close off the branches that bleed it.";
+	}
+
+	// The hint of a pressure goal a person plays. A still field returns on the
+	// three keys, so the search runs only after a turn or a mouth press.
+	function refreshRoute(game, quest) {
+		if (game.players[quest.owner].bot) return;
+		const sim = game.sim;
+		const route = game.routes[quest.owner];
+		if (route.questId === quest.id && route.targets === sim.targetVersion && route.mouths === sim.inlets.version) return;
+		route.questId = quest.id;
+		route.targets = sim.targetVersion;
+		route.mouths = sim.inlets.version;
+		traceAirRoute(sim, quest.cells[0], quest.op === ">", quest.owner, route);
+		const text = routeText(game, quest, route);
+		if (text === route.text) return;
+		route.text = text;
+		game.version++;
 	}
 
 	function pickGoalCells(game, quest, playerId) {
@@ -1021,6 +1116,7 @@ const ValveGame = (() => {
 		player.questId = quest.id;
 
 		game.dirtyCases = true;
+		game.routes[playerId].questId = -1;
 		evaluateQuest(game, quest);
 		const first = sim.layout.valves[cells[0]];
 		game.lastEvent = player.name + " signed: " + quest.title + " → (" + (first.i + 1) + "," + (first.j + 1) + ")";
@@ -1081,6 +1177,7 @@ const ValveGame = (() => {
 
 	function evaluateQuest(game, quest) {
 		const sim = game.sim;
+		if (quest.kind === "pressure" && quest.owner >= 0) refreshRoute(game, quest);
 		let allOk = quest.cellCount > 0;
 		let changed = false;
 		for (let s = 0; s < quest.cellCount; s++) {
@@ -2275,19 +2372,9 @@ const ValveGame = (() => {
 		const goalIdx = quest.cells[slot];
 		const wantHigh = quest.op === ">";
 		if (botMouthAction(sim, playerId, wantHigh)) return true;
-		let state = findAirRoute(sim, goalIdx, wantHigh, playerId);
-		if (state < 0) return false;
-		let q = airQuarter[state];
-		while (state >= 0) {
-			const cell = state >> 2;
-			const cur = G.quarterOf(sim.target[cell]);
-			if (cell !== goalIdx && q !== cur) return S.turn(sim, cell, ((q - cur + 4) & 3) === 3 ? -1 : 1);
-			const parent = airParent[state];
-			if (parent < 0) break;
-			const need = (1 << (parent & 3)) | (1 << (((state & 3) + 2) & 3));
-			const v = sim.layout.valves[parent >> 2];
-			q = bestQuarterForValve(v, G.quarterOf(sim.target[parent >> 2]), need);
-			state = parent;
+		traceAirRoute(sim, goalIdx, wantHigh, playerId, botRoute);
+		for (let n = 0; n < botRoute.count; n++) {
+			if (botRoute.turns[n]) return S.turn(sim, botRoute.cells[n], botRoute.turns[n] < 0 ? -1 : 1);
 		}
 		return false;
 	}

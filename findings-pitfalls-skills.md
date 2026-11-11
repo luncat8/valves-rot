@@ -411,3 +411,52 @@
   shows drag scaling inversely with mass (buoyant blue rises, dense red falls in
   the same field). A red suite that everyone keeps carrying as an exception is a
   worse outcome than a one-line lane table.
+
+
+# Route hint and mouth keys (2026-11-10)
+
+- A cache keyed on a version counter is only as good as the list of writers.
+  `sim.target` has six (`initSchedule`, auto-rotation, the stall back-off,
+  `turn`, `setTarget`, `installValve`); grep `target\[[^]]*\] *=` and bump at
+  each. Then list the inputs no counter covers and forget the key there
+  explicitly: a buffer filed by seat goes stale when `renumberSeats` shifts
+  `quest.owner`, and quest ids restart with every match, so signing and
+  renumbering both reset `route.questId`.
+- A readout cached on discrete events (a turn, a mouth press) must read true
+  while the continuous state behind it moves. "Route open; isolate the branch
+  that bleeds it" was wrong half the time, because nothing refreshes the line
+  as the bottle charges. Word such a line as a condition ("if the pressure
+  stalls, …") or key it on the continuous value as well.
+- `app.js` keeps `game` inside its IIFE. To reach it from `render-smoke.cjs`,
+  tap an exported entry point for one call and restore it:
+  `GAME.signQuest = (game, id, seat) => { pageGame = game; …; return signQuest(game, id, seat); }`.
+  The tap can also shape the scenario (turn the signed card into a pressure
+  goal), so the page needs no test hook.
+- The smoke stub files a `lineTo` under the pen that is current when the
+  segment is traced, not when it is stroked. Set `strokeStyle` before building
+  a path that an assertion will count through `penSegments`.
+- `render-smoke` prints six totals, but only `drawImage` and `overlay` repeat
+  between runs; `drawCalls`, `stroke`, `fill` and `fillRect` drift by a few
+  percent on unchanged sources because the stub's clock is `Date.now`. The
+  elbow count of `geometry-check` changes on every run too. Compare the stable
+  figures only, and check drift on a detached worktree of the base commit
+  (`git worktree add --detach /tmp/base <sha>`) before blaming a change.
+- A canvas with its own `Tab` stops becomes a focus trap unless `Tab` stays
+  unconsumed at both ends: no `preventDefault` past the last stop, nor on
+  `Shift+Tab` from the first. Offer as stops only what the person can press;
+  in Lab every mouth is pressable, so Lab keeps a single stop.
+- Release a keyboard cursor at `pointerdown`, not at `click`: a press-drag
+  sets `drag.suppressClick` and its click handler returns before any cleanup.
+- Guide lines on the field: `arcTo(hub, exit, G.ELBOW)` draws both a straight
+  leg and a rounded corner (collinear points degenerate to a line), and the
+  corner then follows the elbow's own bend. Put turn arrows on the diagonals;
+  on the axes their heads land on the thread they annotate. Cream reads on a
+  rotor but vanishes on a pipe's white interior; the selection amber over a
+  dark underlay reads on both.
+- Real pixels without a browser: `npm i @napi-rs/canvas` in a directory under
+  `/tmp` (the registry is reachable; `node_modules` does not persist in the
+  repo), set `global.Path2D` from the package and
+  `global.document = { createElement: () => createCanvas(1, 1) }`, then
+  `R.buildScene` → `R.renderScene` → the overlay calls onto a real canvas
+  scaled by the dpr and translated by `G.POUR + G.VENT_STRIP`. Crop and zoom
+  before judging: at full size a 2 px stroke's colour cannot be told apart.

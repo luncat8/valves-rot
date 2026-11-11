@@ -39,6 +39,17 @@ function sealAllMouths(sim) {
 	}
 }
 
+// Turns a board card into an untimed single-bottle pressure goal.
+function pressureGoal(game, op, threshold, card = 0) {
+	const q = game.quests[card];
+	q.kind = "pressure";
+	q.op = op;
+	q.threshold = threshold;
+	q.bottles = 1;
+	q.timeLimit = 0;
+	return q;
+}
+
 // Every column where the player owns a mouth, in or out, without repeats.
 function mouthColumns(sim, playerId) {
 	const cols = [];
@@ -371,12 +382,7 @@ function pressureRoutingCase(wantHigh) {
 	const sim = S.create(layout, { turning: false });
 	const game = Game.create(sim, { mode: "game", botControl: false });
 	S.setAutoRotate(sim, 0);
-	const q = game.quests[0];
-	q.kind = "pressure";
-	q.op = wantHigh ? ">" : "<";
-	q.threshold = wantHigh ? 0.95 : 0.05;
-	q.bottles = 1;
-	q.timeLimit = 0;
+	const q = pressureGoal(game, wantHigh ? ">" : "<", wantHigh ? 0.95 : 0.05);
 	q.holdNeed = Game.HOLD_EXACT;
 	const before = layout.valves.map(v => [G.typeOf(v).id, v.angle]);
 	const mouthsBefore = Array.from(sim.inlets.open);
@@ -433,14 +439,127 @@ function testPressureReach() {
 	const sim = S.create(G.createLayout(11), { turning: false });
 	const game = Game.create(sim, { mode: "game", botControl: false });
 	for (let k = 0; k < G.N * G.N; k++) S.installValve(sim, k, G.typeById("solid-blank"), 0, undefined, true);
-	const q = game.quests[0];
-	q.kind = "pressure";
-	q.op = ">";
-	q.threshold = 0.95;
-	q.bottles = 1;
+	const q = pressureGoal(game, ">", 0.95);
 	assert.equal(Game.signQuest(game, q.id, 0), false, "no possible route refuses signing instead of softening target");
 	assert.equal(q.threshold, 0.95);
 	assert.equal(q.owner, -1);
+}
+
+// Route hint. A person's pressure goal carries the route the search found:
+// contiguous from a band cell to the bottle, ending under its mouth, with the
+// quarter turns each cell still needs. Following it leaves nothing to turn.
+function routeCells(route) {
+	return Array.from(route.cells.subarray(0, route.count));
+}
+
+function routeHintCase(wantHigh) {
+	const layout = G.createLayout(7);
+	const sim = S.create(layout, { turning: false });
+	const game = Game.create(sim, { mode: "game", botControl: false });
+	S.setAutoRotate(sim, 0);
+	const inlets = sim.inlets;
+	const q = pressureGoal(game, wantHigh ? ">" : "<", wantHigh ? 0.95 : 0.05);
+	assert.equal(Game.signQuest(game, q.id, 0), true);
+	const route = game.routes[0];
+	assert.equal(route.questId, q.id, "signing reads the route");
+	assert.ok(route.count >= 2, "the route reaches beyond the bottle");
+	assert.equal(route.cells[route.count - 1], q.cells[0], "the bottle is the last cell");
+	assert.equal(route.back[route.count - 1], -1);
+
+	const top = inlets.side[route.mouth] === I.TOP;
+	assert.equal(inlets.present[route.mouth], 1);
+	assert.equal(inlets.level[route.mouth] === I.HIGH, wantHigh, "the mouth has the wanted polarity");
+	assert.ok(inlets.open[route.mouth] || inlets.owner[route.mouth] === 0, "the mouth is open or the seat's own");
+	assert.equal(inlets.column[route.mouth], route.cells[0] % G.N, "the route ends under its mouth");
+	assert.equal((route.cells[0] / G.N) | 0, top ? 0 : G.N - 1);
+	assert.equal(G.DY[route.out[0]], top ? -1 : 1, "the last side faces the band");
+
+	let pending = 0;
+	for (let n = 0; n < route.count - 1; n++) {
+		const cell = route.cells[n];
+		const next = route.cells[n + 1];
+		if (route.turns[n]) pending++;
+		assert.equal(next % G.N, cell % G.N + G.DX[route.back[n]], "cells are neighbours along `back`");
+		assert.equal((next / G.N) | 0, ((cell / G.N) | 0) + G.DY[route.back[n]]);
+		assert.equal(route.out[n + 1], (route.back[n] + 2) & 3, "the next cell leaves by the facing side");
+		assert.equal(sim.goalOwner[cell], -1, "no other goal sits on the route");
+	}
+	assert.equal(route.turns[route.count - 1], 0, "the bottle is never turned");
+	assert.equal(route.pending, pending);
+	assert.ok(route.text.startsWith("Route") && route.text.includes("mouth, column " + (inlets.column[route.mouth] + 1)), route.text);
+
+	const cells = routeCells(route);
+	const turnsAtSigning = route.pending;
+	const before = layout.valves.map(v => G.typeOf(v).id);
+	for (let n = 0; n < route.count; n++) {
+		if (route.turns[n]) S.turn(sim, route.cells[n], route.turns[n]);
+	}
+	Game.evaluateQuest(game, q);
+	assert.equal(route.pending, 0, "following the hint leaves nothing to turn");
+	assert.deepEqual(routeCells(route), cells, "and keeps the same route");
+	assert.ok(route.text.startsWith(inlets.open[route.mouth] ? "Route open → " : "Route: valves aligned → "), route.text);
+	assert.deepEqual(layout.valves.map(v => G.typeOf(v).id), before, "the hint installs nothing");
+	for (let n = 0; n < route.count - 1; n++) {
+		const cell = route.cells[n];
+		const need = (1 << route.out[n]) | (1 << route.back[n]);
+		assert.ok(G.valveConnectsMask(layout.valves[cell], G.quarterOf(sim.target[cell]), need), "each valve joins its two sides");
+	}
+
+	// The buffer is a cache: a still field is not searched again, a turn is.
+	route.count = 0;
+	Game.evaluateQuest(game, q);
+	assert.equal(route.count, 0, "a still field does not search again");
+	S.turn(sim, cells[0], 4);
+	Game.evaluateQuest(game, q);
+	assert.deepEqual(routeCells(route), cells, "a turn reads the route again");
+
+	// With every mouth sealed only the seat's own reservoir is usable.
+	sealAllMouths(sim);
+	Game.evaluateQuest(game, q);
+	assert.ok(route.count >= 2, "an own sealed mouth still gives a route");
+	assert.equal(inlets.owner[route.mouth], 0);
+	assert.ok(route.text.includes(wantHigh ? "your in mouth" : "your out mouth") && route.text.endsWith("open it"), route.text);
+	S.toggleInlet(sim, route.mouth, false, 0);
+	Game.evaluateQuest(game, q);
+	assert.ok(!route.text.endsWith("open it"), "a mouth press reads the route again");
+
+	// A bot's goal carries no hint until a person takes the seat.
+	const rival = pressureGoal(game, wantHigh ? ">" : "<", wantHigh ? 0.95 : 0.05, 1);
+	assert.equal(Game.signQuest(game, rival.id, 2), true);
+	assert.equal(game.routes[2].questId, -1, "a bot seat reads no route");
+	Game.setPlayerBot(game, 2, false);
+	Game.evaluateQuest(game, rival);
+	assert.equal(game.routes[2].questId, rival.id, "a seat handed to a person gets its hint");
+	assert.equal(game.routes[2].cells[game.routes[2].count - 1], rival.cells[0]);
+	Game.evaluateQuest(game, q);
+	assert.ok(route.count >= 2);
+	for (let n = 0; n < route.count; n++) assert.notEqual(route.cells[n], rival.cells[0], "a route never crosses another goal");
+
+	// Hints are filed by seat: when a seat in front leaves, the goal moves down
+	// one seat and reads its route again there.
+	assert.equal(Game.removePlayer(game, 1), true);
+	assert.equal(rival.owner, 1, "the goal follows its renumbered seat");
+	assert.equal(game.routes[1].questId, -1, "the shifted seat forgets the route filed under its number");
+	Game.evaluateQuest(game, rival);
+	assert.equal(game.routes[1].questId, rival.id);
+	assert.equal(game.routes[1].cells[game.routes[1].count - 1], rival.cells[0], "and reads its own goal's route");
+	Game.evaluateQuest(game, q);
+
+	// Walling the bottle in leaves no route to report.
+	const goal = q.cells[0];
+	for (const k of [goal - 1, goal + 1, goal - G.N, goal + G.N]) S.installValve(sim, k, G.typeById("solid-blank"), 0, undefined, true);
+	S.rebuildPressure(sim);
+	Game.evaluateQuest(game, q);
+	assert.equal(route.count, 0);
+	assert.equal(route.mouth, -1);
+	assert.equal(route.text, "No route to " + (wantHigh ? "a source" : "a vent") + " mouth — every path is blocked.");
+	return turnsAtSigning;
+}
+
+function testRouteHint() {
+	const turns = routeHintCase(true) + routeHintCase(false);
+	assert.ok(turns > 0, "the cases include a route that needs turning");
+	return turns;
 }
 
 // 8. Mode switch under water: game and vent run the grid gas, which water
@@ -457,11 +576,7 @@ function testWaterPark() {
 	const game = Game.create(sim, { mode: "lab", botControl: false });
 	assert.equal(Game.setMode(game, "game"), true);
 	assert.equal(sim.water.enabled, false, "game mode parks the water field");
-	const q = game.quests[0];
-	q.kind = "pressure";
-	q.op = ">";
-	q.threshold = 0.3;
-	q.bottles = 1;
+	const q = pressureGoal(game, ">", 0.3);
 	assert.equal(Game.signQuest(game, q.id, 0), true, "a pressure quest signs over the grid gas");
 	assert.equal(sim.pressureMode, "grid", "the gas backend is up");
 	assert.ok(sim.pressure && sim.pressure.kind === "grid", "and built");
@@ -514,10 +629,11 @@ testHueMatching();
 testQuestLifecycle();
 testPressureQuest();
 testPressureReach();
+const hintTurns = testRouteHint();
 testWaterPark();
 const bots = testBots();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
 console.log(
-	`OK game v0.2: auto-rotate exact subset counts, case tints (0 alloc rebuilds), quest gen (easy ${gen.easy} med ${gen.med} hard ${gen.hard}, bands 2/3/6 ${gen.band2}/${gen.band3}/${gen.band6}, exact ${gen.exact}, timed ${gen.timed}, 2-bottle ${gen.multi}, pressure ${gen.pHi + gen.pLo}), average-hue + band count, hold & solid-blank seal, bots completed ${bots.totalCompleted} (${bots.totalScore} pts) in ${ms.toFixed(0)} ms`,
+	`OK game v0.2: auto-rotate exact subset counts, case tints (0 alloc rebuilds), quest gen (easy ${gen.easy} med ${gen.med} hard ${gen.hard}, bands 2/3/6 ${gen.band2}/${gen.band3}/${gen.band6}, exact ${gen.exact}, timed ${gen.timed}, 2-bottle ${gen.multi}, pressure ${gen.pHi + gen.pLo}), average-hue + band count, hold & solid-blank seal, route hint (${hintTurns} turns followed), bots completed ${bots.totalCompleted} (${bots.totalScore} pts) in ${ms.toFixed(0)} ms`,
 );

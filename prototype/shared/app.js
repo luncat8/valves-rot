@@ -119,6 +119,9 @@
                 selectionVersion++;
         }
         let hoverInlet = -1;
+        // Keyboard cursor on a mouth. While it is set, Space and Enter press that
+        // mouth instead of turning the selected valve.
+        let focusInlet = -1;
         let fieldMap = null;
         let pressureSpan = Number(C.DEFAULT_SPAN.toPrecision(6));
         let pressureSpanLabel = C.format(pressureSpan);
@@ -443,6 +446,13 @@
                 $("vent-list").innerHTML = html;
         }
 
+        // The route hint of a pressure goal a person holds, as one card line.
+        function routeLine(quest, owner) {
+                if (!owner || owner.bot || quest.kind !== "pressure") return "";
+                const route = game.routes[quest.owner];
+                return route.questId === quest.id ? '<div class="quest-foot"><span>' + route.text + "</span></div>" : "";
+        }
+
         function syncQuestUI() {
                 const userBusy = game.players[0].questId >= 0;
                 let qHtml = "";
@@ -470,6 +480,7 @@
                                 "</div>" +
                                 '<div class="quest-title">' + swatch + "<span>" + q.title + "</span></div>" +
                                 '<div class="quest-foot"><span>' + (owner ? q.progressText : "Spawns " + q.bottles + "× " + (q.kind === "pressure" ? "hollow cross" : "hollow single ↑ N")) + "</span></div>" +
+                                routeLine(q, owner) +
                                 "</div>";
                 }
                 $("quest-list").innerHTML = qHtml;
@@ -1182,6 +1193,63 @@
                 if (paused) drawFrame(false);
         }
 
+        // Only an owner-dealt mouth is a tab stop, so Lab keeps one stop for the
+        // whole field and focus can always leave the canvas.
+        function ownMouth(inlet) {
+                return sim.inlets.owner[inlet] >= 0 && Game.pressActor(game, inlet) >= 0;
+        }
+
+        function ownMouthFrom(start, step) {
+                for (let k = start + step; k >= 0 && k < sim.inlets.count; k += step) {
+                        if (ownMouth(k)) return k;
+                }
+                return -1;
+        }
+
+        // A mode change or a seat handed to a bot can take the mouth away while the
+        // canvas keeps the focus.
+        function focusedMouth() {
+                if (focusInlet >= 0 && !ownMouth(focusInlet)) focusInlet = -1;
+                return focusInlet;
+        }
+
+        // The status line is a live region, so it names the focused mouth for a
+        // reader that cannot see the ring.
+        function announceMouth(inlet) {
+                const inlets = sim.inlets;
+                const open = inlets.open[inlet] === 1;
+                Game.notice(game, game.players[inlets.owner[inlet]].name + " " + (inlets.level[inlet] === I.HIGH ? "in" : "out") + " mouth, column " + (inlets.column[inlet] + 1) + (open ? ", open" : ", sealed") + " — Space " + (open ? "seals" : "opens") + " it.");
+                syncGameUI();
+        }
+
+        // Hands the keys back to the valve cursor and says so: the status line still
+        // names the mouth and what Space did to it.
+        function releaseMouth() {
+                if (focusInlet < 0) return;
+                focusInlet = -1;
+                Game.notice(game, "Keys are back on the valves — Space turns the selected one.");
+                syncGameUI();
+                if (paused) drawFrame(false);
+        }
+
+        // A mouth answers only to the seat that owns it, and only while a person
+        // plays that seat. It keeps its in/out role, so the polarity swap stays a
+        // Lab-mode move.
+        function pressMouth(inlet, flip) {
+                const actor = Game.pressActor(game, inlet);
+                if (actor < 0) {
+                        refuseMouth(inlet);
+                        return false;
+                }
+                const pressed = S.toggleInlet(sim, inlet, flip, actor);
+                if (!pressed) {
+                        Game.notice(game, "A dealt mouth keeps its in/out role — the polarity swap is a Lab move.");
+                        syncGameUI();
+                }
+                if (paused) drawFrame(pressed);
+                return pressed;
+        }
+
         function setHoverVent(vent) {
                 if (hoverVent === vent) return;
                 hoverVent = vent;
@@ -1335,6 +1403,8 @@
         }
 
         canvas.onpointerdown = event => {
+                // Any press takes the keys off a mouth, a drag included.
+                releaseMouth();
                 if (event.button && event.button !== 0) return;
                 if (event.ctrlKey) return;
                 pointerState(event);
@@ -1505,6 +1575,7 @@
                         drag.holdCell = -1;
                 }
                 if (ventDrag.column >= 0) endVentPress(null);
+                releaseMouth();
                 hoverCell = -1;
                 setHover(-1);
                 setHoverVent(-1);
@@ -1527,20 +1598,7 @@
                         return;
                 }
                 if (at.inlet >= 0) {
-                        // A mouth answers only to the seat that owns it, and only while a person
-                        // plays that seat. It keeps its in/out role, so the shift-click swap stays
-                        // a Lab-mode move.
-                        const actor = Game.pressActor(game, at.inlet);
-                        if (actor < 0) {
-                                refuseMouth(at.inlet);
-                                return;
-                        }
-                        const pressed = S.toggleInlet(sim, at.inlet, event.shiftKey, actor);
-                        if (!pressed) {
-                                Game.notice(game, "A dealt mouth keeps its in/out role — the polarity swap is a Lab move.");
-                                syncGameUI();
-                        }
-                        if (paused) drawFrame(pressed);
+                        pressMouth(at.inlet, event.shiftKey);
                         return;
                 }
                 // Lab Shift-click toggles the cell in the multi-selection without
@@ -1631,6 +1689,27 @@
         picker.oninput = applyPickerColor;
         picker.onchange = applyPickerColor;
         canvas.onkeydown = event => {
+                if (event.key === "Tab") {
+                        // The stops run valve cursor, own mouths in index order, then out of
+                        // the field. An unconsumed Tab is what lets the focus leave.
+                        const from = focusedMouth();
+                        if (from < 0 && event.shiftKey) return;
+                        const next = ownMouthFrom(from, event.shiftKey ? -1 : 1);
+                        if (next >= 0 || event.shiftKey) event.preventDefault();
+                        if (next < 0) {
+                                releaseMouth();
+                                return;
+                        }
+                        focusInlet = next;
+                        announceMouth(next);
+                        if (paused) drawFrame(false);
+                        return;
+                }
+                if ((event.key === "Enter" || event.key === " ") && focusedMouth() >= 0) {
+                        event.preventDefault();
+                        if (pressMouth(focusInlet, event.shiftKey)) announceMouth(focusInlet);
+                        return;
+                }
                 if (event.key === "p" || event.key === "P") {
                         if (game.mode !== "lab") return;
                         event.preventDefault();
@@ -1646,6 +1725,7 @@
                 }
                 if (!event.key.startsWith("Arrow")) return;
                 event.preventDefault();
+                releaseMouth();
                 // The keyboard is a single-cursor tool: the arrows move the anchor
                 // and collapse the set to it, so navigation can never smear a
                 // multi-selection across the grid.
@@ -1765,11 +1845,14 @@
                 if (heatOn && heatViewOn) drawHeatMap();
                 // Mouths sit under the grain piles that share the bands; the ownership
                 // tabs are redrawn above them so a player's own mouths never get buried.
-                R.renderInlets(ctx, sim.inlets, hoverInlet);
+                const ringInlet = focusedMouth() >= 0 ? focusInlet : hoverInlet;
+                R.renderInlets(ctx, sim.inlets, ringInlet);
                 R.renderGrains(ctx, sim, scene);
-                R.renderInletBadges(ctx, sim.inlets, hoverInlet);
+                R.renderInletBadges(ctx, sim.inlets, ringInlet);
                 // The water vent strip rides above the pour band, clear of the mouths.
                 R.renderWaterVents(ctx, sim.water, hoverVent, ventDrag);
+                // The route thread lies under the goal's own arc and tag.
+                R.renderRoutes(ctx, layout, game);
                 R.renderGoals(ctx, layout, game);
                 R.renderVents(ctx, layout, game);
                 // The faint hover ring sits under the selection: it marks where a

@@ -635,6 +635,121 @@ const ValveRender = (() => {
 		ctx.restore();
 	}
 
+	// ---- pressure route hint ---------------------------------------------------
+	// The route a person's pressure goal still has to open, read from
+	// `game.routes`: a thread through its cells in the seat's colour, dashed where
+	// a valve has to turn or the reservoir mouth has to open, and a curved arrow
+	// on each valve to turn. Paths are batched by pen, so a route costs five
+	// strokes whatever its length.
+	const ROUTE_DASH = [5, 4];
+	const ROUTE_SOLID = [];
+	const ROUTE_UNDER = "rgba(8,12,18,0.62)";
+	const ROUTE_TURN_R = 15;
+	const ROUTE_CUP_R = 9.4;
+	const ROUTE_CUP_SPAN = TAU / 3;
+
+	// Adds the legs that are `pending` (1) or already open (0). A cell's leg runs
+	// side to side through the hub and rounds a corner on the elbow's own bend
+	// radius; the bottle has none, its rim belongs to the hold arc. The mouth's
+	// leg is a stub from the field edge into a cup that opens towards the field,
+	// so it stays inside the band.
+	function traceRoute(ctx, layout, inlets, route, pending) {
+		const half = S / 2;
+		for (let n = 0; n < route.count - 1; n++) {
+			if ((route.turns[n] !== 0 ? 1 : 0) !== pending) continue;
+			const v = layout.valves[route.cells[n]];
+			const out = route.out[n];
+			const back = route.back[n];
+			const ex = v.cx + G.DX[back] * half;
+			const ey = v.cy + G.DY[back] * half;
+			ctx.moveTo(v.cx + G.DX[out] * half, v.cy + G.DY[out] * half);
+			ctx.arcTo(v.cx, v.cy, ex, ey, G.ELBOW);
+			ctx.lineTo(ex, ey);
+		}
+		const k = route.mouth;
+		if (1 - inlets.open[k] !== pending) return;
+		const inward = inlets.side[k] === I.TOP ? 1 : -1;
+		const x = inlets.x[k];
+		const y = inlets.y[k];
+		const facing = inward * G.HALF_PI;
+		ctx.moveTo(x, inward > 0 ? 0 : SIZE);
+		ctx.lineTo(x, y + inward * ROUTE_CUP_R);
+		ctx.moveTo(x + Math.cos(facing - ROUTE_CUP_SPAN) * ROUTE_CUP_R, y + Math.sin(facing - ROUTE_CUP_SPAN) * ROUTE_CUP_R);
+		ctx.arc(x, y, ROUTE_CUP_R, facing - ROUTE_CUP_SPAN, facing + ROUTE_CUP_SPAN);
+	}
+
+	// A curved arrow round the hub of every cell that still has to turn: a
+	// quarter arc per quarter turn, drawn the way the rotor goes. It starts and
+	// ends on a diagonal, so its head never sits on a leg of the thread.
+	function traceRouteTurns(ctx, layout, route) {
+		const reach = ROUTE_TURN_R * Math.SQRT1_2;
+		for (let n = 0; n < route.count; n++) {
+			const turns = route.turns[n];
+			if (!turns) continue;
+			const v = layout.valves[route.cells[n]];
+			const way = turns < 0 ? -1 : 1;
+			// Diagonal `k` lies 45° past side `k`; the arc starts on the north-east one.
+			const tip = (3 + turns) & 3;
+			const rx = (G.DX[tip] - G.DY[tip]) * Math.SQRT1_2;
+			const ry = (G.DX[tip] + G.DY[tip]) * Math.SQRT1_2;
+			const px = v.cx + rx * ROUTE_TURN_R;
+			const py = v.cy + ry * ROUTE_TURN_R;
+			// Barbs trail the tip against the motion, either side of the arc.
+			const bx = px + ry * way * 4.6;
+			const by = py - rx * way * 4.6;
+			ctx.moveTo(v.cx + reach, v.cy - reach);
+			ctx.arc(v.cx, v.cy, ROUTE_TURN_R, -G.HALF_PI / 2, (turns - 0.5) * G.HALF_PI, turns < 0);
+			ctx.moveTo(bx + rx * 3.2, by + ry * 3.2);
+			ctx.lineTo(px, py);
+			ctx.lineTo(bx - rx * 3.2, by - ry * 3.2);
+		}
+	}
+
+	function drawRoute(ctx, layout, inlets, route, player) {
+		ctx.strokeStyle = ROUTE_UNDER;
+		ctx.lineWidth = 5.4;
+		ctx.beginPath();
+		traceRoute(ctx, layout, inlets, route, 0);
+		traceRoute(ctx, layout, inlets, route, 1);
+		ctx.stroke();
+		ctx.strokeStyle = player.accent;
+		ctx.lineWidth = 2.4;
+		ctx.beginPath();
+		traceRoute(ctx, layout, inlets, route, 0);
+		ctx.stroke();
+		ctx.beginPath();
+		traceRoute(ctx, layout, inlets, route, 1);
+		ctx.setLineDash(ROUTE_DASH);
+		ctx.stroke();
+		ctx.setLineDash(ROUTE_SOLID);
+		if (!route.pending) return;
+		ctx.strokeStyle = ROUTE_UNDER;
+		ctx.lineWidth = 4.8;
+		ctx.beginPath();
+		traceRouteTurns(ctx, layout, route);
+		ctx.stroke();
+		// The hand's colour: the same amber as the selection and the drag dial.
+		ctx.strokeStyle = SELECT_C;
+		ctx.lineWidth = 2.2;
+		ctx.stroke();
+	}
+
+	function renderRoutes(ctx, layout, game) {
+		if (!game || game.mode !== "game") return;
+		const quests = game.quests;
+		ctx.save();
+		ctx.lineCap = "round";
+		ctx.lineJoin = "round";
+		for (let q = 0; q < quests.length; q++) {
+			const quest = quests[q];
+			if (quest.owner < 0 || quest.kind !== "pressure" || game.players[quest.owner].bot) continue;
+			const route = game.routes[quest.owner];
+			if (route.questId !== quest.id || route.count === 0) continue;
+			drawRoute(ctx, layout, game.sim.inlets, route, PLAYERS[quest.owner]);
+		}
+		ctx.restore();
+	}
+
 	// A vent bottle is an instrument: a 0..1 rail beside the rotor with the target
 	// band marked in the owner's color and a needle on the live chamber pressure.
 	// The rail sits just outside the rotor rim, so the hold arc passes under it.
@@ -1376,6 +1491,7 @@ function renderWater(map, field, view, dim) {
 		renderSelection,
 		renderHover,
 		renderDrag,
+		renderRoutes,
 		renderGoals,
 		renderVents,
 		makeAirMap,
